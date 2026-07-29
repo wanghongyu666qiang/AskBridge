@@ -15,6 +15,9 @@ pub enum AppError {
     #[error("invalid hotkey: {0}")]
     InvalidHotkey(String),
 
+    #[error("hotkey transaction failed: {0}")]
+    HotkeyTransactionFailed(String),
+
     #[error("configuration is invalid: {0}")]
     ConfigurationInvalid(String),
 
@@ -78,17 +81,8 @@ pub enum AppError {
     #[error("target timed out")]
     TargetTimeout,
 
-    #[error("browser extension is unavailable")]
-    ExtensionUnavailable,
-
-    #[error("native messaging failed")]
-    NativeMessagingFailed,
-
     #[error("web composer not found")]
     ComposerNotFound,
-
-    #[error("paste failed")]
-    PasteFailed,
 }
 
 impl AppError {

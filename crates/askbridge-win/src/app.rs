@@ -18,6 +18,7 @@ use windows_sys::Win32::{
 };
 
 use crate::{
+    capture::{CaptureOutcome, CaptureService},
     hotkey_manager::HotkeyManager,
     settings::{
         CONTROL_APPLY, CONTROL_CLOSE, CONTROL_RESTORE_DEFAULTS, SETTINGS_CLASS, SettingsWindow,
@@ -63,12 +64,14 @@ pub fn run() -> Result<()> {
     register_window_class(SETTINGS_CLASS, instance, Some(settings_window_proc))?;
 
     let main_window = MainWindow::create(instance)?;
+    let capture = CaptureService::new(instance, main_window.hwnd())?;
     let mut hotkeys = HotkeyManager::new(main_window.hwnd());
     let registration_errors = hotkeys.register_initial(&loaded.config.hotkeys);
     let tray = TrayIcon::create(main_window.hwnd())?;
     let settings = SettingsWindow::create(ptr::null_mut(), instance, &loaded.config.hotkeys)?;
 
     let mut runtime = Runtime {
+        capture,
         hotkeys,
         tray,
         settings,
@@ -87,6 +90,8 @@ pub fn run() -> Result<()> {
             "AskBridge 配置已恢复",
             "原配置无效，已备份并恢复为默认配置。",
         );
+    } else if loaded.migrated {
+        info!("configuration migrated to schema v3");
     }
     if !registration_errors.is_empty() {
         let summary = registration_errors
@@ -115,12 +120,17 @@ fn user_facing_error(error: &AppError) -> String {
         AppError::HotkeyConflict(details) => format!("快捷键设置互相冲突：{details}"),
         AppError::InvalidHotkey(details) => format!("快捷键格式无效：{details}"),
         AppError::ConfigurationInvalid(details) => format!("配置无效：{details}"),
+        AppError::CaptureCancelled => "截图已取消。".to_owned(),
+        AppError::CaptureFailed(details) => format!("截图失败：{details}"),
+        AppError::ClipboardUnavailable => "剪贴板正被其他程序占用，请稍后重试。".to_owned(),
+        AppError::ClipboardWriteFailed => "无法将截图写入剪贴板。".to_owned(),
         _ => error.to_string(),
     }
 }
 
 struct Runtime {
     // Handle-backed fields are ordered before main_window so they release their resources first.
+    capture: CaptureService,
     hotkeys: HotkeyManager,
     tray: TrayIcon,
     settings: SettingsWindow,
@@ -220,16 +230,58 @@ impl Runtime {
         Ok(())
     }
 
-    fn route_command(&self, command: AppCommand) {
+    fn route_command(&mut self, command: AppCommand) {
+        match command {
+            AppCommand::CaptureWithPrompt | AppCommand::CaptureQuickDispatch => {
+                self.capture_command(command);
+            }
+            AppCommand::TextOnlyPrompt => {
+                info!(
+                    command = command.event_name(),
+                    phase = 2_u8,
+                    "text-only command routed"
+                );
+                self.tray.notify(
+                    "AskBridge 事件已触发",
+                    "直接文字提问将在 Phase 3 接入轻量输入框。",
+                );
+            }
+        }
+    }
+
+    fn capture_command(&mut self, command: AppCommand) {
         info!(
             command = command.event_name(),
-            phase = 1_u8,
-            "command routed"
+            phase = 2_u8,
+            "capture requested"
         );
-        self.tray.notify(
-            "AskBridge 事件已触发",
-            &format!("{}（Phase 1 路由验证）", command.label()),
-        );
+        match self.capture.capture() {
+            Ok(CaptureOutcome::Captured(image)) => {
+                info!(
+                    command = command.event_name(),
+                    width = image.width,
+                    height = image.height,
+                    rgba_bytes = image.rgba_bytes.len(),
+                    "capture completed in memory"
+                );
+                self.tray.notify(
+                    "AskBridge 截图已捕获",
+                    &format!("{} × {}，已保存在内存中。", image.width, image.height),
+                );
+            }
+            Ok(CaptureOutcome::Cancelled) => {
+                info!(command = command.event_name(), "capture cancelled");
+            }
+            Err(error) => {
+                error!(
+                    command = command.event_name(),
+                    error = %error,
+                    "capture failed"
+                );
+                self.tray
+                    .notify("AskBridge 截图失败", &user_facing_error(&error));
+            }
+        }
     }
 
     fn apply_settings(&mut self) {
@@ -259,7 +311,7 @@ impl Runtime {
             Ok(()) => {
                 self.config = candidate;
                 if self.paused {
-                    self.hotkeys.pause();
+                    let _ = self.hotkeys.pause();
                 }
                 self.settings.refresh(&self.config.hotkeys);
                 self.settings.set_status(success_message);
@@ -281,7 +333,7 @@ impl Runtime {
                 self.tray.notify("AskBridge", "全局快捷键已恢复。");
                 info!("global hotkeys resumed");
             } else {
-                self.hotkeys.pause();
+                let _ = self.hotkeys.pause();
                 let summary = errors
                     .iter()
                     .map(user_facing_error)
@@ -293,7 +345,18 @@ impl Runtime {
                     .notify("AskBridge 快捷键冲突", "快捷键仍保持暂停，请检查设置。");
             }
         } else {
-            self.hotkeys.pause();
+            let errors = self.hotkeys.pause();
+            if !errors.is_empty() {
+                let summary = errors
+                    .iter()
+                    .map(user_facing_error)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                error!(errors = %summary, "one or more hotkeys could not be paused");
+                self.tray
+                    .notify("AskBridge 快捷键暂停失败", "部分快捷键仍然处于活动状态。");
+                return;
+            }
             self.paused = true;
             self.tray.notify("AskBridge", "全局快捷键已暂停。");
             info!("global hotkeys paused");

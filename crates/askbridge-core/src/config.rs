@@ -1,10 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AppCommand, AppError, HotkeyBinding, ModifierKey, ProviderConfig, Result, VirtualKey};
+use crate::{
+    AppCommand, AppError, HotkeyBinding, ModifierKey, ProviderConfig, ProviderOverride, Result,
+    VirtualKey, provider::built_in_providers,
+};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 pub const DEFAULT_QUICK_PROMPT: &str = "请分析这张截图，并解释其中的内容。";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,12 +20,16 @@ pub struct AppConfig {
     pub hotkeys: HotkeyConfig,
     #[serde(default = "default_quick_prompt")]
     pub quick_prompt: String,
-    #[serde(default = "default_providers")]
-    pub providers: Vec<ProviderConfig>,
     #[serde(default)]
     pub general: GeneralConfig,
     #[serde(default)]
     pub browser: BrowserConfig,
+    #[serde(default)]
+    pub provider_overrides: Vec<ProviderOverride>,
+    #[serde(default)]
+    pub custom_providers: Vec<ProviderConfig>,
+    #[serde(default, rename = "providers", skip_serializing)]
+    legacy_providers: Vec<ProviderConfig>,
 }
 
 impl Default for AppConfig {
@@ -32,15 +39,17 @@ impl Default for AppConfig {
             default_provider_id: default_provider_id(),
             hotkeys: HotkeyConfig::default(),
             quick_prompt: default_quick_prompt(),
-            providers: default_providers(),
             general: GeneralConfig::default(),
             browser: BrowserConfig::default(),
+            provider_overrides: Vec::new(),
+            custom_providers: Vec::new(),
+            legacy_providers: Vec::new(),
         }
     }
 }
 
 impl AppConfig {
-    pub fn validate(&self) -> Result<()> {
+    pub fn migrate(&mut self) -> Result<bool> {
         if self.schema_version > CURRENT_SCHEMA_VERSION {
             return Err(AppError::UnsupportedConfigurationSchema {
                 found: self.schema_version,
@@ -52,24 +61,65 @@ impl AppConfig {
                 "schema_version must be at least 1".to_owned(),
             ));
         }
+
+        let mut changed = self.schema_version != CURRENT_SCHEMA_VERSION;
+        if !self.legacy_providers.is_empty() {
+            if !self.provider_overrides.is_empty() || !self.custom_providers.is_empty() {
+                return Err(AppError::ConfigurationInvalid(
+                    "legacy and current provider configuration cannot be mixed".to_owned(),
+                ));
+            }
+            self.import_legacy_providers()?;
+            changed = true;
+        }
+        if self.general.auto_submit {
+            self.general.auto_submit = false;
+            changed = true;
+        }
+        self.schema_version = CURRENT_SCHEMA_VERSION;
+
+        let providers = self.merged_providers()?;
+        if !providers
+            .iter()
+            .any(|provider| provider.enabled && provider.id == self.default_provider_id)
+        {
+            let fallback = providers
+                .iter()
+                .find(|provider| provider.enabled && !provider.is_custom)
+                .ok_or_else(|| {
+                    AppError::ConfigurationInvalid(
+                        "at least one built-in provider must remain enabled".to_owned(),
+                    )
+                })?;
+            self.default_provider_id.clone_from(&fallback.id);
+            changed = true;
+        }
+
+        self.validate()?;
+        Ok(changed)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != CURRENT_SCHEMA_VERSION {
+            return Err(AppError::ConfigurationInvalid(
+                "configuration must be migrated before validation".to_owned(),
+            ));
+        }
         self.hotkeys.validate()?;
         if self.quick_prompt.trim().is_empty() {
             return Err(AppError::ConfigurationInvalid(
                 "quick_prompt must not be empty".to_owned(),
             ));
         }
-        let mut ids = HashSet::new();
-        for provider in &self.providers {
-            provider.validate()?;
-            if !ids.insert(provider.id.as_str()) {
-                return Err(AppError::ConfigurationInvalid(format!(
-                    "provider id '{}' is duplicated",
-                    provider.id
-                )));
-            }
+        if self.general.auto_submit {
+            return Err(AppError::ConfigurationInvalid(
+                "auto_submit must remain false in AskBridge 1.0".to_owned(),
+            ));
         }
-        if !self
-            .providers
+        self.browser.validate()?;
+
+        let providers = self.merged_providers()?;
+        if !providers
             .iter()
             .any(|provider| provider.enabled && provider.id == self.default_provider_id)
         {
@@ -78,10 +128,126 @@ impl AppConfig {
                 self.default_provider_id
             )));
         }
-        if self.browser.target_timeout_ms == 0 {
+        Ok(())
+    }
+
+    pub fn merged_providers(&self) -> Result<Vec<ProviderConfig>> {
+        let mut providers = built_in_providers();
+        let mut built_in_indices = providers
+            .iter()
+            .enumerate()
+            .map(|(index, provider)| (provider.id.clone(), index))
+            .collect::<HashMap<_, _>>();
+        let mut override_ids = HashSet::new();
+
+        for provider_override in &self.provider_overrides {
+            provider_override.validate()?;
+            if !override_ids.insert(provider_override.id.as_str()) {
+                return Err(AppError::ConfigurationInvalid(format!(
+                    "provider override '{}' is duplicated",
+                    provider_override.id
+                )));
+            }
+            let Some(index) = built_in_indices.get(&provider_override.id).copied() else {
+                return Err(AppError::InvalidProvider(format!(
+                    "provider override '{}' does not match a built-in provider",
+                    provider_override.id
+                )));
+            };
+            providers[index].apply_override(provider_override);
+            providers[index].validate()?;
+        }
+
+        for provider in &self.custom_providers {
+            provider.validate()?;
+            if built_in_indices.contains_key(&provider.id) {
+                return Err(AppError::ConfigurationInvalid(format!(
+                    "custom provider id '{}' conflicts with a built-in provider",
+                    provider.id
+                )));
+            }
+            if !provider.is_custom {
+                return Err(AppError::ConfigurationInvalid(format!(
+                    "custom provider '{}' must set is_custom to true",
+                    provider.id
+                )));
+            }
+            let index = providers.len();
+            if built_in_indices
+                .insert(provider.id.clone(), index)
+                .is_some()
+            {
+                return Err(AppError::ConfigurationInvalid(format!(
+                    "custom provider id '{}' is duplicated",
+                    provider.id
+                )));
+            }
+            providers.push(provider.clone());
+        }
+        Ok(providers)
+    }
+
+    fn import_legacy_providers(&mut self) -> Result<()> {
+        let built_ins = built_in_providers()
+            .into_iter()
+            .map(|provider| (provider.id.clone(), provider))
+            .collect::<HashMap<_, _>>();
+        let legacy_providers = std::mem::take(&mut self.legacy_providers);
+
+        for mut provider in legacy_providers {
+            provider.validate()?;
+            if let Some(built_in) = built_ins.get(&provider.id) {
+                let provider_override = ProviderOverride {
+                    id: provider.id,
+                    display_name: (provider.display_name != built_in.display_name)
+                        .then_some(provider.display_name),
+                    enabled: (provider.enabled != built_in.enabled).then_some(provider.enabled),
+                    start_url: (provider.start_url != built_in.start_url)
+                        .then_some(provider.start_url),
+                    url_patterns: (provider.url_patterns != built_in.url_patterns)
+                        .then_some(provider.url_patterns),
+                    adapter_override: None,
+                };
+                if provider_override.display_name.is_some()
+                    || provider_override.enabled.is_some()
+                    || provider_override.start_url.is_some()
+                    || provider_override.url_patterns.is_some()
+                {
+                    self.provider_overrides.push(provider_override);
+                }
+            } else {
+                provider.is_custom = true;
+                provider.adapter_override = None;
+                self.custom_providers.push(provider);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl BrowserConfig {
+    fn validate(&self) -> Result<()> {
+        if self.profile_dir.trim().is_empty() {
             return Err(AppError::ConfigurationInvalid(
-                "target_timeout_ms must be greater than zero".to_owned(),
+                "browser profile_dir must not be empty".to_owned(),
             ));
+        }
+        if self.connect_timeout_ms == 0 || self.page_timeout_ms == 0 {
+            return Err(AppError::ConfigurationInvalid(
+                "browser timeouts must be greater than zero".to_owned(),
+            ));
+        }
+        if !matches!(
+            self.lifecycle.as_str(),
+            "on_demand_keep_running"
+                | "on_demand_idle_close"
+                | "close_after_dispatch"
+                | "on_startup"
+        ) {
+            return Err(AppError::ConfigurationInvalid(format!(
+                "unsupported browser lifecycle '{}'",
+                self.lifecycle
+            )));
         }
         Ok(())
     }
@@ -153,12 +319,10 @@ impl HotkeyConfig {
 pub struct GeneralConfig {
     #[serde(default)]
     pub start_on_login: bool,
-    #[serde(default = "default_true")]
-    pub reuse_open_provider_tab: bool,
     #[serde(default)]
     pub auto_submit: bool,
-    #[serde(default = "default_true")]
-    pub restore_clipboard: bool,
+    #[serde(default = "default_true", alias = "restore_clipboard")]
+    pub clipboard_fallback: bool,
     #[serde(default)]
     pub debug_logging: bool,
 }
@@ -167,9 +331,8 @@ impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
             start_on_login: false,
-            reuse_open_provider_tab: true,
             auto_submit: false,
-            restore_clipboard: true,
+            clipboard_fallback: true,
             debug_logging: false,
         }
     }
@@ -177,20 +340,26 @@ impl Default for GeneralConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BrowserConfig {
-    #[serde(default = "default_preferred_browser")]
-    pub preferred_browser: String,
-    #[serde(default = "default_target_timeout_ms")]
-    pub target_timeout_ms: u32,
-    #[serde(default = "default_paste_retry_count")]
-    pub paste_retry_count: u8,
+    #[serde(default)]
+    pub chrome_path: Option<String>,
+    #[serde(default = "default_profile_dir")]
+    pub profile_dir: String,
+    #[serde(default = "default_browser_lifecycle")]
+    pub lifecycle: String,
+    #[serde(default = "default_connect_timeout_ms")]
+    pub connect_timeout_ms: u64,
+    #[serde(default = "default_page_timeout_ms", alias = "target_timeout_ms")]
+    pub page_timeout_ms: u64,
 }
 
 impl Default for BrowserConfig {
     fn default() -> Self {
         Self {
-            preferred_browser: default_preferred_browser(),
-            target_timeout_ms: default_target_timeout_ms(),
-            paste_retry_count: default_paste_retry_count(),
+            chrome_path: None,
+            profile_dir: default_profile_dir(),
+            lifecycle: default_browser_lifecycle(),
+            connect_timeout_ms: default_connect_timeout_ms(),
+            page_timeout_ms: default_page_timeout_ms(),
         }
     }
 }
@@ -227,57 +396,20 @@ fn default_true() -> bool {
     true
 }
 
-fn default_preferred_browser() -> String {
-    "system_default".to_owned()
+fn default_profile_dir() -> String {
+    r"%LOCALAPPDATA%\AskBridge\BrowserProfile".to_owned()
 }
 
-const fn default_target_timeout_ms() -> u32 {
+fn default_browser_lifecycle() -> String {
+    "on_demand_keep_running".to_owned()
+}
+
+const fn default_connect_timeout_ms() -> u64 {
     10_000
 }
 
-const fn default_paste_retry_count() -> u8 {
-    3
-}
-
-fn default_providers() -> Vec<ProviderConfig> {
-    vec![
-        ProviderConfig {
-            id: "chatgpt".to_owned(),
-            display_name: "ChatGPT".to_owned(),
-            enabled: true,
-            new_chat_url: "https://chatgpt.com/".to_owned(),
-            url_match_patterns: vec!["https://chatgpt.com/".to_owned()],
-            browser_profile: None,
-            is_custom: false,
-        },
-        ProviderConfig {
-            id: "gemini".to_owned(),
-            display_name: "Gemini".to_owned(),
-            enabled: true,
-            new_chat_url: "https://gemini.google.com/app".to_owned(),
-            url_match_patterns: vec!["https://gemini.google.com/".to_owned()],
-            browser_profile: None,
-            is_custom: false,
-        },
-        ProviderConfig {
-            id: "claude".to_owned(),
-            display_name: "Claude".to_owned(),
-            enabled: true,
-            new_chat_url: "https://claude.ai/new".to_owned(),
-            url_match_patterns: vec!["https://claude.ai/".to_owned()],
-            browser_profile: None,
-            is_custom: false,
-        },
-        ProviderConfig {
-            id: "doubao".to_owned(),
-            display_name: "豆包".to_owned(),
-            enabled: true,
-            new_chat_url: "https://www.doubao.com/chat/".to_owned(),
-            url_match_patterns: vec!["https://www.doubao.com/".to_owned()],
-            browser_profile: None,
-            is_custom: false,
-        },
-    ]
+const fn default_page_timeout_ms() -> u64 {
+    15_000
 }
 
 #[cfg(test)]
@@ -294,6 +426,8 @@ mod tests {
             "Alt+Shift+Q"
         );
         assert_eq!(config.hotkeys.text_only_prompt.to_string(), "Alt+A");
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(config.merged_providers().expect("providers").len(), 4);
     }
 
     #[test]
@@ -316,21 +450,23 @@ mod tests {
 
     #[test]
     fn missing_fields_receive_defaults() {
-        let config: AppConfig =
+        let mut config: AppConfig =
             serde_json::from_str(r#"{"schema_version":1}"#).expect("parse partial config");
+        assert!(config.migrate().expect("migrate old config"));
         assert_eq!(config.default_provider_id, "chatgpt");
         assert_eq!(config.hotkeys, HotkeyConfig::default());
-        assert_eq!(config.providers.len(), 4);
+        assert_eq!(config.merged_providers().expect("providers").len(), 4);
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
     }
 
     #[test]
     fn rejects_newer_schema() {
-        let config = AppConfig {
+        let mut config = AppConfig {
             schema_version: CURRENT_SCHEMA_VERSION + 1,
             ..AppConfig::default()
         };
         assert!(matches!(
-            config.validate(),
+            config.migrate(),
             Err(AppError::UnsupportedConfigurationSchema { .. })
         ));
     }
@@ -341,5 +477,61 @@ mod tests {
         hotkeys.capture_with_prompt.enabled = false;
         hotkeys.restore_defaults();
         assert_eq!(hotkeys, HotkeyConfig::default());
+    }
+
+    #[test]
+    fn migrates_legacy_provider_list_to_overrides_and_custom_providers() {
+        let mut config: AppConfig = serde_json::from_str(
+            r#"{
+                "schema_version": 1,
+                "default_provider_id": "example",
+                "providers": [
+                    {
+                        "id": "chatgpt",
+                        "display_name": "ChatGPT",
+                        "enabled": false,
+                        "new_chat_url": "https://chatgpt.com/",
+                        "url_match_patterns": ["https://chatgpt.com/"],
+                        "is_custom": false
+                    },
+                    {
+                        "id": "example",
+                        "display_name": "Example",
+                        "enabled": true,
+                        "new_chat_url": "https://example.com/chat",
+                        "url_match_patterns": ["https://example.com/"],
+                        "is_custom": true
+                    }
+                ],
+                "general": { "auto_submit": true }
+            }"#,
+        )
+        .expect("parse legacy config");
+
+        assert!(config.migrate().expect("migrate legacy config"));
+        assert!(!config.general.auto_submit);
+        assert_eq!(config.provider_overrides.len(), 1);
+        assert_eq!(config.custom_providers.len(), 1);
+        assert_eq!(config.default_provider_id, "example");
+        assert_eq!(config.merged_providers().expect("providers").len(), 5);
+    }
+
+    #[test]
+    fn serialized_config_keeps_built_ins_out_of_user_configuration() {
+        let value = serde_json::to_value(AppConfig::default()).expect("serialize config");
+
+        assert!(value.get("providers").is_none());
+        assert_eq!(value["provider_overrides"], serde_json::json!([]));
+        assert_eq!(value["custom_providers"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn rejects_auto_submit_in_current_schema() {
+        let mut config = AppConfig::default();
+        config.general.auto_submit = true;
+
+        assert!(config.validate().is_err());
+        assert!(config.migrate().expect("normalize compatibility field"));
+        assert!(!config.general.auto_submit);
     }
 }

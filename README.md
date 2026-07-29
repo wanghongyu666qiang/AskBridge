@@ -1,6 +1,8 @@
 # AskBridge
 
-AskBridge 是一个面向 Windows 10/11 的超轻量桌面快捷操作层。当前仓库实现开发基线中的 Phase 0 与 Phase 1：原生 Win32 托盘、全局快捷键、配置持久化、单实例和最小快捷键设置入口。
+AskBridge 是一个面向 Windows 10/11 的超轻量桌面快捷操作层。当前仓库实现开发基线中的 Phase 0 至 Phase 2：原生 Win32 托盘、全局快捷键、配置持久化、单实例、最小快捷键设置入口和区域截图模块。
+
+当前功能和架构基线见 [`docs/DEVELOPMENT_SPEC.md`](docs/DEVELOPMENT_SPEC.md)。
 
 ## 当前能力
 
@@ -12,13 +14,18 @@ AskBridge 是一个面向 Windows 10/11 的超轻量桌面快捷操作层。当�
 - 快捷键可在托盘“设置…”中修改、禁用、恢复默认，并在应用后立即生效。
 - 修改快捷键时先占用新组合；系统注册或配置保存失败时保留旧组合。
 - 检测 AskBridge 内部重复、缺少修饰键、危险系统组合和被其他程序占用的组合。
-- 配置保存至 `%LOCALAPPDATA%\AskBridge\config.json`；损坏配置会备份为 `config.corrupt-<timestamp>.json` 并恢复默认值。
+- 配置使用 schema v3 并保存至 `%LOCALAPPDATA%\AskBridge\config.json`；旧配置会迁移，损坏配置会备份为 `config.corrupt-<timestamp>.json` 并恢复默认值。
 - 使用当前用户会话的命名互斥体保证只有一个托盘实例；第二次启动会通知已有实例打开设置。
-- 快捷键触发后记录不含用户内容的结构化事件，并显示轻量托盘通知。
+- `Alt+Q` 和 `Alt+Shift+Q` 会打开覆盖虚拟桌面的原生区域选择遮罩。
+- 截图选择支持反向拖动、负坐标显示器、当前尺寸提示、`Esc`/右键取消和高 DPI。
+- 确认选区后先隐藏遮罩并同步桌面合成，再通过 GDI 捕获实际屏幕像素，遮罩不会进入截图。
+- 截图以 RGBA 像素保存在内存中；独立 PNG 编码器供后续网页上传流程使用。
+- 截图成功或取消都不会修改系统剪贴板，也不会把截图落盘。
+- 结构化日志只记录命令、状态、尺寸和 RGBA 字节数，不记录截图内容。
 
 ## 当前明确不包含
 
-Phase 0/1 不实现真实截图、问题输入框、剪贴板操作、网页自动粘贴、浏览器扩展、开机启动和安装器。项目不使用 Electron、Tauri、Python、WebView、本地 HTTP 服务或内嵌浏览器。
+Phase 0–2 不实现问题输入框、专用 Chrome、CDP、网页适配器、开机启动和安装器。浏览器扩展不属于正式架构。项目不使用 Electron、Tauri、Python、WebView 或内嵌浏览器；正式程序不启动本地 HTTP 服务，后续测试进程可以按开发规格仅临时监听 `127.0.0.1` 随机端口。
 
 ## 架构
 
@@ -27,7 +34,8 @@ askbridge-core
   领域命令、配置模型、Provider、快捷键解析/校验、统一错误、配置仓储
 
 askbridge-win
-  Win32 消息循环、单实例、RegisterHotKey、系统托盘、原生设置窗口
+  Win32 消息循环、单实例、RegisterHotKey、系统托盘、原生设置窗口、
+  多显示器枚举、截图遮罩、GDI 屏幕捕获、RGBA 转换和 PNG 编码
 ```
 
 核心配置和规则不依赖 UI；Windows handle 由对应的 RAII 对象释放。常驻路径没有轮询、网络请求或高频计时器。
@@ -37,7 +45,7 @@ askbridge-win
 需要 stable Rust 和 Windows GNU 或 MSVC 构建链。
 
 ```powershell
-cargo fmt
+cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo build --workspace
@@ -61,3 +69,13 @@ cargo build --workspace --release
 3. 从托盘打开设置，修改一个快捷键并应用，确认旧组合失效、新组合立即生效。
 4. 尝试重复组合、`Ctrl+C` 或已被系统占用的组合，确认配置不生效且原组合仍可用。
 5. 取消“启用”后应用，再使用“恢复默认”确认两种操作均立即生效并在重启后保留。
+
+## 手工验收 Phase 2
+
+1. 按 `Alt+Q`，确认虚拟桌面被半透明遮罩覆盖并显示操作说明。
+2. 从任意方向拖动鼠标，确认选区透明、边框可见且尺寸实时更新。
+3. 在剪贴板中预先放置可识别内容，按 `Esc` 或右键取消，确认剪贴板不变。
+4. 完成非零选区，确认遮罩立即隐藏并出现“截图已捕获”及正确尺寸提示。
+5. 再次检查预先放置的剪贴板内容，确认截图成功路径同样没有修改剪贴板。
+6. 运行自动化测试，确认 BGRA→RGBA 转换、RGBA 缓冲区校验和内存 PNG 文件头测试通过。
+7. 在 125%/150% 缩放、左侧负坐标副屏和跨屏选区场景重复验证。

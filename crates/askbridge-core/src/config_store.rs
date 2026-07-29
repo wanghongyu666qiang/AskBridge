@@ -17,6 +17,7 @@ pub struct ConfigLoad {
     pub config: AppConfig,
     pub recovered_from: Option<PathBuf>,
     pub created_default: bool,
+    pub migrated: bool,
 }
 
 impl ConfigStore {
@@ -36,15 +37,22 @@ impl ConfigStore {
                 config,
                 recovered_from: None,
                 created_default: true,
+                migrated: false,
             });
         }
 
-        match self.load() {
-            Ok(config) => Ok(ConfigLoad {
-                config,
-                recovered_from: None,
-                created_default: false,
-            }),
+        match self.load_with_migration() {
+            Ok((config, migrated)) => {
+                if migrated {
+                    self.save(&config)?;
+                }
+                Ok(ConfigLoad {
+                    config,
+                    recovered_from: None,
+                    created_default: false,
+                    migrated,
+                })
+            }
             Err(AppError::ConfigurationParse { .. })
             | Err(AppError::ConfigurationInvalid(_))
             | Err(AppError::UnsupportedConfigurationSchema { .. })
@@ -59,6 +67,7 @@ impl ConfigStore {
                     config,
                     recovered_from: Some(backup_path),
                     created_default: true,
+                    migrated: false,
                 })
             }
             Err(error) => Err(error),
@@ -66,16 +75,20 @@ impl ConfigStore {
     }
 
     pub fn load(&self) -> Result<AppConfig> {
+        self.load_with_migration().map(|(config, _)| config)
+    }
+
+    fn load_with_migration(&self) -> Result<(AppConfig, bool)> {
         let bytes = fs::read(&self.path)
             .map_err(|source| AppError::io("reading configuration", &self.path, source))?;
-        let config = serde_json::from_slice::<AppConfig>(&bytes).map_err(|source| {
+        let mut config = serde_json::from_slice::<AppConfig>(&bytes).map_err(|source| {
             AppError::ConfigurationParse {
                 path: self.path.clone(),
                 source,
             }
         })?;
-        config.validate()?;
-        Ok(config)
+        let migrated = config.migrate()?;
+        Ok((config, migrated))
     }
 
     pub fn save(&self, config: &AppConfig) -> Result<()> {
@@ -172,6 +185,7 @@ mod tests {
         let store = ConfigStore::new(directory.path().join("config.json"));
         let loaded = store.load_or_create().expect("create default");
         assert!(loaded.created_default);
+        assert!(!loaded.migrated);
         assert!(store.path().exists());
         assert_eq!(loaded.config, AppConfig::default());
     }
@@ -193,5 +207,34 @@ mod tests {
             store.load().expect("load recovered config"),
             AppConfig::default()
         );
+    }
+
+    #[test]
+    fn migrates_and_persists_older_configuration() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("config.json");
+        fs::write(
+            &path,
+            br#"{
+                "schema_version": 1,
+                "hotkeys": {},
+                "general": { "auto_submit": true }
+            }"#,
+        )
+        .expect("write old config");
+        let store = ConfigStore::new(&path);
+
+        let loaded = store.load_or_create().expect("migrate config");
+
+        assert!(loaded.migrated);
+        assert!(!loaded.config.general.auto_submit);
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(path).expect("read migrated config"))
+                .expect("parse migrated config");
+        assert_eq!(
+            persisted["schema_version"],
+            crate::config::CURRENT_SCHEMA_VERSION
+        );
+        assert_eq!(persisted["general"]["auto_submit"], false);
     }
 }
