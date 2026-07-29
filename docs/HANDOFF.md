@@ -12,7 +12,7 @@ Phase 3 已推送基线：`6a1d31b Implement Phase 3 request workflow and prompt
 
 - 仓库内的 [`docs/DEVELOPMENT_SPEC.md`](DEVELOPMENT_SPEC.md) 是当前唯一开发基线。
 - Phase 0–3 已提交并推送到 `main` 与 `origin/main`；Phase 3 范围见 [`PHASE_3_PLAN.md`](PHASE_3_PLAN.md)。
-- 本轮额外修复真实 Windows Shell 托盘回调无法到达 Runtime 的问题。
+- 本轮额外修复真实 Windows Shell 托盘回调无法到达 Runtime，以及截图拖选时遮罩闪烁的问题。
 - Phase 4 的专用 Chrome、CDP、页面目标和网页投递尚未开始。
 - 正式程序不使用 Electron、Tauri、Python、WebView、浏览器扩展或本地 HTTP 服务。
 
@@ -20,10 +20,11 @@ Phase 3 已推送基线：`6a1d31b Implement Phase 3 request workflow and prompt
 
 `main` 与 `origin/main` 的 Phase 3 基线为 `6a1d31b`。本交接随托盘回调修复一并提交和推送；最终提交哈希以 `git log -1` 为准。
 
-本轮托盘修复修改：
+本轮稳定性修复修改：
 
 - `crates/askbridge-win/src/app.rs`
 - `crates/askbridge-win/src/capture/mod.rs`
+- `crates/askbridge-win/src/capture/overlay.rs`
 - `crates/askbridge-win/src/tray.rs`
 - `docs/HANDOFF.md`
 
@@ -42,6 +43,8 @@ Phase 3 已推送基线：`6a1d31b Implement Phase 3 request workflow and prompt
 - Shell 托盘回调先在 `WndProc` 接收，再转发为独立队列消息交给 Runtime；不再错误地假设所有托盘回调都会由 `GetMessage` 返回。
 - 托盘图标在 `NIM_ADD` 后协商 `NOTIFYICON_VERSION_4`，并按 `LOWORD(lParam)` 解码 v4 打包事件。
 - 托盘回调、单实例激活、截图忙碌和 Runtime 转发使用互不重叠的私有消息编号。
+- 截图拖动不再为每个 `WM_MOUSEMOVE` 强制同步整窗重绘；连续事件由 Windows 合并为延迟重绘，重复坐标不触发绘制。
+- 遮罩、透明选区、边框和文字先在兼容内存位图中完成，再通过一次 `BitBlt` 显示，避免分层窗口暴露中间绘制帧。
 
 ### 4. 自动检查与构建产物
 
@@ -49,14 +52,14 @@ Phase 3 已推送基线：`6a1d31b Implement Phase 3 request workflow and prompt
 
 - `cargo fmt --all -- --check`：通过；
 - `cargo clippy --workspace --all-targets -- -D warnings`：通过；
-- `cargo test --workspace`：48 个通过，0 个失败；
+- `cargo test --workspace`：49 个通过，0 个失败；
 - `cargo build --workspace`：通过；
 - `cargo build --workspace --release`：通过。
 
 | 产物 | 大小 | SHA-256 |
 | --- | ---: | --- |
-| `target\debug\askbridge.exe` | 21,185,288 bytes | `F78DB9ABD882934224AF9BFE6A882237380AB4EFF3C5288513DAA0EC234ECAB3` |
-| `target\release\askbridge.exe` | 622,592 bytes | `A918FB9F01993780B05F178CEC438E0C3D801F942A4C8C4BD780B8A8F7F2BB93` |
+| `target\debug\askbridge.exe` | 21,190,260 bytes | `357333E9D18FB0AA1E4F8DC5DFC108AC227B9BC42A48D6337BA9FC91B1A85B6F` |
+| `target\release\askbridge.exe` | 623,104 bytes | `874E67077507862308A0FFD6413789071985F6BA7AF609C49D8789E304847323` |
 
 真实 Windows 11 托盘溢出面板验证已完成：
 
@@ -64,7 +67,9 @@ Phase 3 已推送基线：`6a1d31b Implement Phase 3 request workflow and prompt
 - 自动探针先打开隐藏图标面板，再按 `Shell_NotifyIconGetRect` 定位实际 AskBridge 图标并执行真实右键；
 - 修复前稳定无回调，修复后收到 v4 打包的右键按下/释放事件并成功创建菜单；
 - 回归测试覆盖非队列 Shell 回调从 `WndProc` 转发到 Runtime 队列；
-- 所有临时探针、调试日志和可执行文件已删除，当前没有残留的 AskBridge 或探针进程。
+- 所有临时探针、调试日志和可执行文件已删除。
+- 用户已在真实桌面按 `Alt+Q` 连续移动鼠标框选，确认修复后不再闪烁。
+- 当前保留一个修复后的 Debug AskBridge 实例供继续使用，没有残留探针进程。
 
 问题窗口、键盘操作、三条入口和截图拖选的完整人工矩阵仍需继续验收，不能仅凭托盘菜单通过标记为全部完成。
 

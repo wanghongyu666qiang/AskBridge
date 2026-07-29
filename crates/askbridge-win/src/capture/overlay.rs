@@ -6,8 +6,9 @@ use windows_sys::Win32::{
     Graphics::{
         Dwm::DwmFlush,
         Gdi::{
-            BeginPaint, CreateSolidBrush, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteObject,
-            DrawTextW, EndPaint, FillRect, FrameRect, InvalidateRect, PAINTSTRUCT, SetBkMode,
+            BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
+            DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, EndPaint,
+            FillRect, FrameRect, InvalidateRect, PAINTSTRUCT, SRCCOPY, SelectObject, SetBkMode,
             SetTextColor, TRANSPARENT, UpdateWindow,
         },
     },
@@ -233,6 +234,20 @@ impl OverlayState {
     fn selection(&self) -> Option<ScreenRect> {
         ScreenRect::from_points(self.anchor?, self.current?)
     }
+
+    fn update_drag(&mut self, point: (i32, i32)) -> RepaintRequest {
+        if self.anchor.is_none() || self.current == Some(point) {
+            return RepaintRequest::None;
+        }
+        self.current = Some(point);
+        RepaintRequest::Deferred
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepaintRequest {
+    None,
+    Deferred,
 }
 
 struct OverlayWindow(HWND);
@@ -292,12 +307,13 @@ unsafe extern "system" fn overlay_window_proc(
             0
         }
         WM_MOUSEMOVE => {
-            if state.anchor.is_some() {
-                state.current = Some(mouse_point(lparam));
-                // SAFETY: window is live and a full repaint is intended.
-                unsafe {
-                    InvalidateRect(window, ptr::null(), 0);
-                    UpdateWindow(window);
+            match state.update_drag(mouse_point(lparam)) {
+                RepaintRequest::None => {}
+                RepaintRequest::Deferred => {
+                    // SAFETY: window is live; consecutive invalidations may be coalesced.
+                    unsafe {
+                        InvalidateRect(window, ptr::null(), 0);
+                    }
                 }
             }
             0
@@ -356,7 +372,59 @@ fn paint_overlay(window: HWND, state: &OverlayState) {
         }
         let mut client = RECT::default();
         GetClientRect(window, &mut client);
-        fill(device_context, &client, COLOR_OVERLAY);
+        let width = client.right - client.left;
+        let height = client.bottom - client.top;
+        let memory_context = CreateCompatibleDC(device_context);
+        let bitmap = if memory_context.is_null() || width <= 0 || height <= 0 {
+            ptr::null_mut()
+        } else {
+            CreateCompatibleBitmap(device_context, width, height)
+        };
+        if memory_context.is_null() || bitmap.is_null() {
+            if !memory_context.is_null() {
+                DeleteDC(memory_context);
+            }
+            draw_overlay_frame(device_context, &client, state);
+            EndPaint(window, &paint);
+            return;
+        }
+
+        let previous_bitmap = SelectObject(memory_context, bitmap);
+        if previous_bitmap.is_null() {
+            DeleteObject(bitmap);
+            DeleteDC(memory_context);
+            draw_overlay_frame(device_context, &client, state);
+            EndPaint(window, &paint);
+            return;
+        }
+
+        draw_overlay_frame(memory_context, &client, state);
+        BitBlt(
+            device_context,
+            client.left,
+            client.top,
+            width,
+            height,
+            memory_context,
+            0,
+            0,
+            SRCCOPY,
+        );
+        SelectObject(memory_context, previous_bitmap);
+        DeleteObject(bitmap);
+        DeleteDC(memory_context);
+        EndPaint(window, &paint);
+    }
+}
+
+unsafe fn draw_overlay_frame(
+    device_context: *mut core::ffi::c_void,
+    client: &RECT,
+    state: &OverlayState,
+) {
+    // SAFETY: device_context is a live paint or compatible memory DC.
+    unsafe {
+        fill(device_context, client, COLOR_OVERLAY);
 
         if let Some(selection) = state.selection() {
             let selection_rect = RECT {
@@ -367,10 +435,9 @@ fn paint_overlay(window: HWND, state: &OverlayState) {
             };
             fill(device_context, &selection_rect, COLOR_KEY);
             frame(device_context, &selection_rect, COLOR_BORDER);
-            draw_size_label(device_context, &client, &selection_rect, selection);
+            draw_size_label(device_context, client, &selection_rect, selection);
         }
-        draw_instructions(device_context, &client);
-        EndPaint(window, &paint);
+        draw_instructions(device_context, client);
     }
 }
 
@@ -488,5 +555,18 @@ mod tests {
             ((20_u32 << 16) | u16::from_ne_bytes((-30_i16).to_ne_bytes()) as u32) as LPARAM;
 
         assert_eq!(mouse_point(packed), (-30, 20));
+    }
+
+    #[test]
+    fn drag_updates_request_deferred_repaint() {
+        let mut state = OverlayState {
+            anchor: Some((10, 10)),
+            current: Some((10, 10)),
+            outcome: OverlayOutcome::Pending,
+        };
+
+        assert_eq!(state.update_drag((20, 30)), RepaintRequest::Deferred);
+        assert_eq!(state.current, Some((20, 30)));
+        assert_eq!(state.update_drag((20, 30)), RepaintRequest::None);
     }
 }
