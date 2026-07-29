@@ -1,4 +1,83 @@
-# AskBridge 项目交接文档（v2.1 对齐后）
+# AskBridge 项目交接文档（Phase 3）
+
+更新时间：2026-07-29
+项目目录：`D:\AskBridge`
+远端仓库：`https://github.com/wanghongyu666qiang/AskBridge.git`
+当前分支：`main`
+最后已推送提交：`92ad103 feat: align v2.1 and implement Phase 2 capture`
+
+## 当前有效交接信息
+
+### 1. 基线与范围
+
+- 仓库内的 [`docs/DEVELOPMENT_SPEC.md`](DEVELOPMENT_SPEC.md) 是当前唯一开发基线。
+- Phase 0–2 和 v2.1 校正已提交并推送到 `main` 与 `origin/main`。
+- 用户已明确授权进入 Phase 3；当前实现范围见 [`PHASE_3_PLAN.md`](PHASE_3_PLAN.md)。
+- 本轮只实现原生问题窗口、三种请求工作流、`DispatchRequest` 和并发状态保护。
+- Phase 4 的专用 Chrome、CDP、页面目标和网页投递尚未开始。
+- 正式程序不使用 Electron、Tauri、Python、WebView、浏览器扩展或本地 HTTP 服务。
+
+### 2. 当前 Git 状态
+
+`main` 与 `origin/main` 的已推送基线为 `92ad103`。Phase 3 当前在工作树中实现，尚未提交、尚未推送。
+
+当前 Phase 3 修改：
+
+- `README.md`
+- `crates/askbridge-core/src/capture.rs`
+- `crates/askbridge-core/src/error.rs`
+- `crates/askbridge-core/src/lib.rs`
+- `crates/askbridge-core/src/request.rs`
+- `crates/askbridge-core/src/workflow.rs`
+- `crates/askbridge-win/src/app.rs`
+- `crates/askbridge-win/src/capture/mod.rs`
+- `crates/askbridge-win/src/capture/overlay.rs`
+- `crates/askbridge-win/src/main.rs`
+- `crates/askbridge-win/src/prompt.rs`
+- `docs/DEVELOPMENT_SPEC.md`
+- `docs/HANDOFF.md`
+- `docs/PHASE_3_PLAN.md`
+
+### 3. Phase 3 当前实现
+
+- `DispatchMode` 将三条入口映射为截图提问、默认问题截图和纯文字模式。
+- `DispatchRequest` 校验 ID、供应商、问题和图片不变量。
+- `auto_submit` 在构造和反序列化时均固定为 `false`。
+- `WorkflowController` 约束 `Idle`、`SelectingRegion`、`Prompting`、`PreparingDispatch`、取消和错误恢复。
+- 原生 Win32 问题窗口包含启用供应商下拉框、多行输入、继续和取消。
+- `Enter` 继续，`Shift+Enter` 换行，`Esc` 取消，`Tab` 切换焦点；供应商下拉框保留标准方向键行为。
+- 截图提问保留内存 `CapturedImage` 直到用户完成问题；快速截图使用默认供应商和 `quick_prompt`；文字入口不创建图片。
+- 已有问题窗口会被置前；其余忙碌状态拒绝启动第二个工作流。
+- Phase 3 请求交接只记录请求 ID、模式、供应商、是否带图和 `auto_submit=false`，不记录问题或图片内容。
+- 请求准备后显示 Phase 4 尚未接入的提示并安全回到 `Idle`。
+
+### 4. 自动检查与构建产物
+
+以下检查已在当前 Phase 3 源码上通过：
+
+- `cargo fmt --all -- --check`：通过；
+- `cargo clippy --workspace --all-targets -- -D warnings`：通过；
+- `cargo test --workspace`：43 个通过，0 个失败；
+- `cargo build --workspace`：通过；
+- `cargo build --workspace --release`：通过。
+
+| 产物 | 大小 | SHA-256 |
+| --- | ---: | --- |
+| `target\debug\askbridge.exe` | 21,181,881 bytes | `3AE9AC2AE1D70F3E8B3C5DE3E9FC1590A8817E9BAAEC1BD3D2F1EFC8C8403920` |
+| `target\release\askbridge.exe` | 621,568 bytes | `3C19CD6411D3550083C560C583C61DEBDFF8ADD6166A329D32A42F0069B1F615` |
+
+当前没有残留的 `askbridge.exe` 进程。桌面端手工验收尚未执行，不能提前标记完成。
+
+### 5. 下一步
+
+1. 审查 Phase 3 diff 和隐私边界。
+2. 在获得桌面启动许可后，手工验证问题窗口、键盘操作和三条入口。
+3. 更新本交接文档中的手工结果。
+4. 输出 Phase 3 检查点并停止；没有用户新授权不得进入 Phase 4。
+
+---
+
+# Phase 2 交接快照（历史，仅供追溯）
 
 更新时间：2026-07-29
 项目目录：`D:\AskBridge`

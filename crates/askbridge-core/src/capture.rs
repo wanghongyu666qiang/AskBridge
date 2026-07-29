@@ -50,7 +50,7 @@ impl ScreenRect {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapturedImage {
     pub width: u32,
     pub height: u32,

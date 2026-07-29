@@ -6,6 +6,7 @@ compile_error!("askbridge-win supports Windows only");
 mod app;
 mod capture;
 mod hotkey_manager;
+mod prompt;
 mod settings;
 mod single_instance;
 mod tray;

@@ -72,6 +72,15 @@ pub enum AppError {
     #[error("invalid provider URL: {0}")]
     InvalidProviderUrl(String),
 
+    #[error("invalid dispatch request: {0}")]
+    InvalidDispatchRequest(String),
+
+    #[error("workflow is busy in state {0}")]
+    WorkflowBusy(String),
+
+    #[error("workflow event '{event}' is invalid in state {state}")]
+    InvalidWorkflowTransition { state: String, event: String },
+
     #[error("browser launch failed")]
     BrowserLaunchFailed,
 

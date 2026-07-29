@@ -5,7 +5,9 @@ pub mod config_store;
 pub mod error;
 pub mod hotkey;
 pub mod provider;
+pub mod request;
 pub mod state;
+pub mod workflow;
 
 pub use capture::{CapturedImage, ScreenRect};
 pub use command::AppCommand;
@@ -14,4 +16,6 @@ pub use config_store::{ConfigLoad, ConfigStore};
 pub use error::{AppError, Result};
 pub use hotkey::{HotkeyBinding, HotkeyValidationError, ModifierKey, VirtualKey};
 pub use provider::{ProviderConfig, ProviderOverride};
+pub use request::{DispatchMode, DispatchRequest};
 pub use state::AppState;
+pub use workflow::WorkflowController;

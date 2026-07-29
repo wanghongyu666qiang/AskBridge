@@ -1,6 +1,16 @@
-use std::{env, mem::zeroed, path::PathBuf, ptr};
+use std::{
+    env,
+    mem::zeroed,
+    path::PathBuf,
+    ptr,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use askbridge_core::{AppCommand, AppConfig, AppError, ConfigStore, HotkeyConfig, Result};
+use askbridge_core::{
+    AppCommand, AppConfig, AppError, AppState, CapturedImage, ConfigStore, DispatchMode,
+    DispatchRequest, HotkeyConfig, Result, WorkflowController,
+};
 use tracing::{error, info, warn};
 use windows_sys::Win32::{
     Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
@@ -8,18 +18,24 @@ use windows_sys::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
+        Input::KeyboardAndMouse::{GetKeyState, VK_ESCAPE, VK_RETURN, VK_SHIFT},
         WindowsAndMessaging::{
             CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
-            DispatchMessageW, GetMessageW, IDC_ARROW, LoadCursorW, MSG, PostQuitMessage,
-            RegisterClassW, TranslateMessage, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_HOTKEY,
-            WM_LBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSW, WNDPROC, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+            DispatchMessageW, GetMessageW, IDC_ARROW, IsDialogMessageW, LoadCursorW, MSG,
+            PostQuitMessage, RegisterClassW, TranslateMessage, WM_CLOSE, WM_COMMAND,
+            WM_CONTEXTMENU, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSW,
+            WNDPROC, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
         },
     },
 };
 
 use crate::{
-    capture::{CaptureOutcome, CaptureService},
+    capture::{CaptureOutcome, CaptureService, WM_CAPTURE_BUSY},
     hotkey_manager::HotkeyManager,
+    prompt::{
+        CONTROL_PROMPT_CANCEL, CONTROL_PROMPT_SUBMIT, PROMPT_CLASS, PromptWindow,
+        prompt_window_proc,
+    },
     settings::{
         CONTROL_APPLY, CONTROL_CLOSE, CONTROL_RESTORE_DEFAULTS, SETTINGS_CLASS, SettingsWindow,
         settings_window_proc,
@@ -31,6 +47,8 @@ use crate::{
     },
     util::{last_error, wide},
 };
+
+static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 pub fn run() -> Result<()> {
     init_logging();
@@ -62,6 +80,7 @@ pub fn run() -> Result<()> {
     let instance = module as HINSTANCE;
     register_window_class(MAIN_WINDOW_CLASS, instance, Some(window_proc))?;
     register_window_class(SETTINGS_CLASS, instance, Some(settings_window_proc))?;
+    register_window_class(PROMPT_CLASS, instance, Some(prompt_window_proc))?;
 
     let main_window = MainWindow::create(instance)?;
     let capture = CaptureService::new(instance, main_window.hwnd())?;
@@ -69,14 +88,18 @@ pub fn run() -> Result<()> {
     let registration_errors = hotkeys.register_initial(&loaded.config.hotkeys);
     let tray = TrayIcon::create(main_window.hwnd())?;
     let settings = SettingsWindow::create(ptr::null_mut(), instance, &loaded.config.hotkeys)?;
+    let prompt = PromptWindow::create(instance)?;
 
     let mut runtime = Runtime {
         capture,
         hotkeys,
         tray,
         settings,
+        prompt,
         config: loaded.config,
         store,
+        workflow: WorkflowController::default(),
+        pending_prompt: None,
         paused: false,
         _main_window: main_window,
     };
@@ -122,10 +145,18 @@ fn user_facing_error(error: &AppError) -> String {
         AppError::ConfigurationInvalid(details) => format!("配置无效：{details}"),
         AppError::CaptureCancelled => "截图已取消。".to_owned(),
         AppError::CaptureFailed(details) => format!("截图失败：{details}"),
+        AppError::InvalidDispatchRequest(details) => format!("问题无法继续：{details}"),
+        AppError::InvalidProvider(details) => format!("供应商无效：{details}"),
+        AppError::WorkflowBusy(_) => "另一个操作尚未完成。".to_owned(),
         AppError::ClipboardUnavailable => "剪贴板正被其他程序占用，请稍后重试。".to_owned(),
         AppError::ClipboardWriteFailed => "无法将截图写入剪贴板。".to_owned(),
         _ => error.to_string(),
     }
+}
+
+struct PendingPrompt {
+    command: AppCommand,
+    image: Option<CapturedImage>,
 }
 
 struct Runtime {
@@ -134,8 +165,11 @@ struct Runtime {
     hotkeys: HotkeyManager,
     tray: TrayIcon,
     settings: SettingsWindow,
+    prompt: PromptWindow,
     config: AppConfig,
     store: ConfigStore,
+    workflow: WorkflowController,
+    pending_prompt: Option<PendingPrompt>,
     paused: bool,
     _main_window: MainWindow,
 }
@@ -156,8 +190,17 @@ impl Runtime {
             if result == 0 {
                 break;
             }
+            if self.handle_prompt_key(&message)? {
+                continue;
+            }
             if self.handle_message(&message)? {
                 continue;
+            }
+            if self.prompt.is_visible() && self.prompt.contains(message.hwnd) {
+                // SAFETY: The prompt window is live and message belongs to it or a child.
+                if unsafe { IsDialogMessageW(self.prompt.hwnd(), &message) } != 0 {
+                    continue;
+                }
             }
             // SAFETY: message was populated successfully by GetMessageW.
             unsafe {
@@ -170,11 +213,21 @@ impl Runtime {
 
     fn handle_message(&mut self, message: &MSG) -> Result<bool> {
         if message.message == ACTIVATE_MESSAGE {
-            info!("activation message received; showing settings");
-            self.settings.show();
+            if self.prompt.is_visible() {
+                info!("activation message received; focusing prompt");
+                self.prompt.focus_existing();
+            } else {
+                info!("activation message received; showing settings");
+                self.settings.show();
+            }
             return Ok(true);
         }
         match message.message {
+            WM_CAPTURE_BUSY => {
+                self.tray
+                    .notify("AskBridge 正在框选", "框选期间触发的其他快捷键已忽略。");
+                Ok(true)
+            }
             WM_HOTKEY => {
                 if !self.paused {
                     if let Some(command) = self.hotkeys.command_for_id(message.wParam as i32) {
@@ -204,8 +257,34 @@ impl Runtime {
                 self.settings.hide();
                 Ok(true)
             }
+            WM_CLOSE if message.hwnd == self.prompt.hwnd() => {
+                self.cancel_prompt();
+                Ok(true)
+            }
             _ => Ok(false),
         }
+    }
+
+    fn handle_prompt_key(&mut self, message: &MSG) -> Result<bool> {
+        if message.message != WM_KEYDOWN
+            || !self.prompt.is_visible()
+            || !self.prompt.contains(message.hwnd)
+        {
+            return Ok(false);
+        }
+        if message.wParam == usize::from(VK_ESCAPE) {
+            self.cancel_prompt();
+            return Ok(true);
+        }
+        if message.wParam == usize::from(VK_RETURN) && message.hwnd == self.prompt.editor_hwnd() {
+            // SAFETY: GetKeyState is a read-only query for the current UI thread.
+            let shift_pressed = unsafe { GetKeyState(i32::from(VK_SHIFT)) } < 0;
+            if !shift_pressed {
+                self.submit_prompt();
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn handle_command(&mut self, command: u16) -> Result<()> {
@@ -225,12 +304,36 @@ impl Runtime {
             CONTROL_APPLY => self.apply_settings(),
             CONTROL_RESTORE_DEFAULTS => self.restore_default_hotkeys(),
             CONTROL_CLOSE => self.settings.hide(),
+            CONTROL_PROMPT_SUBMIT => self.submit_prompt(),
+            CONTROL_PROMPT_CANCEL => self.cancel_prompt(),
             _ => {}
         }
         Ok(())
     }
 
     fn route_command(&mut self, command: AppCommand) {
+        if self.workflow.state() == AppState::Prompting && self.prompt.is_visible() {
+            info!(
+                command = command.event_name(),
+                "prompt already open; focusing existing workflow"
+            );
+            self.prompt.focus_existing();
+            return;
+        }
+        if !self.workflow.is_idle() {
+            info!(
+                command = command.event_name(),
+                state = ?self.workflow.state(),
+                "workflow command ignored while busy"
+            );
+            self.tray
+                .notify("AskBridge 正在处理", "当前操作尚未完成，请先完成或取消。");
+            return;
+        }
+        if let Err(error) = self.workflow.start(command) {
+            self.workflow_failed(command, error);
+            return;
+        }
         match command {
             AppCommand::CaptureWithPrompt | AppCommand::CaptureQuickDispatch => {
                 self.capture_command(command);
@@ -238,13 +341,10 @@ impl Runtime {
             AppCommand::TextOnlyPrompt => {
                 info!(
                     command = command.event_name(),
-                    phase = 2_u8,
+                    phase = 3_u8,
                     "text-only command routed"
                 );
-                self.tray.notify(
-                    "AskBridge 事件已触发",
-                    "直接文字提问将在 Phase 3 接入轻量输入框。",
-                );
+                self.open_prompt(command, None);
             }
         }
     }
@@ -252,7 +352,7 @@ impl Runtime {
     fn capture_command(&mut self, command: AppCommand) {
         info!(
             command = command.event_name(),
-            phase = 2_u8,
+            phase = 3_u8,
             "capture requested"
         );
         match self.capture.capture() {
@@ -264,13 +364,23 @@ impl Runtime {
                     rgba_bytes = image.rgba_bytes.len(),
                     "capture completed in memory"
                 );
-                self.tray.notify(
-                    "AskBridge 截图已捕获",
-                    &format!("{} × {}，已保存在内存中。", image.width, image.height),
-                );
+                if let Err(error) = self.workflow.capture_completed(command) {
+                    self.workflow_failed(command, error);
+                    return;
+                }
+                match command {
+                    AppCommand::CaptureWithPrompt => self.open_prompt(command, Some(image)),
+                    AppCommand::CaptureQuickDispatch => {
+                        let provider_id = self.config.default_provider_id.clone();
+                        let prompt = self.config.quick_prompt.clone();
+                        self.prepare_request(command, provider_id, prompt, Some(image));
+                    }
+                    AppCommand::TextOnlyPrompt => unreachable!("text command does not capture"),
+                }
             }
             Ok(CaptureOutcome::Cancelled) => {
                 info!(command = command.event_name(), "capture cancelled");
+                self.cancel_workflow();
             }
             Err(error) => {
                 error!(
@@ -278,9 +388,152 @@ impl Runtime {
                     error = %error,
                     "capture failed"
                 );
-                self.tray
-                    .notify("AskBridge 截图失败", &user_facing_error(&error));
+                self.workflow_failed(command, error);
             }
+        }
+    }
+
+    fn open_prompt(&mut self, command: AppCommand, image: Option<CapturedImage>) {
+        let providers = match self.config.merged_providers() {
+            Ok(providers) => providers,
+            Err(error) => {
+                self.workflow_failed(command, error);
+                return;
+            }
+        };
+        self.pending_prompt = Some(PendingPrompt { command, image });
+        if let Err(error) = self
+            .prompt
+            .show(&providers, &self.config.default_provider_id)
+        {
+            self.workflow_failed(command, error);
+        }
+    }
+
+    fn submit_prompt(&mut self) {
+        if self.workflow.state() != AppState::Prompting {
+            return;
+        }
+        let input = match self.prompt.read_input() {
+            Ok(input) => input,
+            Err(error) => {
+                self.prompt
+                    .set_status(&format!("无法继续：{}", user_facing_error(&error)));
+                return;
+            }
+        };
+        if input.prompt.trim().is_empty() {
+            self.prompt.set_status("请输入问题后再继续。");
+            self.prompt.focus_existing();
+            return;
+        }
+        let Some(pending) = self.pending_prompt.take() else {
+            self.workflow_failed(
+                AppCommand::TextOnlyPrompt,
+                AppError::InvalidDispatchRequest("prompt context is missing".to_owned()),
+            );
+            return;
+        };
+        if let Err(error) = self.workflow.prompt_submitted() {
+            self.workflow_failed(pending.command, error);
+            return;
+        }
+        self.prompt.hide_and_clear();
+        self.prepare_request(
+            pending.command,
+            input.provider_id,
+            input.prompt,
+            pending.image,
+        );
+    }
+
+    fn cancel_prompt(&mut self) {
+        self.prompt.hide_and_clear();
+        self.pending_prompt = None;
+        if self.workflow.state() == AppState::Prompting {
+            self.cancel_workflow();
+        }
+    }
+
+    fn prepare_request(
+        &mut self,
+        command: AppCommand,
+        provider_id: String,
+        prompt: String,
+        image: Option<CapturedImage>,
+    ) {
+        let created_at_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+            Err(error) => {
+                self.workflow_failed(
+                    command,
+                    AppError::InvalidDispatchRequest(format!(
+                        "system clock is before the Unix epoch: {error}"
+                    )),
+                );
+                return;
+            }
+        };
+        let request = DispatchRequest::new(
+            next_request_id(created_at_ms),
+            DispatchMode::from(command),
+            provider_id,
+            prompt,
+            image,
+            created_at_ms,
+        );
+        match request {
+            Ok(request) => self.handoff_phase3_request(request),
+            Err(error) => self.workflow_failed(command, error),
+        }
+    }
+
+    fn handoff_phase3_request(&mut self, request: DispatchRequest) {
+        info!(
+            request_id = %request.id,
+            mode = ?request.mode,
+            provider_id = %request.provider_id,
+            has_image = request.image.is_some(),
+            auto_submit = request.auto_submit,
+            "dispatch request prepared; browser handoff deferred to phase 4"
+        );
+        self.tray.notify(
+            "AskBridge 请求已准备",
+            "问题和目标已就绪；浏览器投递将在 Phase 4 接入。",
+        );
+        drop(request);
+        self.cancel_workflow();
+    }
+
+    fn cancel_workflow(&mut self) {
+        self.pending_prompt = None;
+        if self.workflow.is_idle() {
+            return;
+        }
+        if self.workflow.state() != AppState::Cancelling {
+            let _ = self.workflow.begin_cancelling();
+        }
+        if self.workflow.state() == AppState::Cancelling {
+            let _ = self.workflow.finish_cancelling();
+        }
+    }
+
+    fn workflow_failed(&mut self, command: AppCommand, error: AppError) {
+        error!(
+            command = command.event_name(),
+            state = ?self.workflow.state(),
+            error = %error,
+            "workflow failed"
+        );
+        self.prompt.hide_and_clear();
+        self.pending_prompt = None;
+        self.tray
+            .notify("AskBridge 无法继续", &user_facing_error(&error));
+        if !self.workflow.is_idle() && self.workflow.state() != AppState::Error {
+            let _ = self.workflow.fail();
+        }
+        if self.workflow.state() == AppState::Error {
+            let _ = self.workflow.recover();
         }
     }
 
@@ -463,6 +716,11 @@ fn config_path() -> Result<PathBuf> {
     Ok(PathBuf::from(local_app_data)
         .join("AskBridge")
         .join("config.json"))
+}
+
+fn next_request_id(created_at_ms: u64) -> String {
+    let sequence = REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("askbridge-{created_at_ms:013x}-{sequence:08x}")
 }
 
 fn init_logging() {

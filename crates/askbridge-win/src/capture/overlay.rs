@@ -16,18 +16,19 @@ use windows_sys::Win32::{
         WindowsAndMessaging::{
             CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
             DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW,
-            HWND_TOPMOST, IDC_CROSS, LWA_ALPHA, LWA_COLORKEY, LoadCursorW, MSG, PostQuitMessage,
-            RegisterClassW, SW_HIDE, SWP_SHOWWINDOW, SetForegroundWindow,
+            HWND_TOPMOST, IDC_CROSS, LWA_ALPHA, LWA_COLORKEY, LoadCursorW, MSG, PostMessageW,
+            PostQuitMessage, RegisterClassW, SW_HIDE, SWP_SHOWWINDOW, SetForegroundWindow,
             SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-            TranslateMessage, WM_CANCELMODE, WM_CLOSE, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS,
-            WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT,
-            WM_RBUTTONDOWN, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+            TranslateMessage, WM_CANCELMODE, WM_CLOSE, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN,
+            WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY,
+            WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+            WS_POPUP,
         },
     },
 };
 
 use crate::{
-    capture::monitor::DesktopLayout,
+    capture::{WM_CAPTURE_BUSY, monitor::DesktopLayout},
     util::{last_error, wide},
 };
 
@@ -144,6 +145,7 @@ pub fn select_region(
     }
 
     let mut quit_code = None;
+    let mut ignored_hotkey = false;
     while state.outcome == OverlayOutcome::Pending {
         // SAFETY: Zero is the documented initial state for MSG.
         let mut message: MSG = unsafe { zeroed() };
@@ -159,6 +161,10 @@ pub fn select_region(
             quit_code = Some(message.wParam as i32);
             state.outcome = OverlayOutcome::Cancelled;
             break;
+        }
+        if message.message == WM_HOTKEY {
+            ignored_hotkey = true;
+            continue;
         }
         // SAFETY: message was populated by GetMessageW.
         unsafe {
@@ -186,6 +192,12 @@ pub fn select_region(
         // SAFETY: Preserve the quit message consumed by the nested selection loop.
         unsafe {
             PostQuitMessage(code);
+        }
+    }
+    if ignored_hotkey {
+        // SAFETY: owner is the live AskBridge main window on the same UI thread.
+        unsafe {
+            PostMessageW(owner, WM_CAPTURE_BUSY, 0, 0);
         }
     }
 

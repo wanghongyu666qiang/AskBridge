@@ -5,7 +5,12 @@ pub(crate) mod screen;
 
 use askbridge_core::{CapturedImage, Result};
 use tracing::info;
-use windows_sys::Win32::Foundation::{HINSTANCE, HWND};
+use windows_sys::Win32::{
+    Foundation::{HINSTANCE, HWND},
+    UI::WindowsAndMessaging::WM_APP,
+};
+
+pub const WM_CAPTURE_BUSY: u32 = WM_APP + 2;
 
 pub enum CaptureOutcome {
     Captured(CapturedImage),
