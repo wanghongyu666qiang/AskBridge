@@ -1,0 +1,5 @@
+/target/
+/.idea/
+/.vscode/
+*.tmp
+artifacts/
