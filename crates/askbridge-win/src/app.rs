@@ -22,9 +22,8 @@ use windows_sys::Win32::{
         WindowsAndMessaging::{
             CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
             DispatchMessageW, GetMessageW, IDC_ARROW, IsDialogMessageW, LoadCursorW, MSG,
-            PostQuitMessage, RegisterClassW, TranslateMessage, WM_CLOSE, WM_COMMAND,
-            WM_CONTEXTMENU, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSW,
-            WNDPROC, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+            PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage, WM_CLOSE, WM_COMMAND,
+            WM_HOTKEY, WM_KEYDOWN, WNDCLASSW, WNDPROC, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
         },
     },
 };
@@ -43,7 +42,8 @@ use crate::{
     single_instance::{ACTIVATE_MESSAGE, MAIN_WINDOW_CLASS, MAIN_WINDOW_TITLE, SingleInstance},
     tray::{
         MENU_CAPTURE_QUICK, MENU_CAPTURE_WITH_PROMPT, MENU_EXIT, MENU_PAUSE, MENU_SETTINGS,
-        MENU_TEXT_ONLY, TrayIcon, WM_TRAY_CALLBACK,
+        MENU_TEXT_ONLY, TrayEvent, TrayIcon, WM_TRAY_CALLBACK, WM_TRAY_DISPATCH,
+        decode_tray_callback,
     },
     util::{last_error, wide},
 };
@@ -236,15 +236,15 @@ impl Runtime {
                 }
                 Ok(true)
             }
-            WM_TRAY_CALLBACK => {
-                match message.lParam as u32 {
-                    WM_RBUTTONUP | WM_CONTEXTMENU => {
+            WM_TRAY_DISPATCH => {
+                match decode_tray_callback(message.lParam) {
+                    TrayEvent::ContextMenu => {
                         if let Some(command) = self.tray.show_menu(self.paused)? {
                             self.handle_command(command)?;
                         }
                     }
-                    WM_LBUTTONDBLCLK => self.settings.show(),
-                    _ => {}
+                    TrayEvent::ActivateSettings => self.settings.show(),
+                    TrayEvent::Ignore => {}
                 }
                 Ok(true)
             }
@@ -705,6 +705,18 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if message == WM_TRAY_CALLBACK {
+        // Shell notification callbacks may be nonqueued. Relay them so Runtime can process them
+        // in order from its ordinary GetMessage loop without storing a raw Runtime pointer.
+        // SAFETY: The message carries only integer values and targets this live owner window.
+        if unsafe { PostMessageW(window, WM_TRAY_DISPATCH, wparam, lparam) } == 0 {
+            error!(
+                win32_code = last_error(),
+                "failed to queue tray callback for runtime dispatch"
+            );
+        }
+        return 0;
+    }
     // SAFETY: Unhandled messages are forwarded exactly as received to DefWindowProcW.
     unsafe { DefWindowProcW(window, message, wparam, lparam) }
 }
@@ -729,4 +741,82 @@ fn init_logging() {
         .with_target(false)
         .with_max_level(tracing::Level::INFO)
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_window_messages_do_not_overlap() {
+        assert_ne!(WM_TRAY_CALLBACK, ACTIVATE_MESSAGE);
+        assert_ne!(WM_TRAY_CALLBACK, WM_CAPTURE_BUSY);
+        assert_ne!(WM_TRAY_CALLBACK, WM_TRAY_DISPATCH);
+        assert_ne!(WM_TRAY_DISPATCH, ACTIVATE_MESSAGE);
+        assert_ne!(WM_TRAY_DISPATCH, WM_CAPTURE_BUSY);
+        assert_ne!(ACTIVATE_MESSAGE, WM_CAPTURE_BUSY);
+    }
+
+    #[test]
+    fn window_proc_relays_nonqueued_tray_callback() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            PM_REMOVE, PeekMessageW, SendMessageW, WM_CONTEXTMENU,
+        };
+
+        // SAFETY: A null module name requests the current test process module.
+        let module = unsafe { GetModuleHandleW(ptr::null()) };
+        assert!(!module.is_null());
+        let instance = module as HINSTANCE;
+        let class_name = "AskBridge.Test.TrayRelayWindow.v1";
+        register_window_class(class_name, instance, Some(window_proc))
+            .expect("test window class should register");
+        let class = wide(class_name);
+        let title = wide("AskBridge tray relay test");
+        // SAFETY: The test class is registered and all pointers remain valid for the call.
+        let window = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                title.as_ptr(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                instance,
+                ptr::null(),
+            )
+        };
+        assert!(!window.is_null());
+        let packed_event = ((1_u32 << 16) | WM_CONTEXTMENU) as LPARAM;
+
+        // SAFETY: This synchronously exercises the same nonqueued window-procedure entry used by
+        // Shell callbacks. No pointer-bearing parameters are sent.
+        unsafe {
+            SendMessageW(window, WM_TRAY_CALLBACK, 23, packed_event);
+        }
+        // SAFETY: Zero is a valid initial message state.
+        let mut queued: MSG = unsafe { zeroed() };
+        // SAFETY: The test owns the window and removes only its private dispatch message.
+        let found = unsafe {
+            PeekMessageW(
+                &mut queued,
+                window,
+                WM_TRAY_DISPATCH,
+                WM_TRAY_DISPATCH,
+                PM_REMOVE,
+            )
+        };
+        // SAFETY: The test owns this window and no longer needs it.
+        unsafe {
+            DestroyWindow(window);
+        }
+
+        assert_ne!(found, 0);
+        assert_eq!(queued.message, WM_TRAY_DISPATCH);
+        assert_eq!(queued.wParam, 23);
+        assert_eq!(queued.lParam, packed_event);
+    }
 }

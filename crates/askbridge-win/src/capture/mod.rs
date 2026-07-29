@@ -10,7 +10,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::WM_APP,
 };
 
-pub const WM_CAPTURE_BUSY: u32 = WM_APP + 2;
+pub const WM_CAPTURE_BUSY: u32 = WM_APP + 3;
 
 pub enum CaptureOutcome {
     Captured(CapturedImage),

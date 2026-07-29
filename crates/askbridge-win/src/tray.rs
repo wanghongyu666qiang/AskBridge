@@ -2,16 +2,17 @@ use std::mem::{size_of, zeroed};
 
 use askbridge_core::{AppError, Result};
 use windows_sys::Win32::{
-    Foundation::{HWND, POINT},
+    Foundation::{HWND, LPARAM, POINT},
     UI::{
         Shell::{
             NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-            NOTIFYICONDATAW, Shell_NotifyIconW,
+            NIM_SETVERSION, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
         },
         WindowsAndMessaging::{
             AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, LoadIconW, MF_CHECKED,
             MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SetForegroundWindow, TPM_BOTTOMALIGN,
-            TPM_LEFTALIGN, TPM_RETURNCMD, TrackPopupMenu, WM_APP,
+            TPM_LEFTALIGN, TPM_RETURNCMD, TrackPopupMenu, WM_APP, WM_CONTEXTMENU, WM_LBUTTONDBLCLK,
+            WM_RBUTTONUP,
         },
     },
 };
@@ -19,6 +20,7 @@ use windows_sys::Win32::{
 use crate::util::{last_error, wide};
 
 pub const WM_TRAY_CALLBACK: u32 = WM_APP + 1;
+pub const WM_TRAY_DISPATCH: u32 = WM_APP + 4;
 pub const MENU_CAPTURE_WITH_PROMPT: u16 = 1001;
 pub const MENU_CAPTURE_QUICK: u16 = 1002;
 pub const MENU_TEXT_ONLY: u16 = 1003;
@@ -27,6 +29,21 @@ pub const MENU_SETTINGS: u16 = 1005;
 pub const MENU_EXIT: u16 = 1006;
 
 const TRAY_ICON_ID: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayEvent {
+    ContextMenu,
+    ActivateSettings,
+    Ignore,
+}
+
+pub const fn decode_tray_callback(lparam: LPARAM) -> TrayEvent {
+    match (lparam as u32) & 0xffff {
+        WM_RBUTTONUP | WM_CONTEXTMENU => TrayEvent::ContextMenu,
+        WM_LBUTTONDBLCLK => TrayEvent::ActivateSettings,
+        _ => TrayEvent::Ignore,
+    }
+}
 
 pub struct TrayIcon {
     window: HWND,
@@ -64,6 +81,19 @@ impl TrayIcon {
             return Err(AppError::Windows {
                 operation: "Shell_NotifyIconW(NIM_ADD)",
                 win32_code: last_error(),
+            });
+        }
+        data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+        // SAFETY: data identifies the tray item just added by this process.
+        if unsafe { Shell_NotifyIconW(NIM_SETVERSION, &data) } == 0 {
+            let win32_code = last_error();
+            // SAFETY: Best-effort cleanup of the item added immediately above.
+            unsafe {
+                Shell_NotifyIconW(NIM_DELETE, &data);
+            }
+            return Err(AppError::Windows {
+                operation: "Shell_NotifyIconW(NIM_SETVERSION)",
+                win32_code,
             });
         }
         tray.active = true;
@@ -190,5 +220,32 @@ fn copy_wide<const N: usize>(destination: &mut [u16; N], value: &str) {
     let encoded = value.encode_utf16().take(N.saturating_sub(1));
     for (slot, character) in destination.iter_mut().zip(encoded) {
         *slot = character;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_legacy_context_menu_callback() {
+        assert_eq!(
+            decode_tray_callback(WM_RBUTTONUP as LPARAM),
+            TrayEvent::ContextMenu
+        );
+    }
+
+    #[test]
+    fn decodes_version_4_context_menu_callback() {
+        let packed = ((TRAY_ICON_ID << 16) | WM_CONTEXTMENU) as LPARAM;
+
+        assert_eq!(decode_tray_callback(packed), TrayEvent::ContextMenu);
+    }
+
+    #[test]
+    fn decodes_version_4_double_click_callback() {
+        let packed = ((TRAY_ICON_ID << 16) | WM_LBUTTONDBLCLK) as LPARAM;
+
+        assert_eq!(decode_tray_callback(packed), TrayEvent::ActivateSettings);
     }
 }

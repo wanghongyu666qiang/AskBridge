@@ -4,39 +4,28 @@
 项目目录：`D:\AskBridge`
 远端仓库：`https://github.com/wanghongyu666qiang/AskBridge.git`
 当前分支：`main`
-最后已推送提交：`92ad103 feat: align v2.1 and implement Phase 2 capture`
+Phase 3 已推送基线：`6a1d31b Implement Phase 3 request workflow and prompt input`
 
 ## 当前有效交接信息
 
 ### 1. 基线与范围
 
 - 仓库内的 [`docs/DEVELOPMENT_SPEC.md`](DEVELOPMENT_SPEC.md) 是当前唯一开发基线。
-- Phase 0–2 和 v2.1 校正已提交并推送到 `main` 与 `origin/main`。
-- 用户已明确授权进入 Phase 3；当前实现范围见 [`PHASE_3_PLAN.md`](PHASE_3_PLAN.md)。
-- 本轮只实现原生问题窗口、三种请求工作流、`DispatchRequest` 和并发状态保护。
+- Phase 0–3 已提交并推送到 `main` 与 `origin/main`；Phase 3 范围见 [`PHASE_3_PLAN.md`](PHASE_3_PLAN.md)。
+- 本轮额外修复真实 Windows Shell 托盘回调无法到达 Runtime 的问题。
 - Phase 4 的专用 Chrome、CDP、页面目标和网页投递尚未开始。
 - 正式程序不使用 Electron、Tauri、Python、WebView、浏览器扩展或本地 HTTP 服务。
 
 ### 2. 当前 Git 状态
 
-`main` 与 `origin/main` 的已推送基线为 `92ad103`。Phase 3 当前在工作树中实现，尚未提交、尚未推送。
+`main` 与 `origin/main` 的 Phase 3 基线为 `6a1d31b`。本交接随托盘回调修复一并提交和推送；最终提交哈希以 `git log -1` 为准。
 
-当前 Phase 3 修改：
+本轮托盘修复修改：
 
-- `README.md`
-- `crates/askbridge-core/src/capture.rs`
-- `crates/askbridge-core/src/error.rs`
-- `crates/askbridge-core/src/lib.rs`
-- `crates/askbridge-core/src/request.rs`
-- `crates/askbridge-core/src/workflow.rs`
 - `crates/askbridge-win/src/app.rs`
 - `crates/askbridge-win/src/capture/mod.rs`
-- `crates/askbridge-win/src/capture/overlay.rs`
-- `crates/askbridge-win/src/main.rs`
-- `crates/askbridge-win/src/prompt.rs`
-- `docs/DEVELOPMENT_SPEC.md`
+- `crates/askbridge-win/src/tray.rs`
 - `docs/HANDOFF.md`
-- `docs/PHASE_3_PLAN.md`
 
 ### 3. Phase 3 当前实现
 
@@ -50,6 +39,9 @@
 - 已有问题窗口会被置前；其余忙碌状态拒绝启动第二个工作流。
 - Phase 3 请求交接只记录请求 ID、模式、供应商、是否带图和 `auto_submit=false`，不记录问题或图片内容。
 - 请求准备后显示 Phase 4 尚未接入的提示并安全回到 `Idle`。
+- Shell 托盘回调先在 `WndProc` 接收，再转发为独立队列消息交给 Runtime；不再错误地假设所有托盘回调都会由 `GetMessage` 返回。
+- 托盘图标在 `NIM_ADD` 后协商 `NOTIFYICON_VERSION_4`，并按 `LOWORD(lParam)` 解码 v4 打包事件。
+- 托盘回调、单实例激活、截图忙碌和 Runtime 转发使用互不重叠的私有消息编号。
 
 ### 4. 自动检查与构建产物
 
@@ -57,23 +49,30 @@
 
 - `cargo fmt --all -- --check`：通过；
 - `cargo clippy --workspace --all-targets -- -D warnings`：通过；
-- `cargo test --workspace`：43 个通过，0 个失败；
+- `cargo test --workspace`：48 个通过，0 个失败；
 - `cargo build --workspace`：通过；
 - `cargo build --workspace --release`：通过。
 
 | 产物 | 大小 | SHA-256 |
 | --- | ---: | --- |
-| `target\debug\askbridge.exe` | 21,181,881 bytes | `3AE9AC2AE1D70F3E8B3C5DE3E9FC1590A8817E9BAAEC1BD3D2F1EFC8C8403920` |
-| `target\release\askbridge.exe` | 621,568 bytes | `3C19CD6411D3550083C560C583C61DEBDFF8ADD6166A329D32A42F0069B1F615` |
+| `target\debug\askbridge.exe` | 21,185,288 bytes | `F78DB9ABD882934224AF9BFE6A882237380AB4EFF3C5288513DAA0EC234ECAB3` |
+| `target\release\askbridge.exe` | 622,592 bytes | `A918FB9F01993780B05F178CEC438E0C3D801F942A4C8C4BD780B8A8F7F2BB93` |
 
-当前没有残留的 `askbridge.exe` 进程。桌面端手工验收尚未执行，不能提前标记完成。
+真实 Windows 11 托盘溢出面板验证已完成：
+
+- 差分最小程序证明 Explorer 和物理输入路径正常；
+- 自动探针先打开隐藏图标面板，再按 `Shell_NotifyIconGetRect` 定位实际 AskBridge 图标并执行真实右键；
+- 修复前稳定无回调，修复后收到 v4 打包的右键按下/释放事件并成功创建菜单；
+- 回归测试覆盖非队列 Shell 回调从 `WndProc` 转发到 Runtime 队列；
+- 所有临时探针、调试日志和可执行文件已删除，当前没有残留的 AskBridge 或探针进程。
+
+问题窗口、键盘操作、三条入口和截图拖选的完整人工矩阵仍需继续验收，不能仅凭托盘菜单通过标记为全部完成。
 
 ### 5. 下一步
 
-1. 审查 Phase 3 diff 和隐私边界。
-2. 在获得桌面启动许可后，手工验证问题窗口、键盘操作和三条入口。
-3. 更新本交接文档中的手工结果。
-4. 输出 Phase 3 检查点并停止；没有用户新授权不得进入 Phase 4。
+1. 继续手工验证问题窗口、键盘操作、三条入口和截图拖选。
+2. 更新本交接文档中的剩余人工结果。
+3. 输出 Phase 3 检查点并停止；没有用户新授权不得进入 Phase 4。
 
 ---
 
