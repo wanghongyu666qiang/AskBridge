@@ -1,15 +1,13 @@
 use std::{
-    env,
     mem::zeroed,
-    path::PathBuf,
     ptr,
     sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use askbridge_core::{
-    AppCommand, AppConfig, AppError, AppState, CapturedImage, ConfigStore, DispatchMode,
-    DispatchRequest, HotkeyConfig, Result, WorkflowController,
+    AppCommand, AppConfig, AppError, AppState, BrowserTargetPreference, CapturedImage, ConfigStore,
+    DispatchMode, DispatchRequest, HotkeyConfig, Result, WorkflowController,
 };
 use tracing::{error, info, warn};
 use windows_sys::Win32::{
@@ -29,7 +27,12 @@ use windows_sys::Win32::{
 };
 
 use crate::{
+    browser::{
+        BrowserEvent, BrowserJob, BrowserLaunch, BrowserService, BrowserStage, BrowserSurface,
+        BrowserWarmupJob, ChromeInstallation, DedicatedChromeJob, DesktopPwaJob, WM_BROWSER_EVENT,
+    },
     capture::{CaptureOutcome, CaptureService, WM_CAPTURE_BUSY},
+    data_dir,
     hotkey_manager::HotkeyManager,
     prompt::{
         CONTROL_PROMPT_CANCEL, CONTROL_PROMPT_SUBMIT, PROMPT_CLASS, PromptWindow,
@@ -65,7 +68,8 @@ pub fn run() -> Result<()> {
         Err(error) => return Err(error),
     };
 
-    let config_path = config_path()?;
+    let data_root = data_dir::resolve()?;
+    let config_path = data_root.join("config.json");
     let store = ConfigStore::new(config_path);
     let loaded = store.load_or_create()?;
 
@@ -87,8 +91,14 @@ pub fn run() -> Result<()> {
     let mut hotkeys = HotkeyManager::new(main_window.hwnd());
     let registration_errors = hotkeys.register_initial(&loaded.config.hotkeys);
     let tray = TrayIcon::create(main_window.hwnd())?;
-    let settings = SettingsWindow::create(ptr::null_mut(), instance, &loaded.config.hotkeys)?;
+    let settings = SettingsWindow::create(
+        ptr::null_mut(),
+        instance,
+        &loaded.config.hotkeys,
+        &loaded.config.browser,
+    )?;
     let prompt = PromptWindow::create(instance)?;
+    let browser = BrowserService::start(main_window.hwnd(), data_root);
 
     let mut runtime = Runtime {
         capture,
@@ -96,13 +106,16 @@ pub fn run() -> Result<()> {
         tray,
         settings,
         prompt,
+        browser,
         config: loaded.config,
         store,
         workflow: WorkflowController::default(),
         pending_prompt: None,
+        pending_dispatch: None,
         paused: false,
         _main_window: main_window,
     };
+    runtime.warmup_browser_if_configured();
 
     if let Some(backup) = loaded.recovered_from {
         warn!(
@@ -150,6 +163,25 @@ fn user_facing_error(error: &AppError) -> String {
         AppError::WorkflowBusy(_) => "另一个操作尚未完成。".to_owned(),
         AppError::ClipboardUnavailable => "剪贴板正被其他程序占用，请稍后重试。".to_owned(),
         AppError::ClipboardWriteFailed => "无法将截图写入剪贴板。".to_owned(),
+        AppError::ChromeNotFound => "未找到 Google Chrome，请在设置中选择 chrome.exe。".to_owned(),
+        AppError::BrowserProfileRejected(details) => {
+            format!("专用浏览器目录不安全：{details}")
+        }
+        AppError::BrowserLaunchFailed => "专用 Chrome 启动失败。".to_owned(),
+        AppError::DesktopShortcutNotFound(_) => {
+            "未找到桌面 ChatGPT 快捷方式，请确认 ChatGPT.lnk 仍在桌面。".to_owned()
+        }
+        AppError::DesktopShortcutRejected(details) => {
+            format!("桌面快捷方式不安全：{details}")
+        }
+        AppError::DesktopLaunchFailed(_) => "ChatGPT 桌面网页端启动失败。".to_owned(),
+        AppError::BrowserEndpointUnavailable => "专用 Chrome 未能提供调试端点，请重试。".to_owned(),
+        AppError::BrowserConnectionFailed(_) | AppError::BrowserProtocol(_) => {
+            "无法连接 AskBridge 专用 Chrome，请重试。".to_owned()
+        }
+        AppError::BrowserCancelled => "浏览器操作已取消。".to_owned(),
+        AppError::TargetNotFound => "未找到可用的目标页面。".to_owned(),
+        AppError::TargetTimeout => "目标页面加载超时，请检查浏览器后重试。".to_owned(),
         _ => error.to_string(),
     }
 }
@@ -166,10 +198,12 @@ struct Runtime {
     tray: TrayIcon,
     settings: SettingsWindow,
     prompt: PromptWindow,
+    browser: BrowserService,
     config: AppConfig,
     store: ConfigStore,
     workflow: WorkflowController,
     pending_prompt: Option<PendingPrompt>,
+    pending_dispatch: Option<DispatchRequest>,
     paused: bool,
     _main_window: MainWindow,
 }
@@ -223,6 +257,10 @@ impl Runtime {
             return Ok(true);
         }
         match message.message {
+            WM_BROWSER_EVENT => {
+                self.handle_browser_events();
+                Ok(true)
+            }
             WM_CAPTURE_BUSY => {
                 self.tray
                     .notify("AskBridge 正在框选", "框选期间触发的其他快捷键已忽略。");
@@ -296,6 +334,7 @@ impl Runtime {
             MENU_SETTINGS => self.settings.show(),
             MENU_EXIT => {
                 info!("application exit requested");
+                self.browser.cancel();
                 // SAFETY: Called on the UI thread to end its message loop.
                 unsafe {
                     PostQuitMessage(0);
@@ -483,30 +522,210 @@ impl Runtime {
             created_at_ms,
         );
         match request {
-            Ok(request) => self.handoff_phase3_request(request),
+            Ok(request) => self.handoff_browser_request(request),
             Err(error) => self.workflow_failed(command, error),
         }
     }
 
-    fn handoff_phase3_request(&mut self, request: DispatchRequest) {
+    fn handoff_browser_request(&mut self, request: DispatchRequest) {
         info!(
             request_id = %request.id,
             mode = ?request.mode,
             provider_id = %request.provider_id,
             has_image = request.image.is_some(),
             auto_submit = request.auto_submit,
-            "dispatch request prepared; browser handoff deferred to phase 4"
+            "dispatch request prepared for browser surface"
         );
-        self.tray.notify(
-            "AskBridge 请求已准备",
-            "问题和目标已就绪；浏览器投递将在 Phase 4 接入。",
+        let provider = match self.config.merged_providers().and_then(|providers| {
+            providers
+                .into_iter()
+                .find(|provider| provider.enabled && provider.id == request.provider_id)
+                .ok_or_else(|| {
+                    AppError::InvalidProvider(format!(
+                        "provider '{}' is unavailable",
+                        request.provider_id
+                    ))
+                })
+        }) {
+            Ok(provider) => provider,
+            Err(error) => {
+                self.browser_workflow_failed(error);
+                return;
+            }
+        };
+        if let Err(error) = self.workflow.begin_browser() {
+            self.browser_workflow_failed(error);
+            return;
+        }
+        let launch = match self.config.browser.target_preference(&provider.id) {
+            BrowserTargetPreference::DesktopPwa => BrowserLaunch::DesktopPwa(DesktopPwaJob {
+                provider_id: provider.id.clone(),
+                configured_shortcut: self
+                    .config
+                    .browser
+                    .desktop_shortcut(&provider.id)
+                    .map(str::to_owned),
+            }),
+            BrowserTargetPreference::DedicatedChrome => {
+                BrowserLaunch::DedicatedChrome(DedicatedChromeJob {
+                    configured_chrome_path: self.config.browser.chrome_path.clone(),
+                    profile_dir: self.config.browser.profile_dir.clone(),
+                    connect_timeout: Duration::from_millis(self.config.browser.connect_timeout_ms),
+                    page_timeout: Duration::from_millis(self.config.browser.page_timeout_ms),
+                    lifecycle: self.config.browser.lifecycle.clone(),
+                    start_url: provider.start_url,
+                    url_patterns: provider.url_patterns,
+                })
+            }
+        };
+        let opens_desktop_pwa = matches!(&launch, BrowserLaunch::DesktopPwa(_));
+        let job = BrowserJob {
+            request_id: request.id.clone(),
+            launch,
+        };
+        self.pending_dispatch = Some(request);
+        if let Err(error) = self.browser.prepare(job) {
+            self.browser_workflow_failed(error);
+            return;
+        }
+        if opens_desktop_pwa {
+            self.tray.notify(
+                "AskBridge 正在打开桌面网页端",
+                "将复用现有桌面快捷方式和其中的登录状态。",
+            );
+        } else {
+            self.tray.notify(
+                "AskBridge 正在打开专用 Chrome",
+                "首次使用时，请在这个独立浏览器中自行登录目标网站。",
+            );
+        }
+    }
+
+    fn handle_browser_events(&mut self) {
+        for event in self.browser.drain_events() {
+            match event {
+                BrowserEvent::Stage { request_id, stage } => {
+                    if !self.is_current_request(&request_id) {
+                        continue;
+                    }
+                    let transition = match stage {
+                        BrowserStage::Started => self.workflow.browser_started(),
+                        BrowserStage::Connected => self.workflow.browser_connected(),
+                        BrowserStage::TargetResolved => self.workflow.target_resolved(),
+                    };
+                    if let Err(error) = transition {
+                        self.browser_workflow_failed(error);
+                        return;
+                    }
+                    info!(
+                        request_id = %request_id,
+                        stage = ?stage,
+                        "dedicated browser workflow advanced"
+                    );
+                }
+                BrowserEvent::Ready {
+                    request_id,
+                    surface,
+                    target_id,
+                    created,
+                } => {
+                    if !self.is_current_request(&request_id) {
+                        continue;
+                    }
+                    let ready = match surface {
+                        BrowserSurface::DedicatedChrome => self.workflow.page_ready(),
+                        BrowserSurface::DesktopPwa => self.workflow.desktop_surface_ready(),
+                    };
+                    if let Err(error) = ready {
+                        self.browser_workflow_failed(error);
+                        return;
+                    }
+                    info!(
+                        request_id = %request_id,
+                        target_id = %target_id,
+                        created,
+                        surface = ?surface,
+                        "browser surface is ready"
+                    );
+                    self.pending_dispatch = None;
+                    if let Err(error) = self.workflow.defer_page_preparation() {
+                        self.browser_workflow_failed(error);
+                        return;
+                    }
+                    match surface {
+                        BrowserSurface::DedicatedChrome => self.tray.notify(
+                            "AskBridge 专用 Chrome 已就绪",
+                            "目标页面已打开并置前；网页内容准备将在 Phase 5 接入。",
+                        ),
+                        BrowserSurface::DesktopPwa => self.tray.notify(
+                            "ChatGPT 桌面网页端已打开",
+                            "已复用现有登录会话；内容准备将在 Phase 5 接入。",
+                        ),
+                    }
+                }
+                BrowserEvent::WarmupReady => {
+                    info!("dedicated browser started with AskBridge");
+                    self.tray.notify(
+                        "AskBridge 专用 Chrome 已启动",
+                        "浏览器生命周期设置为“随 AskBridge 启动”。",
+                    );
+                }
+                BrowserEvent::WarmupFailed { error } => {
+                    error!(error = %error, "dedicated browser startup warmup failed");
+                    self.tray
+                        .notify("AskBridge 专用 Chrome 启动失败", &user_facing_error(&error));
+                }
+                BrowserEvent::Failed { request_id, error } => {
+                    if request_id.is_empty() || self.is_current_request(&request_id) {
+                        self.browser_workflow_failed(error);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    fn warmup_browser_if_configured(&self) {
+        if self.config.browser.lifecycle != "on_startup" {
+            return;
+        }
+        let job = BrowserWarmupJob {
+            configured_chrome_path: self.config.browser.chrome_path.clone(),
+            profile_dir: self.config.browser.profile_dir.clone(),
+            connect_timeout: Duration::from_millis(self.config.browser.connect_timeout_ms),
+        };
+        if let Err(error) = self.browser.warmup(job) {
+            error!(error = %error, "failed to queue dedicated browser startup");
+        }
+    }
+
+    fn is_current_request(&self, request_id: &str) -> bool {
+        self.pending_dispatch
+            .as_ref()
+            .is_some_and(|request| request.id == request_id)
+    }
+
+    fn browser_workflow_failed(&mut self, error: AppError) {
+        error!(
+            state = ?self.workflow.state(),
+            error = %error,
+            "browser surface workflow failed"
         );
-        drop(request);
-        self.cancel_workflow();
+        self.pending_dispatch = None;
+        self.tray
+            .notify("AskBridge 无法打开目标页面", &user_facing_error(&error));
+        if !self.workflow.is_idle() && self.workflow.state() != AppState::Error {
+            let _ = self.workflow.fail();
+        }
+        if self.workflow.state() == AppState::Error {
+            let _ = self.workflow.recover();
+        }
     }
 
     fn cancel_workflow(&mut self) {
         self.pending_prompt = None;
+        self.pending_dispatch = None;
+        self.browser.cancel();
         if self.workflow.is_idle() {
             return;
         }
@@ -527,6 +746,7 @@ impl Runtime {
         );
         self.prompt.hide_and_clear();
         self.pending_prompt = None;
+        self.pending_dispatch = None;
         self.tray
             .notify("AskBridge 无法继续", &user_facing_error(&error));
         if !self.workflow.is_idle() && self.workflow.state() != AppState::Error {
@@ -546,16 +766,56 @@ impl Runtime {
                 return;
             }
         };
-        self.persist_hotkeys(requested, "快捷键已保存并立即生效。");
+        let chrome_path = match self.settings.read_chrome_path() {
+            Ok(path) => path,
+            Err(error) => {
+                self.settings
+                    .set_status(&format!("无法应用：{}", user_facing_error(&error)));
+                return;
+            }
+        };
+        if let Some(path) = chrome_path.as_deref()
+            && let Err(error) = ChromeInstallation::discover(Some(path))
+        {
+            self.settings
+                .set_status(&format!("无法应用：{}", user_facing_error(&error)));
+            return;
+        }
+        self.persist_settings(
+            requested,
+            chrome_path,
+            self.settings.use_chatgpt_desktop_pwa(),
+            "设置已保存并立即生效。",
+        );
     }
 
     fn restore_default_hotkeys(&mut self) {
-        self.persist_hotkeys(HotkeyConfig::default(), "已恢复默认快捷键并立即生效。");
+        self.persist_settings(
+            HotkeyConfig::default(),
+            self.config.browser.chrome_path.clone(),
+            self.config.browser.target_preference("chatgpt") == BrowserTargetPreference::DesktopPwa,
+            "已恢复默认快捷键并立即生效。",
+        );
     }
 
-    fn persist_hotkeys(&mut self, requested: HotkeyConfig, success_message: &str) {
+    fn persist_settings(
+        &mut self,
+        requested: HotkeyConfig,
+        chrome_path: Option<String>,
+        use_chatgpt_desktop_pwa: bool,
+        success_message: &str,
+    ) {
         let mut candidate = self.config.clone();
         candidate.hotkeys = requested.clone();
+        candidate.browser.chrome_path = chrome_path;
+        candidate.browser.target_preferences.insert(
+            "chatgpt".to_owned(),
+            if use_chatgpt_desktop_pwa {
+                BrowserTargetPreference::DesktopPwa
+            } else {
+                BrowserTargetPreference::DedicatedChrome
+            },
+        );
         let store = &self.store;
         let result = self
             .hotkeys
@@ -566,7 +826,8 @@ impl Runtime {
                 if self.paused {
                     let _ = self.hotkeys.pause();
                 }
-                self.settings.refresh(&self.config.hotkeys);
+                self.settings
+                    .refresh(&self.config.hotkeys, &self.config.browser);
                 self.settings.set_status(success_message);
                 info!("hotkey configuration updated");
             }
@@ -717,17 +978,18 @@ unsafe extern "system" fn window_proc(
         }
         return 0;
     }
+    if message == WM_CLOSE {
+        // The hidden owner window has no visible close affordance, but process managers send
+        // WM_CLOSE for a normal shutdown. End the message loop so all RAII resources and the
+        // browser worker are released in order.
+        // SAFETY: This callback runs on the UI thread that owns the message loop.
+        unsafe {
+            PostQuitMessage(0);
+        }
+        return 0;
+    }
     // SAFETY: Unhandled messages are forwarded exactly as received to DefWindowProcW.
     unsafe { DefWindowProcW(window, message, wparam, lparam) }
-}
-
-fn config_path() -> Result<PathBuf> {
-    let local_app_data = env::var_os("LOCALAPPDATA").ok_or_else(|| {
-        AppError::ConfigurationInvalid("LOCALAPPDATA is not available".to_owned())
-    })?;
-    Ok(PathBuf::from(local_app_data)
-        .join("AskBridge")
-        .join("config.json"))
 }
 
 fn next_request_id(created_at_ms: u64) -> String {
@@ -752,9 +1014,13 @@ mod tests {
         assert_ne!(WM_TRAY_CALLBACK, ACTIVATE_MESSAGE);
         assert_ne!(WM_TRAY_CALLBACK, WM_CAPTURE_BUSY);
         assert_ne!(WM_TRAY_CALLBACK, WM_TRAY_DISPATCH);
+        assert_ne!(WM_TRAY_CALLBACK, WM_BROWSER_EVENT);
         assert_ne!(WM_TRAY_DISPATCH, ACTIVATE_MESSAGE);
         assert_ne!(WM_TRAY_DISPATCH, WM_CAPTURE_BUSY);
+        assert_ne!(WM_TRAY_DISPATCH, WM_BROWSER_EVENT);
         assert_ne!(ACTIVATE_MESSAGE, WM_CAPTURE_BUSY);
+        assert_ne!(ACTIVATE_MESSAGE, WM_BROWSER_EVENT);
+        assert_ne!(WM_CAPTURE_BUSY, WM_BROWSER_EVENT);
     }
 
     #[test]
@@ -818,5 +1084,60 @@ mod tests {
         assert_eq!(queued.message, WM_TRAY_DISPATCH);
         assert_eq!(queued.wParam, 23);
         assert_eq!(queued.lParam, packed_event);
+    }
+
+    #[test]
+    fn main_window_close_requests_a_clean_message_loop_exit() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            PM_REMOVE, PeekMessageW, SendMessageW, WM_QUIT,
+        };
+
+        // SAFETY: A null module name requests the current test process module.
+        let module = unsafe { GetModuleHandleW(ptr::null()) };
+        assert!(!module.is_null());
+        let instance = module as HINSTANCE;
+        let class_name = "AskBridge.Test.MainCloseWindow.v1";
+        register_window_class(class_name, instance, Some(window_proc))
+            .expect("test window class should register");
+        let class = wide(class_name);
+        let title = wide("AskBridge close test");
+        // SAFETY: The test class is registered and arguments are valid.
+        let window = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                title.as_ptr(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                instance,
+                ptr::null(),
+            )
+        };
+        assert!(!window.is_null());
+
+        // SAFETY: The test owns this window and synchronously exercises normal close handling.
+        unsafe {
+            SendMessageW(window, WM_CLOSE, 0, 0);
+        }
+        let mut queued: MSG = unsafe { zeroed() };
+        let mut found_quit = false;
+        // SAFETY: This test thread owns the queue. Drain pending messages until WM_QUIT appears.
+        while unsafe { PeekMessageW(&mut queued, ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
+            if queued.message == WM_QUIT {
+                found_quit = true;
+                break;
+            }
+        }
+        // SAFETY: The test still owns the window because the custom handler did not destroy it.
+        unsafe {
+            DestroyWindow(window);
+        }
+
+        assert!(found_quit);
     }
 }

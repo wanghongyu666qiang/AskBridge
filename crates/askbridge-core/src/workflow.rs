@@ -45,6 +45,48 @@ impl WorkflowController {
         Ok(self.state)
     }
 
+    pub fn begin_browser(&mut self) -> Result<AppState> {
+        self.require_state(AppState::PreparingDispatch, "begin_browser")?;
+        self.state = AppState::StartingBrowser;
+        Ok(self.state)
+    }
+
+    pub fn browser_started(&mut self) -> Result<AppState> {
+        self.require_state(AppState::StartingBrowser, "browser_started")?;
+        self.state = AppState::ConnectingBrowser;
+        Ok(self.state)
+    }
+
+    pub fn browser_connected(&mut self) -> Result<AppState> {
+        self.require_state(AppState::ConnectingBrowser, "browser_connected")?;
+        self.state = AppState::ResolvingTarget;
+        Ok(self.state)
+    }
+
+    pub fn target_resolved(&mut self) -> Result<AppState> {
+        self.require_state(AppState::ResolvingTarget, "target_resolved")?;
+        self.state = AppState::WaitingForPage;
+        Ok(self.state)
+    }
+
+    pub fn page_ready(&mut self) -> Result<AppState> {
+        self.require_state(AppState::WaitingForPage, "page_ready")?;
+        self.state = AppState::PreparingPage;
+        Ok(self.state)
+    }
+
+    pub fn desktop_surface_ready(&mut self) -> Result<AppState> {
+        self.require_state(AppState::StartingBrowser, "desktop_surface_ready")?;
+        self.state = AppState::PreparingPage;
+        Ok(self.state)
+    }
+
+    pub fn defer_page_preparation(&mut self) -> Result<AppState> {
+        self.require_state(AppState::PreparingPage, "defer_page_preparation")?;
+        self.state = AppState::Idle;
+        Ok(self.state)
+    }
+
     pub fn begin_cancelling(&mut self) -> Result<AppState> {
         if matches!(self.state, AppState::Idle | AppState::Cancelling) {
             return Err(self.invalid_transition("begin_cancelling"));
@@ -169,5 +211,71 @@ mod tests {
         failed.start(AppCommand::CaptureWithPrompt).expect("start");
         failed.fail().expect("fail");
         assert_eq!(failed.recover().expect("recover"), AppState::Idle);
+    }
+
+    #[test]
+    fn phase4_browser_path_reaches_page_preparation_boundary() {
+        let mut workflow = WorkflowController::default();
+        workflow.start(AppCommand::TextOnlyPrompt).expect("start");
+        workflow.prompt_submitted().expect("prompt");
+
+        assert_eq!(
+            workflow.begin_browser().expect("begin browser"),
+            AppState::StartingBrowser
+        );
+        assert_eq!(
+            workflow.browser_started().expect("browser started"),
+            AppState::ConnectingBrowser
+        );
+        assert_eq!(
+            workflow.browser_connected().expect("browser connected"),
+            AppState::ResolvingTarget
+        );
+        assert_eq!(
+            workflow.target_resolved().expect("target resolved"),
+            AppState::WaitingForPage
+        );
+        assert_eq!(
+            workflow.page_ready().expect("page ready"),
+            AppState::PreparingPage
+        );
+        assert_eq!(
+            workflow.defer_page_preparation().expect("phase 5 boundary"),
+            AppState::Idle
+        );
+    }
+
+    #[test]
+    fn phase4_rejects_out_of_order_browser_events() {
+        let mut workflow = WorkflowController::default();
+        workflow.start(AppCommand::TextOnlyPrompt).expect("start");
+        workflow.prompt_submitted().expect("prompt");
+
+        assert!(matches!(
+            workflow.browser_connected(),
+            Err(AppError::InvalidWorkflowTransition { .. })
+        ));
+        workflow.begin_browser().expect("begin browser");
+        assert!(matches!(
+            workflow.target_resolved(),
+            Err(AppError::InvalidWorkflowTransition { .. })
+        ));
+    }
+
+    #[test]
+    fn phase4_desktop_surface_skips_cdp_states() {
+        let mut workflow = WorkflowController::default();
+        workflow.start(AppCommand::TextOnlyPrompt).expect("start");
+        workflow.prompt_submitted().expect("prompt");
+        workflow.begin_browser().expect("begin target");
+
+        assert_eq!(
+            workflow.desktop_surface_ready().expect("desktop PWA ready"),
+            AppState::PreparingPage
+        );
+        assert_eq!(
+            workflow.defer_page_preparation().expect("phase 5 boundary"),
+            AppState::Idle
+        );
     }
 }

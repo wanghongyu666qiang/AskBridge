@@ -84,6 +84,33 @@ pub enum AppError {
     #[error("browser launch failed")]
     BrowserLaunchFailed,
 
+    #[error("desktop shortcut was not found for provider '{0}'")]
+    DesktopShortcutNotFound(String),
+
+    #[error("desktop shortcut is unsafe: {0}")]
+    DesktopShortcutRejected(String),
+
+    #[error("desktop application launch failed (Shell error {0})")]
+    DesktopLaunchFailed(isize),
+
+    #[error("Google Chrome was not found")]
+    ChromeNotFound,
+
+    #[error("browser profile is unsafe: {0}")]
+    BrowserProfileRejected(String),
+
+    #[error("browser debugging endpoint is unavailable")]
+    BrowserEndpointUnavailable,
+
+    #[error("browser connection failed: {0}")]
+    BrowserConnectionFailed(String),
+
+    #[error("browser protocol failed: {0}")]
+    BrowserProtocol(String),
+
+    #[error("browser operation was cancelled")]
+    BrowserCancelled,
+
     #[error("target not found")]
     TargetNotFound,
 

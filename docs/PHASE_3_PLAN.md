@@ -68,7 +68,7 @@ Alt+Shift+Q
   -> 默认供应商 + quick_prompt
   -> DispatchRequest(CaptureWithDefaultPrompt)
 
-Alt+A
+Alt+W
   -> 原生问题窗口
   -> DispatchRequest(TextOnlyPrompt)
 ```

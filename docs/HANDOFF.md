@@ -1,45 +1,65 @@
-# AskBridge 项目交接文档（Phase 3）
+# AskBridge 项目交接文档（Phase 4）
 
-更新时间：2026-07-29
+更新时间：2026-08-01
 项目目录：`D:\AskBridge`
 远端仓库：`https://github.com/wanghongyu666qiang/AskBridge.git`
 当前分支：`main`
-Phase 3 已推送基线：`6a1d31b Implement Phase 3 request workflow and prompt input`
+Phase 4 开发基线：`main` 上未提交工作区；最近已推送提交为 `3b61d78 fix: eliminate capture overlay drag flicker`
 
 ## 当前有效交接信息
 
 ### 1. 基线与范围
 
 - 仓库内的 [`docs/DEVELOPMENT_SPEC.md`](DEVELOPMENT_SPEC.md) 是当前唯一开发基线。
-- Phase 0–3 已提交并推送到 `main` 与 `origin/main`；Phase 3 范围见 [`PHASE_3_PLAN.md`](PHASE_3_PLAN.md)。
+- Phase 0–3 及后续托盘/截图稳定性修复已提交并推送；Phase 4 实施边界见 [`PHASE_4_PLAN.md`](PHASE_4_PLAN.md)。
 - 本轮额外修复真实 Windows Shell 托盘回调无法到达 Runtime，以及截图拖选时遮罩闪烁的问题。
-- Phase 4 的专用 Chrome、CDP、页面目标和网页投递尚未开始。
+- Phase 4 的桌面 PWA、专用 Chrome、CDP 和页面目标基础已经实现；Phase 5 的网页输入、附件上传和内容准备尚未开始。
+- 用户确认 AskBridge 的全部运行数据留在 D 盘；当前开发工作区使用 `D:\AskBridge\data`。配置和 257 个专用 Chrome 配置条目已从旧 `%LOCALAPPDATA%` 位置非破坏性复制，旧 C 盘副本暂未删除。
+- 本机 `Alt+A` 与现有截图工具冲突；用户确认将“直接文字提问”当前配置和项目默认值改为 `Alt+W`。
 - 正式程序不使用 Electron、Tauri、Python、WebView、浏览器扩展或本地 HTTP 服务。
 
 ### 2. 当前 Git 状态
 
-`main` 与 `origin/main` 的 Phase 3 基线为 `6a1d31b`。本交接随托盘回调修复一并提交和推送；最终提交哈希以 `git log -1` 为准。
+`main` 与 `origin/main` 当前均指向 `3b61d78`。Phase 4 工作区尚未提交、尚未推送。
 
-本轮稳定性修复修改：
+Phase 4 修改：
 
+- `Cargo.lock`
+- `README.md`
+- `crates/askbridge-core/src/browser.rs`
+- `crates/askbridge-core/src/error.rs`
+- `crates/askbridge-core/src/lib.rs`
+- `crates/askbridge-core/src/workflow.rs`
+- `crates/askbridge-win/Cargo.toml`
 - `crates/askbridge-win/src/app.rs`
-- `crates/askbridge-win/src/capture/mod.rs`
-- `crates/askbridge-win/src/capture/overlay.rs`
-- `crates/askbridge-win/src/tray.rs`
+- `crates/askbridge-win/src/browser/`
+- `crates/askbridge-win/src/data_dir.rs`
+- `crates/askbridge-win/src/main.rs`
+- `crates/askbridge-win/src/settings.rs`
 - `docs/HANDOFF.md`
+- `docs/PHASE_4_PLAN.md`
 
-### 3. Phase 3 当前实现
+### 3. Phase 4 当前实现
 
-- `DispatchMode` 将三条入口映射为截图提问、默认问题截图和纯文字模式。
-- `DispatchRequest` 校验 ID、供应商、问题和图片不变量。
-- `auto_submit` 在构造和反序列化时均固定为 `false`。
-- `WorkflowController` 约束 `Idle`、`SelectingRegion`、`Prompting`、`PreparingDispatch`、取消和错误恢复。
-- 原生 Win32 问题窗口包含启用供应商下拉框、多行输入、继续和取消。
-- `Enter` 继续，`Shift+Enter` 换行，`Esc` 取消，`Tab` 切换焦点；供应商下拉框保留标准方向键行为。
-- 截图提问保留内存 `CapturedImage` 直到用户完成问题；快速截图使用默认供应商和 `quick_prompt`；文字入口不创建图片。
-- 已有问题窗口会被置前；其余忙碌状态拒绝启动第二个工作流。
-- Phase 3 请求交接只记录请求 ID、模式、供应商、是否带图和 `auto_submit=false`，不记录问题或图片内容。
-- 请求准备后显示 Phase 4 尚未接入的提示并安全回到 `Idle`。
+- `ChromeInstallation` 按用户配置、HKCU/HKLM App Paths 和常见安装位置发现 `chrome.exe`，不下载浏览器。
+- 设置页新增可手动填写的 Chrome 完整路径；留空继续自动检测，保存前验证文件存在且名称为 `chrome.exe`。
+- 设置页新增“ChatGPT 使用桌面网页端”开关；ChatGPT 默认启动用户桌面的 `ChatGPT.lnk`，其他供应商继续使用专用 Chrome。
+- `BrowserTargetPreference` 和 `BrowserLaunch` 构成目标载体 seam；调用方只选择 `desktop_pwa` 或 `dedicated_chrome`，不依赖快捷方式、Windows Shell 或 CDP 实现细节。
+- `DesktopPwaLauncher` 只接受存在的绝对 `.lnk`，可自动发现桌面 `ChatGPT.lnk`，并在后台通过 Windows Shell 启动；不读取 Cookie、密码、历史记录或网页正文。
+- `ManagedProfile` 只允许 AskBridge 标记的新目录或已标记目录，拒绝 Chrome Stable/Beta/Canary 默认 `User Data`，也拒绝接管非空未标记目录。
+- 运行数据路径由单一解析器确定：开发工作区默认使用仓库根目录 `data`，便携版本默认使用程序旁 `data`，绝对路径环境变量 `ASKBRIDGE_DATA_DIR` 可显式覆盖；当前路径为 `D:\AskBridge\data`。
+- 所有启动参数集中在 `ChromeManager`：独立 `--user-data-dir`、动态 `--remote-debugging-port=0`、`--no-first-run` 和 `--no-default-browser-check`。
+- `DevToolsActivePort` 只从专用目录读取，严格校验动态端口和浏览器路径；普通日志不记录端口。
+- 本地调试 HTTP 和 WebSocket 只连接 IPv4、`localhost` 或 IPv6 回环，限制响应大小、请求方法、路径、URL 和目标 ID。
+- `CdpClient` 完成 `/json/version` 与 `Browser.getVersion` 双重握手，支持目标列表、创建、激活和固定内置 `document.readyState` 就绪检查。
+- `TargetResolver` 显式区分 `Confirmed(TargetId)` 与 `Unknown`；零匹配新建、唯一匹配复用、多匹配且无可靠焦点时新建。
+- `BrowserService` 在后台线程执行启动、连接、一次重连、目标解析和页面等待，通过私有 Win32 消息将阶段事件返回 UI。
+- `WorkflowController` 已覆盖专用 Chrome 的 `StartingBrowser`、`ConnectingBrowser`、`ResolvingTarget`、`WaitingForPage`，以及桌面 PWA 从 `StartingBrowser` 直接到 `PreparingPage` 的 Phase 5 交接边界。
+- 默认生命周期按需启动并保持运行；`on_startup` 会后台预热；`on_demand_idle_close` 在十分钟空闲后只对本实例确认管理的进程请求正常关闭。
+- `close_after_dispatch` 的最终关闭时机必须等 Phase 5 真正完成内容准备后执行，Phase 4 不会在用户尚未使用页面时提前关闭。
+- 首次启动通知明确要求用户在专用 Chrome 中自行登录；不读取密码、验证码、Cookie、网页正文或存储。
+- 请求仍只保存在当前进程内存；目标页就绪后显示 Phase 5 尚未接入，未执行网页输入、附件上传、剪贴板操作或自动发送。
+- 隐藏主窗口现在会在收到直接 `WM_CLOSE` 时结束消息循环，并按顺序释放托盘、快捷键和浏览器工作线程；Windows `taskkill` 不会向这个隐藏窗口投递普通关闭，正式退出入口仍是托盘“退出”。
 - Shell 托盘回调先在 `WndProc` 接收，再转发为独立队列消息交给 Runtime；不再错误地假设所有托盘回调都会由 `GetMessage` 返回。
 - 托盘图标在 `NIM_ADD` 后协商 `NOTIFYICON_VERSION_4`，并按 `LOWORD(lParam)` 解码 v4 打包事件。
 - 托盘回调、单实例激活、截图忙碌和 Runtime 转发使用互不重叠的私有消息编号。
@@ -48,20 +68,20 @@ Phase 3 已推送基线：`6a1d31b Implement Phase 3 request workflow and prompt
 
 ### 4. 自动检查与构建产物
 
-以下检查已在当前 Phase 3 源码上通过：
+以下检查已在当前 Phase 4 源码上通过：
 
 - `cargo fmt --all -- --check`：通过；
-- `cargo clippy --workspace --all-targets -- -D warnings`：通过；
-- `cargo test --workspace`：49 个通过，0 个失败；
+- `cargo clippy --workspace --all-targets --offline -- -D warnings`：通过；
+- `cargo test --workspace --offline`：85 个通过，0 个失败，1 个实机 Chrome 测试默认忽略；
 - `cargo build --workspace`：通过；
 - `cargo build --workspace --release`：通过。
 
 | 产物 | 大小 | SHA-256 |
 | --- | ---: | --- |
-| `target\debug\askbridge.exe` | 21,190,260 bytes | `357333E9D18FB0AA1E4F8DC5DFC108AC227B9BC42A48D6337BA9FC91B1A85B6F` |
-| `target\release\askbridge.exe` | 623,104 bytes | `874E67077507862308A0FFD6413789071985F6BA7AF609C49D8789E304847323` |
+| `target\debug\askbridge.exe` | 31,992,926 bytes | `3E6B9E78CF597F4D8A8416C1183DD5957CDE7363F41469595A710F4D06889F5F` |
+| `target\release\askbridge.exe` | 985,600 bytes | `BDF6A46C3C3555F018500B6BD6FF074C1CBB1C338BE23B5C8BB864ED1B88DAE8` |
 
-真实 Windows 11 托盘溢出面板验证已完成：
+真实 Windows 11 验证：
 
 - 差分最小程序证明 Explorer 和物理输入路径正常；
 - 自动探针先打开隐藏图标面板，再按 `Shell_NotifyIconGetRect` 定位实际 AskBridge 图标并执行真实右键；
@@ -69,15 +89,16 @@ Phase 3 已推送基线：`6a1d31b Implement Phase 3 request workflow and prompt
 - 回归测试覆盖非队列 Shell 回调从 `WndProc` 转发到 Runtime 队列；
 - 所有临时探针、调试日志和可执行文件已删除。
 - 用户已在真实桌面按 `Alt+Q` 连续移动鼠标框选，确认修复后不再闪烁。
-- 当前保留一个修复后的 Debug AskBridge 实例供继续使用，没有残留探针进程。
-
-问题窗口、键盘操作、三条入口和截图拖选的完整人工矩阵仍需继续验收，不能仅凭托盘菜单通过标记为全部完成。
+- 实机 CDP 测试使用 Chrome `150.0.7871.187`、临时专用配置和 `127.0.0.1` 随机端口，已通过动态端点、浏览器握手、目标创建、激活、交互就绪、目标列表复核与 `Browser.close` 正常关闭。
+- 每次成功或失败的实机测试均清理临时 Chrome 和临时配置目录；没有连接日常 Chrome 配置。
+- Computer Use 已显示检查新版设置窗口，确认 Chrome 路径输入、说明文字、按钮和状态栏布局正常。
+- 用户已完成新的真实桌面流程：`Alt+W` 输入非敏感问题并确认后，AskBridge 成功打开现有 ChatGPT PWA，并复用其中的登录状态；没有再启动无法登录的专用 ChatGPT Chrome。
+- 验收用 Debug AskBridge 进程已停止，以解除最终构建的文件锁。
 
 ### 5. 下一步
 
-1. 继续手工验证问题窗口、键盘操作、三条入口和截图拖选。
-2. 更新本交接文档中的剩余人工结果。
-3. 输出 Phase 3 检查点并停止；没有用户新授权不得进入 Phase 4。
+1. 提交并推送 Phase 4。
+2. 没有用户新授权不得进入 Phase 5；下一阶段需要分别实现桌面 PWA 的 UI Automation/剪贴板 adapter 与专用 Chrome 的 CDP 页面准备 adapter。
 
 ---
 

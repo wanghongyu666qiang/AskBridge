@@ -4,7 +4,7 @@
 > 文档状态：开发基线
 > 更新日期：2026-07-29
 > 目标平台：Windows 10 / Windows 11
-> 核心技术：Rust + Win32 + AskBridge 专用 Chrome + Chrome DevTools Protocol（CDP）
+> 核心技术：Rust + Win32 + 桌面 PWA + AskBridge 专用 Chrome + Chrome DevTools Protocol（CDP）
 > 产品定位：通过可自定义全局快捷键，把截图或文字快速投递到用户选择的 AI 网页
 > 正式版边界：不调用模型 API，不保存聊天记录，不在本地展示 AI 回答，不依赖浏览器扩展
 
@@ -42,7 +42,7 @@ AskBridge 将传统流程：
 
 ## 1.1 文档示例约定
 
-本文所称“投递完成”“准备成功”或 `PreparedForUser`，统一表示截图和文字已经放入目标网页输入区，且专用 Chrome 已置前等待用户检查；不表示消息已经发送。
+本文所称“投递完成”“准备成功”或 `PreparedForUser`，统一表示截图和文字已经放入目标网页输入区，且所选桌面 PWA 或专用 Chrome 已置前等待用户检查；不表示消息已经发送。
 
 本文中的示例按以下规则解释：
 
@@ -67,10 +67,11 @@ AskBridge 将传统流程：
 - 默认供应商与临时切换供应商；
 - AskBridge 专用 Chrome 用户数据目录；
 - 通过 CDP 控制专用 Chrome；
+- 可按供应商选择现有桌面 PWA；ChatGPT 默认复用用户桌面的 `ChatGPT.lnk` 和已有登录会话；
 - 通用网页适配器；
 - 必要时使用少量供应商覆盖规则；
 - 自动化失败时的剪贴板兜底；
-- 1.0 只准备截图和文字并将专用 Chrome 置前，由用户确认发送；
+- 1.0 只准备截图和文字并将所选目标载体置前，由用户确认发送；
 - 系统托盘；
 - 单实例运行；
 - 普通用户权限安装和运行。
@@ -100,6 +101,8 @@ AskBridge 将传统流程：
 ## 2.3 关于“继续当前对话”
 
 AskBridge 不管理历史对话，但可以自然复用专用 Chrome 中当前已经打开的供应商标签页。
+
+桌面 PWA 模式复用该 PWA 自身维护的当前窗口和登录会话；AskBridge 不读取其历史对话、Cookie、密码或网页正文。
 
 规则如下：
 
@@ -160,11 +163,20 @@ AskBridge 空闲时只保留：
 
 ## 3.2 浏览器隔离
 
-AskBridge 必须使用独立用户数据目录：
+AskBridge 提供两个目标载体 adapter：
+
+- `desktop_pwa`：启动用户现有的桌面 PWA，复用其登录会话；
+- `dedicated_chrome`：使用隔离的专用 Chrome 与 CDP。
+
+ChatGPT 默认选择 `desktop_pwa`，其他供应商默认选择 `dedicated_chrome`；用户可在设置中切换 ChatGPT。桌面 PWA 模式不开放或接管日常 Chrome 的调试端点，也不读取其配置数据。
+
+专用 Chrome 模式必须使用独立用户数据目录：
 
 ```text
-%LOCALAPPDATA%\AskBridge\BrowserProfile
+<AskBridge 数据目录>\BrowserProfile
 ```
+
+AskBridge 数据目录与程序位于同一安装介质：开发工作区默认使用仓库根目录下的 `data`，便携版本默认使用可执行文件旁的 `data`。用户可以在启动前用绝对路径环境变量 `ASKBRIDGE_DATA_DIR` 显式覆盖；不得未经用户确认改用其他磁盘。当前开发机使用 `D:\AskBridge\data`。
 
 不得连接或调试用户日常 Chrome 的默认数据目录。
 
@@ -215,7 +227,7 @@ AskBridge 必须使用独立用户数据目录：
 |---|---|---|
 | 截图并提问 | `Alt + Q` | 框选截图后弹出问题输入框 |
 | 截图快速投递 | `Alt + Shift + Q` | 框选截图后使用默认提示词投递 |
-| 直接文字提问 | `Alt + A` | 不截图，直接弹出问题输入框 |
+| 直接文字提问 | `Alt + W` | 不截图，直接弹出问题输入框 |
 
 所有快捷键必须支持：
 
@@ -242,7 +254,7 @@ Alt + Q
 → 生成内存截图
 → 弹出轻量问题输入框
 → 用户输入问题并选择供应商
-→ 按需启动或连接专用 Chrome
+→ 打开所选桌面 PWA，或按需启动/连接专用 Chrome
 → 按第 13 节保守规则复用目标标签或创建新标签
 → 定位输入区和图片上传能力
 → 插入截图与问题
@@ -256,7 +268,7 @@ Alt + Shift + Q
 → 进入区域框选
 → 生成内存截图
 → 读取默认供应商和默认提示词
-→ 按需启动或连接专用 Chrome
+→ 打开所选桌面 PWA，或按需启动/连接专用 Chrome
 → 投递截图与默认提示词
 → 用户在网页中检查并发送
 ```
@@ -272,10 +284,10 @@ Alt + Shift + Q
 ## 5.3 直接文字提问
 
 ```text
-Alt + A
+Alt + W
 → 弹出问题输入框
 → 用户输入问题并选择供应商
-→ 按需启动或连接专用 Chrome
+→ 打开所选桌面 PWA，或按需启动/连接专用 Chrome
 → 定位目标输入区
 → 插入文字
 → 用户在网页中检查并发送
@@ -359,7 +371,7 @@ AskBridge 启动后默认不显示主窗口，只显示托盘图标。
 ```text
 截图并提问       [ Alt + Q         ] [修改] [禁用]
 截图快速投递     [ Alt + Shift + Q ] [修改] [禁用]
-直接文字提问     [ Alt + A         ] [修改] [禁用]
+直接文字提问     [ Alt + W         ] [修改] [禁用]
 
 [恢复默认快捷键]
 ```
@@ -380,8 +392,9 @@ AskBridge 启动后默认不显示主窗口，只显示托盘图标。
 ### 浏览器
 
 ```text
+ChatGPT：☑ 使用桌面网页端并复用现有登录
 Chrome 路径：自动检测
-专用数据目录：%LOCALAPPDATA%\AskBridge\BrowserProfile
+专用数据目录：<AskBridge 数据目录>\BrowserProfile
 生命周期：按需启动，保持运行
 空闲自动关闭：关闭
 
@@ -805,9 +818,28 @@ stateDiagram-v2
 
 ---
 
-# 12. 专用 Chrome 与 CDP
+# 12. 目标网页载体
 
-## 12.1 Chrome 发现
+## 12.0 载体选择
+
+目标载体 seam 提供两个 adapter：
+
+```text
+DesktopPwaLauncher
+  → 发现或使用显式配置的绝对 .lnk
+  → 通过 Windows Shell 启动并置前
+  → Phase 5 使用 UI Automation/剪贴板准备内容
+
+Dedicated Chrome/CDP
+  → 隔离配置目录与动态调试端点
+  → Phase 5 使用 CDP 网页适配器准备内容
+```
+
+自动发现的 ChatGPT PWA 仅接受用户桌面的 `ChatGPT.lnk`。显式配置也只接受存在的绝对 `.lnk`。Phase 4 不解析快捷方式中的凭据，不读取日常 Chrome 的 Cookie、历史记录、密码或网页正文。架构决策见 [`docs/adr/0001-desktop-pwa-target.md`](adr/0001-desktop-pwa-target.md)。
+
+## 12.1 专用 Chrome 与 CDP
+
+### 12.1.1 Chrome 发现
 
 按以下顺序查找：
 
@@ -818,17 +850,17 @@ stateDiagram-v2
 
 不得静默下载 Chrome。
 
-## 12.2 独立配置目录
+### 12.1.2 独立配置目录
 
-固定默认值：
+固定默认相对目录：
 
 ```text
-%LOCALAPPDATA%\AskBridge\BrowserProfile
+BrowserProfile
 ```
 
-该目录只供 AskBridge 专用 Chrome 使用。不得与默认 Chrome 用户目录相同，也不得允许用户误选日常浏览器配置目录。
+该目录相对于 AskBridge 数据目录解析，只供 AskBridge 专用 Chrome 使用。不得与默认 Chrome 用户目录相同，也不得允许用户误选日常浏览器配置目录。
 
-## 12.3 启动方式
+### 12.1.3 启动方式
 
 **伪代码（概念命令，参数须以实现时的 Chrome 官方行为验证）：**
 
@@ -844,7 +876,7 @@ chrome.exe
 
 `--remote-debugging-port=0` 表示由 Chrome 选择动态本地端口。AskBridge 从专用数据目录的运行时信息中获取实际端口，不使用固定端口。
 
-## 12.4 连接安全
+### 12.1.4 连接安全
 
 - 只连接由 AskBridge 启动且配置目录匹配的浏览器；
 - 验证进程、配置目录和调试端点之间的关联；
@@ -855,7 +887,7 @@ chrome.exe
 - CDP 脚本和动作必须来自内置、可审计代码；
 - 调试日志不得输出页面 HTML、Cookie、Local Storage 或响应正文。
 
-## 12.5 生命周期
+### 12.1.5 生命周期
 
 默认：
 
@@ -877,7 +909,7 @@ chrome.exe
 - 不在仍有投递任务时关闭；
 - 保留专用配置中的正常登录状态。
 
-## 12.6 首次使用
+### 12.1.6 首次使用
 
 ```text
 启动 AskBridge
@@ -895,7 +927,7 @@ AskBridge 不得读取密码、验证码或登录 Cookie，也不得声称能自
 
 # 13. 页面目标选择
 
-通过 CDP 获取专用 Chrome 的页面目标。
+专用 Chrome adapter 通过 CDP 获取页面目标。桌面 PWA adapter 不进入本节的 CDP 目标选择流程。
 
 选择规则：
 
@@ -1064,7 +1096,7 @@ pub trait ProviderAdapter: Send + Sync {
 只有在网页上传流程需要文件路径时，才写入：
 
 ```text
-%LOCALAPPDATA%\AskBridge\Temp\<随机 ID>.png
+<AskBridge 数据目录>\Temp\<随机 ID>.png
 ```
 
 要求：
@@ -1108,13 +1140,13 @@ CDP 上传和输入是主要投递方式，剪贴板只作为最后兜底。
 配置路径：
 
 ```text
-%LOCALAPPDATA%\AskBridge\config.json
+<AskBridge 数据目录>\config.json
 ```
 
 日志路径：
 
 ```text
-%LOCALAPPDATA%\AskBridge\logs\
+<AskBridge 数据目录>\logs\
 ```
 
 **参考实现（schema v3 配置示例）：**
@@ -1138,7 +1170,7 @@ CDP 上传和输入是主要投递方式，剪贴板只作为最后兜底。
     "text_only_prompt": {
       "enabled": true,
       "modifiers": ["ALT"],
-      "key": "A"
+      "key": "W"
     }
   },
   "general": {
@@ -1149,10 +1181,14 @@ CDP 上传和输入是主要投递方式，剪贴板只作为最后兜底。
   },
   "browser": {
     "chrome_path": null,
-    "profile_dir": "%LOCALAPPDATA%\\AskBridge\\BrowserProfile",
+    "profile_dir": "BrowserProfile",
     "lifecycle": "on_demand_keep_running",
     "connect_timeout_ms": 10000,
-    "page_timeout_ms": 15000
+    "page_timeout_ms": 15000,
+    "target_preferences": {
+      "chatgpt": "desktop_pwa"
+    },
+    "desktop_shortcuts": {}
   },
   "provider_overrides": [],
   "custom_providers": []
@@ -1496,8 +1532,8 @@ Adapter → 测试页面输入框
 给定 AskBridge 在后台运行
 当用户触发“截图并提问”
 并完成有效框选和问题输入
-则 AskBridge 应按需启动或连接专用 Chrome
-按第 13 节保守规则复用唯一或可靠聚焦的匹配标签，否则创建新标签
+则 AskBridge 应打开所选桌面 PWA，或按需启动/连接专用 Chrome
+专用 Chrome 模式按第 13 节保守规则复用唯一或可靠聚焦的匹配标签，否则创建新标签
 将截图和问题放入正确输入区
 并默认停留在用户确认发送的状态
 ```
@@ -1510,7 +1546,7 @@ Adapter → 测试页面输入框
 则不显示问题输入框
 使用默认提示词和默认供应商
 完成可验证的截图与文字插入
-将专用 Chrome 置前并等待用户确认发送
+将所选目标载体置前并等待用户确认发送
 ```
 
 ## 23.3 直接文字提问
@@ -1519,7 +1555,7 @@ Adapter → 测试页面输入框
 当用户触发“直接文字提问”
 则不创建截图
 确认后将文字插入目标供应商输入区
-将专用 Chrome 置前并等待用户确认发送
+将所选目标载体置前并等待用户确认发送
 ```
 
 ## 23.4 快捷键修改
@@ -1594,7 +1630,7 @@ AskBridge 未访问默认 Chrome 用户目录
 
 严格按阶段推进。每个阶段完成后必须格式化、静态检查、测试、Debug 构建和 Release 构建。
 
-通用授权规则：未被当前指令明确连续授权的 Phase，完成并通过本阶段验收后必须停止，汇报阶段检查点并等待下一轮授权。当前第 31 节已根据用户的明确指令授权 Phase 3，不授权进入 Phase 4。
+通用授权规则：未被当前指令明确连续授权的 Phase，完成并通过本阶段验收后必须停止，汇报阶段检查点并等待下一轮授权。当前第 31 节已根据用户的明确指令授权 Phase 4，不授权进入 Phase 5。
 
 ## Phase 0：工程初始化
 
@@ -1674,10 +1710,12 @@ Phase 2 的正常成功路径不得修改系统剪贴板，也不得把截图写
 - `DispatchRequest`；
 - 状态机与并发保护。
 
-## Phase 4：专用 Chrome 生命周期与 CDP 基础
+## Phase 4：目标载体、专用 Chrome 生命周期与 CDP 基础
 
 完成：
 
+- 目标载体 seam 与桌面 PWA/专用 Chrome 两个 adapter；
+- ChatGPT 桌面快捷方式发现、校验、启动和设置开关；
 - Chrome 自动检测和手动选择；
 - 专用配置目录创建与保护；
 - 按需启动；
@@ -1688,13 +1726,14 @@ Phase 2 的正常成功路径不得修改系统剪贴板，也不得把截图写
 - 首次登录引导；
 - 浏览器生命周期设置。
 
-本阶段只使用项目测试页面验证 CDP，不开始真实供应商适配。若需要 HTTP 测试页面，只能由测试进程按第 2.4 节临时监听 `127.0.0.1` 的随机端口。
+本阶段使用项目测试页面验证 CDP，并用用户明确选择的真实桌面快捷方式验证 PWA 启动；不开始输入框、附件或文字准备。若需要 HTTP 测试页面，只能由测试进程按第 2.4 节临时监听 `127.0.0.1` 的随机端口。
 
 ## Phase 5：通用网页适配器
 
 完成：
 
 - 小而深的 `ProviderAdapter.prepare(...)` interface；
+- 桌面 PWA 的 UI Automation/剪贴板 adapter 与专用 Chrome 的 CDP adapter；
 - URL 匹配；
 - 在适配器 implementation 内封装页面准备、输入框发现、附件上传、文字插入、等待和验证；
 - `PreparationPolicy`、`PreparationOutcome` 和 `DispatchOutcome`；
@@ -1842,7 +1881,7 @@ scripts/package.ps1
 |---|---|
 | `0.1.0` | Phase 0–1，工程、托盘和快捷键 |
 | `0.2.0` | Phase 2–3，截图与问题工作流 |
-| `0.3.0` | Phase 4，专用 Chrome 与 CDP |
+| `0.3.0` | Phase 4，桌面 PWA、专用 Chrome 与 CDP |
 | `0.4.0` | Phase 5，通用适配器和兜底 |
 | `0.5.0` | Phase 6，内置供应商覆盖 |
 | `0.8.0` | Phase 7，设置、隐私和容错 |
@@ -1922,6 +1961,8 @@ scripts/package.ps1
 - [ ] 三种投递模式均形成正确请求；
 - [ ] 使用独立 Chrome 用户数据目录；
 - [ ] 不连接默认 Chrome 用户目录；
+- [ ] ChatGPT 桌面 PWA 可通过用户桌面的绝对 `.lnk` 启动并复用登录状态；
+- [ ] 桌面 PWA adapter 不读取日常 Chrome 的 Cookie、密码、历史记录或网页正文；
 - [ ] 专用 Chrome 按需启动；
 - [ ] 动态 CDP 端点连接稳定；
 - [ ] 目标标签选择遵守“可靠聚焦、唯一匹配、否则新建”的保守规则；
@@ -1935,7 +1976,7 @@ scripts/package.ps1
 - [ ] 不调用模型 API；
 - [ ] 不在本地渲染回答；
 - [ ] 1.0 不提供自动发送开关，所有 `auto_submit` 值固定为 `false`；
-- [ ] 内容准备后由用户在专用 Chrome 中确认发送；
+- [ ] 内容准备后由用户在所选目标载体中确认发送；
 - [ ] 自动化不确定时停止而不是猜测；
 - [ ] 投递失败有剪贴板兜底；
 - [ ] 日志不包含敏感内容；
@@ -1993,7 +2034,7 @@ Phase 0
 10. 输出独立的阶段检查点；
 11. 若当前指令没有明确连续授权下一 Phase，则停止并等待授权。
 
-Phase 0–2 的 v2.1 跨阶段基线校正已在提交 `92ad103` 完成并推送。用户随后明确授权进入 Phase 3；当前第 31 节只授权完成问题输入框与请求工作流，不授权开始 Phase 4 的 Chrome、CDP 或网页投递。
+Phase 0–3 及托盘/截图稳定性修复已完成并推送。用户随后明确授权继续进入 Phase 4，并于 2026-08-01 明确批准 ADR 0001：增加现有桌面 ChatGPT PWA 目标。当前第 31 节授权目标载体、专用 Chrome 生命周期、CDP 和页面目标基础，不授权开始 Phase 5 的网页输入或附件准备。
 
 ## 30.3 禁止擅自改变
 
@@ -2004,7 +2045,7 @@ Phase 0–2 的 v2.1 跨阶段基线校正已在提交 `92ad103` 完成并推送
 - 不添加本地回答窗口；
 - 不添加遥测、云服务器、账号或付费系统；
 - 不把浏览器扩展重新设为核心依赖；
-- 不连接用户日常 Chrome 配置；
+- 不通过 CDP 连接用户日常 Chrome 配置；桌面 PWA adapter 只能启动用户选择的快捷方式，不读取该配置；
 - 不加入自动更新并执行远程适配脚本；
 - 不在 1.0 中实现或暴露自动发送；
 
@@ -2017,21 +2058,26 @@ Phase 0–2 的 v2.1 跨阶段基线校正已在提交 `92ad103` 完成并推送
 ```text
 阅读 docs/DEVELOPMENT_SPEC.md，并将它作为 AskBridge 当前功能和架构基线。
 
-仓库 main 与 origin/main 已在提交 92ad103 完成 Phase 0–2 和 v2.1 对齐。
-用户已经明确要求进入下一阶段，本轮授权实现 Phase 3。
+仓库 main 与 origin/main 已完成 Phase 0–3 及托盘/截图稳定性修复。
+用户已经明确要求继续，本轮授权实现 Phase 4。
+用户于 2026-08-01 批准 ADR 0001，允许 ChatGPT 优先启动现有桌面 PWA 并复用其登录会话。
 
 本轮只允许：
-1. 定义 DispatchMode 与 DispatchRequest，并固定 auto_submit 为 false；
-2. 基于 AppState 实现可测试的单工作流状态机和并发保护；
-3. 实现原生 Win32 问题窗口和启用供应商选择；
-4. 支持多行输入、Enter、Shift+Enter、Esc、Tab 和供应商方向键；
-5. 串联截图并提问、截图快速投递和直接文字提问三种入口；
-6. 日志只记录非敏感请求元数据，不记录问题原文或图片内容；
-7. 同步 README、Phase 3 计划和交接文档；
-8. 补齐自动化测试并完成 Phase 3 构建检查点。
+1. 按用户配置、Windows 注册信息和常见位置发现 Chrome，并支持手动路径；
+2. 创建并保护 AskBridge 专用用户数据目录，拒绝日常 Chrome 默认目录；
+3. 按需或随 AskBridge 启动专用 Chrome，并使用动态调试端口；
+4. 只从专用目录发现端点，只连接回环地址并验证进程、目录和端点关联；
+5. 实现 CDP 握手、目标枚举、创建、激活和有界页面就绪等待；
+6. 显式实现 Confirmed/Unknown 聚焦证据与无歧义目标选择规则；
+7. 在后台线程实现超时、取消、一次重连、首次登录提示和生命周期基础；
+8. 同步 README、Phase 4 计划和交接文档；
+9. 使用测试进程的 127.0.0.1 随机端口页面完成实机 CDP 验收。
+10. 建立桌面 PWA/专用 Chrome 的目标载体 seam；
+11. 发现、校验并启动用户桌面的 ChatGPT.lnk，设置页允许切换该模式；
+12. 桌面 PWA 模式不得读取 Cookie、密码、历史记录或网页正文。
 
-不得开始专用 Chrome、CDP、目标页面枚举、网页适配器、附件上传、
-文字插入或自动发送。不得实现浏览器扩展。正式程序不得启动本地 HTTP 服务。
+不得开始网页适配器、输入框发现、附件上传、文字插入、剪贴板兜底或
+自动发送。不得实现浏览器扩展。正式程序不得启动本地 HTTP 服务。
 
 完成代码调整后运行：
 - cargo fmt --check
@@ -2040,19 +2086,19 @@ Phase 0–2 的 v2.1 跨阶段基线校正已在提交 `92ad103` 完成并推送
 - cargo build --workspace
 - cargo build --workspace --release
 
-Phase 3 检查点汇报：
+Phase 4 检查点汇报：
 1. 已完成内容；
 2. 修改和新增文件；
 3. 依赖及原因；
 4. 构建命令；
 5. 测试与构建结果；
-6. 原生窗口和三种工作流手工验收结果；
+6. 桌面 PWA、专用 Chrome、CDP、目标页面和设置入口验收结果；
 7. 尚未完成内容；
 8. 下一阶段计划。
 
 自动检查通过后，只执行用户明确允许的手工验收。涉及启动桌面程序、
-占用全局快捷键或人工框选时先说明影响。Phase 3 验收完成后停止，
-不得开始 Phase 4。
+占用全局快捷键、打开桌面 PWA 或专用 Chrome 时先说明影响。Phase 4 验收完成后停止，
+不得开始 Phase 5。
 ```
 
 ---
@@ -2072,6 +2118,6 @@ Phase 3 检查点汇报：
 
 AskBridge 是一个超轻量 Windows 一键问屏工具。
 
-桌面端通过可自定义快捷键完成截图或文字采集；需要投递时，按需启动一个与用户日常浏览器隔离的 AskBridge 专用 Chrome，并通过 CDP 将内容可靠地放入用户选择的 AI 网页。
+桌面端通过可自定义快捷键完成截图或文字采集；需要投递时，按供应商选择现有桌面 PWA 或与日常浏览器隔离的 AskBridge 专用 Chrome。Phase 5 分别通过 UI Automation/剪贴板 adapter 或 CDP adapter，将内容可靠地放入用户选择的 AI 网页。
 
 AskBridge 不替代 ChatGPT、Gemini、Claude 或豆包，不管理聊天历史，也不调用模型 API。它只减少用户在桌面应用与 AI 网页之间重复截图、切换、上传和输入的时间。

@@ -1,3 +1,4 @@
+pub mod browser;
 pub mod capture;
 pub mod command;
 pub mod config;
@@ -9,9 +10,10 @@ pub mod request;
 pub mod state;
 pub mod workflow;
 
+pub use browser::{BrowserTarget, FocusEvidence, TargetDecision, TargetResolver};
 pub use capture::{CapturedImage, ScreenRect};
 pub use command::AppCommand;
-pub use config::{AppConfig, BrowserConfig, GeneralConfig, HotkeyConfig};
+pub use config::{AppConfig, BrowserConfig, BrowserTargetPreference, GeneralConfig, HotkeyConfig};
 pub use config_store::{ConfigLoad, ConfigStore};
 pub use error::{AppError, Result};
 pub use hotkey::{HotkeyBinding, HotkeyValidationError, ModifierKey, VirtualKey};

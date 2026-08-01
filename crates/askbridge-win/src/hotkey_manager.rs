@@ -415,7 +415,7 @@ mod tests {
             .get(&AppCommand::CaptureWithPrompt)
             .expect("old registration")
             .id;
-        let requested = changed_capture_key('W');
+        let requested = changed_capture_key('E');
         manager.backend.fail_registration_for = Some(requested.capture_with_prompt.clone());
         let persisted = Cell::new(false);
 
@@ -443,7 +443,7 @@ mod tests {
             .id;
 
         manager
-            .apply_transaction(&changed_capture_key('W'), || Ok(()))
+            .apply_transaction(&changed_capture_key('E'), || Ok(()))
             .expect("transaction succeeds");
 
         let new_id = manager
@@ -470,7 +470,7 @@ mod tests {
             .expect("old registration")
             .id;
 
-        let result = manager.apply_transaction(&changed_capture_key('W'), || {
+        let result = manager.apply_transaction(&changed_capture_key('E'), || {
             Err(AppError::ConfigurationInvalid(
                 "simulated persistence failure".to_owned(),
             ))
@@ -498,7 +498,7 @@ mod tests {
             .id;
         manager.backend.fail_unregistration_for = Some(old_id);
 
-        let result = manager.apply_transaction(&changed_capture_key('W'), || Ok(()));
+        let result = manager.apply_transaction(&changed_capture_key('E'), || Ok(()));
 
         assert!(result.is_err());
         assert_eq!(
@@ -512,7 +512,7 @@ mod tests {
     fn repeated_changes_reuse_ids_without_leaking_registrations() {
         let mut manager = manager_with_defaults();
 
-        for key in ['W', 'E', 'R', 'T', 'Y', 'U'] {
+        for key in ['E', 'R', 'T', 'Y', 'U', 'I'] {
             manager
                 .apply_transaction(&changed_capture_key(key), || Ok(()))
                 .expect("transaction succeeds");

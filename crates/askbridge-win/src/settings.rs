@@ -1,6 +1,9 @@
 use std::ffi::c_void;
 
-use askbridge_core::{AppCommand, AppError, HotkeyBinding, HotkeyConfig, Result};
+use askbridge_core::{
+    AppCommand, AppError, BrowserConfig, BrowserTargetPreference, HotkeyBinding, HotkeyConfig,
+    Result,
+};
 use windows_sys::Win32::{
     Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
@@ -48,9 +51,13 @@ const SUBTITLE_LABEL: u16 = 2109;
 const DESCRIPTION_CAPTURE: u16 = 2110;
 const DESCRIPTION_QUICK: u16 = 2111;
 const DESCRIPTION_TEXT: u16 = 2112;
+const CHROME_PATH_LABEL: u16 = 2113;
+const CHROME_PATH_DESCRIPTION: u16 = 2114;
+const EDIT_CHROME_PATH: u16 = 2115;
+const CHECK_CHATGPT_DESKTOP_PWA: u16 = 2116;
 
 const WINDOW_WIDTH: i32 = 720;
-const WINDOW_HEIGHT: i32 = 460;
+const WINDOW_HEIGHT: i32 = 650;
 
 const COLOR_TEXT: COLORREF = rgb(30, 41, 59);
 const COLOR_MUTED: COLORREF = rgb(100, 116, 139);
@@ -158,12 +165,19 @@ struct HotkeyRow {
 pub struct SettingsWindow {
     window: HWND,
     rows: Vec<HotkeyRow>,
+    chatgpt_desktop_pwa: HWND,
+    chrome_path: HWND,
     status: HWND,
     _fonts: UiFonts,
 }
 
 impl SettingsWindow {
-    pub fn create(parent: HWND, instance: HINSTANCE, config: &HotkeyConfig) -> Result<Self> {
+    pub fn create(
+        parent: HWND,
+        instance: HINSTANCE,
+        hotkeys: &HotkeyConfig,
+        browser: &BrowserConfig,
+    ) -> Result<Self> {
         let scale = UiScale::system();
         let fonts = UiFonts::create(scale)?;
         let class_name = wide(SETTINGS_CLASS);
@@ -334,6 +348,92 @@ impl SettingsWindow {
             });
         }
 
+        let chatgpt_desktop_pwa = create_control(
+            window,
+            instance,
+            scale,
+            "BUTTON",
+            "ChatGPT 使用桌面网页端（复用现有登录状态）",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32,
+            32,
+            326,
+            626,
+            30,
+            0,
+            CHECK_CHATGPT_DESKTOP_PWA,
+        )?;
+        set_font(chatgpt_desktop_pwa, fonts.body.handle());
+        let pwa_description = create_control(
+            window,
+            instance,
+            scale,
+            "STATIC",
+            "启用后打开桌面的 ChatGPT.lnk；其他供应商继续使用专用 Chrome。",
+            WS_CHILD | WS_VISIBLE,
+            54,
+            358,
+            604,
+            22,
+            0,
+            0,
+        )?;
+        set_font(pwa_description, fonts.small.handle());
+
+        let chrome_label = create_control(
+            window,
+            instance,
+            scale,
+            "STATIC",
+            "Chrome 可执行文件",
+            WS_CHILD | WS_VISIBLE,
+            32,
+            392,
+            220,
+            26,
+            0,
+            CHROME_PATH_LABEL,
+        )?;
+        set_font(chrome_label, fonts.label.handle());
+        let chrome_description = create_control(
+            window,
+            instance,
+            scale,
+            "STATIC",
+            "留空时自动检测；也可粘贴 chrome.exe 的完整路径。",
+            WS_CHILD | WS_VISIBLE,
+            32,
+            420,
+            626,
+            22,
+            0,
+            CHROME_PATH_DESCRIPTION,
+        )?;
+        set_font(chrome_description, fonts.small.handle());
+        let chrome_path = create_control(
+            window,
+            instance,
+            scale,
+            "EDIT",
+            "",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
+            32,
+            448,
+            626,
+            34,
+            0,
+            EDIT_CHROME_PATH,
+        )?;
+        set_font(chrome_path, fonts.body.handle());
+        // SAFETY: chrome_path is a live EDIT control.
+        unsafe {
+            SendMessageW(
+                chrome_path,
+                EM_SETMARGINS,
+                (EC_LEFTMARGIN | EC_RIGHTMARGIN) as WPARAM,
+                make_lparam(scale.px(10) as u16, scale.px(10) as u16),
+            );
+        }
+
         let apply = create_control(
             window,
             instance,
@@ -342,7 +442,7 @@ impl SettingsWindow {
             "应用更改",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
             338,
-            333,
+            504,
             112,
             38,
             0,
@@ -356,7 +456,7 @@ impl SettingsWindow {
             "恢复默认",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
             462,
-            333,
+            504,
             96,
             38,
             0,
@@ -370,7 +470,7 @@ impl SettingsWindow {
             "关闭",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
             570,
-            333,
+            504,
             88,
             38,
             0,
@@ -384,7 +484,7 @@ impl SettingsWindow {
             "准备就绪。修改快捷键后点击“应用更改”。",
             WS_CHILD | WS_VISIBLE,
             32,
-            392,
+            563,
             626,
             24,
             0,
@@ -399,10 +499,12 @@ impl SettingsWindow {
         let settings = Self {
             window,
             rows,
+            chatgpt_desktop_pwa,
+            chrome_path,
             status,
             _fonts: fonts,
         };
-        settings.refresh(config);
+        settings.refresh(hotkeys, browser);
         Ok(settings)
     }
 
@@ -427,9 +529,9 @@ impl SettingsWindow {
         }
     }
 
-    pub fn refresh(&self, config: &HotkeyConfig) {
+    pub fn refresh(&self, hotkeys: &HotkeyConfig, browser: &BrowserConfig) {
         for row in &self.rows {
-            let binding = config.binding(row.command);
+            let binding = hotkeys.binding(row.command);
             set_text(row.edit, &binding.to_string());
             // SAFETY: enabled is a checkbox control and BM_SETCHECK accepts these values.
             unsafe {
@@ -444,6 +546,23 @@ impl SettingsWindow {
                     0,
                 );
             }
+        }
+        set_text(
+            self.chrome_path,
+            browser.chrome_path.as_deref().unwrap_or_default(),
+        );
+        // SAFETY: chatgpt_desktop_pwa is a live checkbox control.
+        unsafe {
+            SendMessageW(
+                self.chatgpt_desktop_pwa,
+                BM_SETCHECK,
+                if browser.target_preference("chatgpt") == BrowserTargetPreference::DesktopPwa {
+                    BST_CHECKED as WPARAM
+                } else {
+                    BST_UNCHECKED as WPARAM
+                },
+                0,
+            );
         }
     }
 
@@ -461,6 +580,18 @@ impl SettingsWindow {
         }
         config.validate()?;
         Ok(config)
+    }
+
+    pub fn read_chrome_path(&self) -> Result<Option<String>> {
+        let path = get_text(self.chrome_path)?;
+        let path = path.trim();
+        Ok((!path.is_empty()).then(|| path.to_owned()))
+    }
+
+    pub fn use_chatgpt_desktop_pwa(&self) -> bool {
+        // SAFETY: chatgpt_desktop_pwa is a live checkbox control.
+        (unsafe { SendMessageW(self.chatgpt_desktop_pwa, BM_GETCHECK, 0, 0) })
+            == BST_CHECKED as isize
     }
 
     pub fn set_status(&self, message: &str) {

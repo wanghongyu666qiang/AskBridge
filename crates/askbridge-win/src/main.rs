@@ -4,7 +4,9 @@
 compile_error!("askbridge-win supports Windows only");
 
 mod app;
+mod browser;
 mod capture;
+mod data_dir;
 mod hotkey_manager;
 mod prompt;
 mod settings;

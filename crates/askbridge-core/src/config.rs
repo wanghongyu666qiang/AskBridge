@@ -249,7 +249,25 @@ impl BrowserConfig {
                 self.lifecycle
             )));
         }
+        for (provider_id, shortcut) in &self.desktop_shortcuts {
+            if provider_id.trim().is_empty() || shortcut.trim().is_empty() {
+                return Err(AppError::ConfigurationInvalid(
+                    "desktop shortcut mappings require non-empty provider ids and paths".to_owned(),
+                ));
+            }
+        }
         Ok(())
+    }
+
+    pub fn target_preference(&self, provider_id: &str) -> BrowserTargetPreference {
+        self.target_preferences
+            .get(provider_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn desktop_shortcut(&self, provider_id: &str) -> Option<&str> {
+        self.desktop_shortcuts.get(provider_id).map(String::as_str)
     }
 }
 
@@ -350,6 +368,10 @@ pub struct BrowserConfig {
     pub connect_timeout_ms: u64,
     #[serde(default = "default_page_timeout_ms", alias = "target_timeout_ms")]
     pub page_timeout_ms: u64,
+    #[serde(default = "default_target_preferences")]
+    pub target_preferences: HashMap<String, BrowserTargetPreference>,
+    #[serde(default)]
+    pub desktop_shortcuts: HashMap<String, String>,
 }
 
 impl Default for BrowserConfig {
@@ -360,8 +382,18 @@ impl Default for BrowserConfig {
             lifecycle: default_browser_lifecycle(),
             connect_timeout_ms: default_connect_timeout_ms(),
             page_timeout_ms: default_page_timeout_ms(),
+            target_preferences: default_target_preferences(),
+            desktop_shortcuts: HashMap::new(),
         }
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserTargetPreference {
+    #[default]
+    DedicatedChrome,
+    DesktopPwa,
 }
 
 const fn current_schema_version() -> u32 {
@@ -389,7 +421,7 @@ fn default_capture_quick_dispatch() -> HotkeyBinding {
 }
 
 fn default_text_only_prompt() -> HotkeyBinding {
-    HotkeyBinding::new(true, vec![ModifierKey::Alt], VirtualKey::Letter('A'))
+    HotkeyBinding::new(true, vec![ModifierKey::Alt], VirtualKey::Letter('W'))
 }
 
 fn default_true() -> bool {
@@ -397,11 +429,15 @@ fn default_true() -> bool {
 }
 
 fn default_profile_dir() -> String {
-    r"%LOCALAPPDATA%\AskBridge\BrowserProfile".to_owned()
+    "BrowserProfile".to_owned()
 }
 
 fn default_browser_lifecycle() -> String {
     "on_demand_keep_running".to_owned()
+}
+
+fn default_target_preferences() -> HashMap<String, BrowserTargetPreference> {
+    HashMap::from([("chatgpt".to_owned(), BrowserTargetPreference::DesktopPwa)])
 }
 
 const fn default_connect_timeout_ms() -> u64 {
@@ -425,7 +461,15 @@ mod tests {
             config.hotkeys.capture_quick_dispatch.to_string(),
             "Alt+Shift+Q"
         );
-        assert_eq!(config.hotkeys.text_only_prompt.to_string(), "Alt+A");
+        assert_eq!(config.hotkeys.text_only_prompt.to_string(), "Alt+W");
+        assert_eq!(
+            config.browser.target_preference("chatgpt"),
+            BrowserTargetPreference::DesktopPwa
+        );
+        assert_eq!(
+            config.browser.target_preference("gemini"),
+            BrowserTargetPreference::DedicatedChrome
+        );
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(config.merged_providers().expect("providers").len(), 4);
     }
@@ -455,6 +499,10 @@ mod tests {
         assert!(config.migrate().expect("migrate old config"));
         assert_eq!(config.default_provider_id, "chatgpt");
         assert_eq!(config.hotkeys, HotkeyConfig::default());
+        assert_eq!(
+            config.browser.target_preference("chatgpt"),
+            BrowserTargetPreference::DesktopPwa
+        );
         assert_eq!(config.merged_providers().expect("providers").len(), 4);
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
     }
@@ -533,5 +581,19 @@ mod tests {
         assert!(config.validate().is_err());
         assert!(config.migrate().expect("normalize compatibility field"));
         assert!(!config.general.auto_submit);
+    }
+
+    #[test]
+    fn rejects_empty_desktop_shortcut_mapping() {
+        let mut config = AppConfig::default();
+        config
+            .browser
+            .desktop_shortcuts
+            .insert("chatgpt".to_owned(), " ".to_owned());
+
+        assert!(matches!(
+            config.validate(),
+            Err(AppError::ConfigurationInvalid(_))
+        ));
     }
 }
