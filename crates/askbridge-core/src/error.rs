@@ -99,6 +99,9 @@ pub enum AppError {
     #[error("browser profile is unsafe: {0}")]
     BrowserProfileRejected(String),
 
+    #[error("browser profile is already in use by another AskBridge Chrome process")]
+    BrowserProfileInUse,
+
     #[error("browser debugging endpoint is unavailable")]
     BrowserEndpointUnavailable,
 
@@ -119,6 +122,9 @@ pub enum AppError {
 
     #[error("web composer not found")]
     ComposerNotFound,
+
+    #[error("page preparation is invalid: {0}")]
+    InvalidPreparation(String),
 }
 
 impl AppError {

@@ -1,6 +1,7 @@
 use std::{mem::zeroed, ptr};
 
 use askbridge_core::{AppError, Result, ScreenRect};
+use tracing::info;
 use windows_sys::Win32::{
     Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::{
@@ -160,7 +161,7 @@ pub fn select_region(
         }
         if result == 0 {
             quit_code = Some(message.wParam as i32);
-            state.outcome = OverlayOutcome::Cancelled;
+            state.outcome = OverlayOutcome::Cancelled(CancelReason::Quit);
             break;
         }
         if message.message == WM_HOTKEY {
@@ -211,7 +212,11 @@ pub fn select_region(
                     "selection coordinates overflow the virtual desktop".to_owned(),
                 )
             }),
-        OverlayOutcome::Cancelled | OverlayOutcome::Pending => Ok(None),
+        OverlayOutcome::Cancelled(reason) => {
+            info!(reason = ?reason, "capture overlay cancelled");
+            Ok(None)
+        }
+        OverlayOutcome::Pending => Ok(None),
     }
 }
 
@@ -220,7 +225,17 @@ enum OverlayOutcome {
     #[default]
     Pending,
     Selected(ScreenRect),
-    Cancelled,
+    Cancelled(CancelReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancelReason {
+    Quit,
+    EmptySelection,
+    Escape,
+    RightClick,
+    Close,
+    CancelMode,
 }
 
 #[derive(Default)]
@@ -294,6 +309,11 @@ unsafe extern "system" fn overlay_window_proc(
     // SAFETY: Window messages are dispatched serially on the creating thread.
     let state = unsafe { &mut *state_ptr };
 
+    if let Some(reason) = cancellation_reason(message, wparam) {
+        cancel_selection(window, state, reason);
+        return 0;
+    }
+
     match message {
         WM_LBUTTONDOWN => {
             let point = mouse_point(lparam);
@@ -324,21 +344,13 @@ unsafe extern "system" fn overlay_window_proc(
                 state.outcome = state
                     .selection()
                     .map(OverlayOutcome::Selected)
-                    .unwrap_or(OverlayOutcome::Cancelled);
+                    .unwrap_or(OverlayOutcome::Cancelled(CancelReason::EmptySelection));
                 // SAFETY: The window owns mouse capture during a drag.
                 unsafe {
                     ReleaseCapture();
                     ShowWindow(window, SW_HIDE);
                 }
             }
-            0
-        }
-        WM_KEYDOWN if wparam as u16 == VK_ESCAPE => {
-            cancel_selection(window, state);
-            0
-        }
-        WM_RBUTTONDOWN | WM_CLOSE | WM_CANCELMODE | WM_KILLFOCUS => {
-            cancel_selection(window, state);
             0
         }
         WM_PAINT => {
@@ -353,8 +365,22 @@ unsafe extern "system" fn overlay_window_proc(
     }
 }
 
-fn cancel_selection(window: HWND, state: &mut OverlayState) {
-    state.outcome = OverlayOutcome::Cancelled;
+const fn cancellation_reason(message: u32, wparam: WPARAM) -> Option<CancelReason> {
+    match message {
+        WM_KEYDOWN if wparam as u16 == VK_ESCAPE => Some(CancelReason::Escape),
+        WM_RBUTTONDOWN => Some(CancelReason::RightClick),
+        WM_CLOSE => Some(CancelReason::Close),
+        WM_CANCELMODE => Some(CancelReason::CancelMode),
+        // A hotkey-created topmost overlay can receive a normal focus transition before the
+        // user's first click. Treating that transition as cancellation makes every real drag
+        // disappear before WM_LBUTTONUP can commit the selection.
+        WM_KILLFOCUS => None,
+        _ => None,
+    }
+}
+
+fn cancel_selection(window: HWND, state: &mut OverlayState, reason: CancelReason) {
+    state.outcome = OverlayOutcome::Cancelled(reason);
     // SAFETY: Releasing without capture is harmless; window is live.
     unsafe {
         ReleaseCapture();
@@ -568,5 +594,18 @@ mod tests {
         assert_eq!(state.update_drag((20, 30)), RepaintRequest::Deferred);
         assert_eq!(state.current, Some((20, 30)));
         assert_eq!(state.update_drag((20, 30)), RepaintRequest::None);
+    }
+
+    #[test]
+    fn focus_loss_does_not_cancel_a_hotkey_created_overlay() {
+        assert_eq!(cancellation_reason(WM_KILLFOCUS, 0), None);
+        assert_eq!(
+            cancellation_reason(WM_KEYDOWN, usize::from(VK_ESCAPE)),
+            Some(CancelReason::Escape)
+        );
+        assert_eq!(
+            cancellation_reason(WM_RBUTTONDOWN, 0),
+            Some(CancelReason::RightClick)
+        );
     }
 }

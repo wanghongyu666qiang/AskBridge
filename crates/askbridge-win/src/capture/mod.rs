@@ -1,4 +1,4 @@
-mod encoder;
+pub(crate) mod encoder;
 mod monitor;
 mod overlay;
 pub(crate) mod screen;

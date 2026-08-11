@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AppError, Result};
 
+pub const BUILT_IN_ADAPTER_IDS: [&str; 4] = ["chatgpt", "gemini", "claude", "doubao"];
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub id: String,
@@ -19,8 +21,11 @@ pub struct ProviderConfig {
 
 impl ProviderConfig {
     pub fn validate(&self) -> Result<()> {
-        if self.id.trim().is_empty() {
-            return Err(AppError::InvalidProvider("provider id is empty".to_owned()));
+        if !is_safe_provider_id(&self.id) {
+            return Err(AppError::InvalidProvider(
+                "provider id must contain 1-64 lowercase ASCII letters, digits, or hyphens"
+                    .to_owned(),
+            ));
         }
         if self.display_name.trim().is_empty() {
             return Err(AppError::InvalidProvider(format!(
@@ -41,11 +46,11 @@ impl ProviderConfig {
         if self
             .adapter_override
             .as_deref()
-            .is_some_and(|value| value.trim().is_empty())
+            .is_some_and(|value| value.trim().is_empty() || !BUILT_IN_ADAPTER_IDS.contains(&value))
         {
             return Err(AppError::InvalidProvider(format!(
-                "provider '{}' has an empty adapter override",
-                self.id
+                "provider '{}' has an unknown adapter override",
+                self.id,
             )));
         }
         Ok(())
@@ -87,9 +92,10 @@ pub struct ProviderOverride {
 
 impl ProviderOverride {
     pub fn validate(&self) -> Result<()> {
-        if self.id.trim().is_empty() {
+        if !is_safe_provider_id(&self.id) {
             return Err(AppError::InvalidProvider(
-                "provider override id is empty".to_owned(),
+                "provider override id must contain 1-64 lowercase ASCII letters, digits, or hyphens"
+                    .to_owned(),
             ));
         }
         if self
@@ -116,9 +122,13 @@ impl ProviderOverride {
                 validate_https_url(pattern)?;
             }
         }
-        if matches!(self.adapter_override.as_ref(), Some(Some(value)) if value.trim().is_empty()) {
+        if matches!(
+            self.adapter_override.as_ref(),
+            Some(Some(value))
+                if value.trim().is_empty() || !BUILT_IN_ADAPTER_IDS.contains(&value.as_str())
+        ) {
             return Err(AppError::InvalidProvider(format!(
-                "provider override '{}' has an empty adapter override",
+                "provider override '{}' has an unknown adapter override",
                 self.id
             )));
         }
@@ -180,11 +190,22 @@ pub(crate) fn validate_https_url(value: &str) -> Result<()> {
         || authority.ends_with('.')
         || !authority.contains('.')
         || authority.contains('@')
+        || value.contains('*')
+        || value.contains('\\')
+        || value.chars().any(char::is_control)
         || value.chars().any(char::is_whitespace)
     {
         return Err(AppError::InvalidProviderUrl(value.to_owned()));
     }
     Ok(())
+}
+
+fn is_safe_provider_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 #[cfg(test)]
@@ -200,6 +221,8 @@ mod tests {
             "data:text/plain,a",
             "http://localhost:3000",
             "https://user:password@example.com/chat",
+            "https://*.example.com/",
+            "https://example.com\\chat",
         ] {
             provider.start_url = url.to_owned();
             assert!(matches!(
@@ -210,8 +233,47 @@ mod tests {
     }
 
     #[test]
+    fn provider_ids_are_safe_for_structured_logs_and_configuration_keys() {
+        let mut provider = built_in_provider();
+        for id in ["", "HasUpper", "contains space", "带中文", "../escape"] {
+            provider.id = id.to_owned();
+            assert!(provider.validate().is_err(), "unsafe id {id} was accepted");
+        }
+        provider.id = "custom-provider-1".to_owned();
+        assert!(provider.validate().is_ok());
+    }
+
+    #[test]
     fn accepts_https_provider_urls() {
         assert!(built_in_provider().validate().is_ok());
+    }
+
+    #[test]
+    fn built_in_provider_entry_urls_match_verified_web_apps() {
+        let providers = built_in_providers();
+        assert_eq!(
+            providers
+                .iter()
+                .map(|provider| (provider.id.as_str(), provider.start_url.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("chatgpt", "https://chatgpt.com/"),
+                ("gemini", "https://gemini.google.com/app"),
+                ("claude", "https://claude.ai/new"),
+                ("doubao", "https://www.doubao.com/chat/"),
+            ]
+        );
+        assert!(providers.iter().all(|provider| provider.validate().is_ok()));
+    }
+
+    #[test]
+    fn rejects_unknown_adapter_overrides_before_browser_launch() {
+        let mut provider = built_in_provider();
+        provider.adapter_override = Some("downloaded-script".to_owned());
+        assert!(matches!(
+            provider.validate(),
+            Err(AppError::InvalidProvider(_))
+        ));
     }
 
     fn built_in_provider() -> ProviderConfig {

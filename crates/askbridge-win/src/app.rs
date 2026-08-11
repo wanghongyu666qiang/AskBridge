@@ -6,8 +6,10 @@ use std::{
 };
 
 use askbridge_core::{
-    AppCommand, AppConfig, AppError, AppState, BrowserTargetPreference, CapturedImage, ConfigStore,
-    DispatchMode, DispatchRequest, HotkeyConfig, Result, WorkflowController,
+    AppCommand, AppConfig, AppError, AppState, BrowserLifecycle, BrowserTargetPreference,
+    CapturedImage, ConfigStore, DispatchMode, DispatchOutcome, DispatchRequest, HotkeyConfig,
+    PreparationFailureStage, PreparationOutcome, PreparationPolicy, RecoveryHint, Result,
+    WorkflowController,
 };
 use tracing::{error, info, warn};
 use windows_sys::Win32::{
@@ -27,22 +29,27 @@ use windows_sys::Win32::{
 };
 
 use crate::{
+    adapter::validate_builtin_rules,
     browser::{
         BrowserEvent, BrowserJob, BrowserLaunch, BrowserService, BrowserStage, BrowserSurface,
         BrowserWarmupJob, ChromeInstallation, DedicatedChromeJob, DesktopPwaJob, WM_BROWSER_EVENT,
     },
     capture::{CaptureOutcome, CaptureService, WM_CAPTURE_BUSY},
     data_dir,
+    fallback::{self, FallbackAction},
     hotkey_manager::HotkeyManager,
+    logging,
     prompt::{
         CONTROL_PROMPT_CANCEL, CONTROL_PROMPT_SUBMIT, PROMPT_CLASS, PromptWindow,
         prompt_window_proc,
     },
-    settings::{
-        CONTROL_APPLY, CONTROL_CLOSE, CONTROL_RESTORE_DEFAULTS, SETTINGS_CLASS, SettingsWindow,
+    settings_v2::{
+        CONTROL_APPLY, CONTROL_CHECK_BROWSER, CONTROL_CLOSE, CONTROL_OPEN_BROWSER,
+        CONTROL_OPEN_LOGIN, CONTROL_RESTORE_DEFAULTS, SETTINGS_CLASS, SettingsWindow,
         settings_window_proc,
     },
     single_instance::{ACTIVATE_MESSAGE, MAIN_WINDOW_CLASS, MAIN_WINDOW_TITLE, SingleInstance},
+    startup,
     tray::{
         MENU_CAPTURE_QUICK, MENU_CAPTURE_WITH_PROMPT, MENU_EXIT, MENU_PAUSE, MENU_SETTINGS,
         MENU_TEXT_ONLY, TrayEvent, TrayIcon, WM_TRAY_CALLBACK, WM_TRAY_DISPATCH,
@@ -54,14 +61,7 @@ use crate::{
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 pub fn run() -> Result<()> {
-    init_logging();
-    // SAFETY: Process DPI awareness must be selected before any windows are created.
-    if unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) } == 0 {
-        warn!(
-            win32_code = last_error(),
-            "per-monitor V2 DPI awareness could not be enabled"
-        );
-    }
+    validate_builtin_rules()?;
     let _instance_guard = match SingleInstance::acquire() {
         Ok(instance) => instance,
         Err(AppError::AlreadyRunning) => return Ok(()),
@@ -72,6 +72,28 @@ pub fn run() -> Result<()> {
     let config_path = data_root.join("config.json");
     let store = ConfigStore::new(config_path);
     let loaded = store.load_or_create()?;
+    let _log_path = logging::init(&data_root, loaded.config.general.debug_logging)?;
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        stage = "startup",
+        completed = false,
+        "AskBridge startup began"
+    );
+    startup::apply(loaded.config.general.start_on_login)?;
+    if loaded.config.general.start_on_login && !startup::is_current_executable_registered()? {
+        return Err(AppError::ConfigurationInvalid(
+            "startup registration could not be verified".to_owned(),
+        ));
+    }
+
+    // SAFETY: Process DPI awareness must be selected before any windows are created.
+    if unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) } == 0 {
+        warn!(
+            stage = "startup",
+            completed = false,
+            "per-monitor V2 DPI awareness could not be enabled"
+        );
+    }
 
     // SAFETY: A null module name requests the current process module.
     let module = unsafe { GetModuleHandleW(ptr::null()) };
@@ -91,12 +113,7 @@ pub fn run() -> Result<()> {
     let mut hotkeys = HotkeyManager::new(main_window.hwnd());
     let registration_errors = hotkeys.register_initial(&loaded.config.hotkeys);
     let tray = TrayIcon::create(main_window.hwnd())?;
-    let settings = SettingsWindow::create(
-        ptr::null_mut(),
-        instance,
-        &loaded.config.hotkeys,
-        &loaded.config.browser,
-    )?;
+    let settings = SettingsWindow::create(ptr::null_mut(), instance, &loaded.config, &data_root)?;
     let prompt = PromptWindow::create(instance)?;
     let browser = BrowserService::start(main_window.hwnd(), data_root);
 
@@ -117,9 +134,10 @@ pub fn run() -> Result<()> {
     };
     runtime.warmup_browser_if_configured();
 
-    if let Some(backup) = loaded.recovered_from {
+    if let Some(_backup) = loaded.recovered_from {
         warn!(
-            backup = %backup.display(),
+            stage = "configuration_recovery",
+            completed = false,
             "invalid configuration was backed up and replaced with defaults"
         );
         runtime.tray.notify(
@@ -135,7 +153,11 @@ pub fn run() -> Result<()> {
             .map(user_facing_error)
             .collect::<Vec<_>>()
             .join("; ");
-        warn!(errors = %summary, "one or more hotkeys could not be registered");
+        warn!(
+            stage = "hotkey_registration",
+            completed = false,
+            "one or more hotkeys could not be registered"
+        );
         runtime
             .settings
             .set_status(&format!("快捷键冲突：{summary}"));
@@ -166,6 +188,9 @@ fn user_facing_error(error: &AppError) -> String {
         AppError::ChromeNotFound => "未找到 Google Chrome，请在设置中选择 chrome.exe。".to_owned(),
         AppError::BrowserProfileRejected(details) => {
             format!("专用浏览器目录不安全：{details}")
+        }
+        AppError::BrowserProfileInUse => {
+            "另一个 AskBridge 专用 Chrome 正在使用该目录；请先正常关闭它后重试。".to_owned()
         }
         AppError::BrowserLaunchFailed => "专用 Chrome 启动失败。".to_owned(),
         AppError::DesktopShortcutNotFound(_) => {
@@ -233,6 +258,12 @@ impl Runtime {
             if self.prompt.is_visible() && self.prompt.contains(message.hwnd) {
                 // SAFETY: The prompt window is live and message belongs to it or a child.
                 if unsafe { IsDialogMessageW(self.prompt.hwnd(), &message) } != 0 {
+                    continue;
+                }
+            }
+            if self.settings.is_visible() && self.settings.contains(message.hwnd) {
+                // SAFETY: The settings window is live and the message belongs to it or a child.
+                if unsafe { IsDialogMessageW(self.settings.hwnd(), &message) } != 0 {
                     continue;
                 }
             }
@@ -343,6 +374,9 @@ impl Runtime {
             CONTROL_APPLY => self.apply_settings(),
             CONTROL_RESTORE_DEFAULTS => self.restore_default_hotkeys(),
             CONTROL_CLOSE => self.settings.hide(),
+            CONTROL_OPEN_BROWSER => self.open_browser_tool(false),
+            CONTROL_CHECK_BROWSER => self.open_browser_tool(false),
+            CONTROL_OPEN_LOGIN => self.open_browser_tool(true),
             CONTROL_PROMPT_SUBMIT => self.submit_prompt(),
             CONTROL_PROMPT_CANCEL => self.cancel_prompt(),
             _ => {}
@@ -353,7 +387,8 @@ impl Runtime {
     fn route_command(&mut self, command: AppCommand) {
         if self.workflow.state() == AppState::Prompting && self.prompt.is_visible() {
             info!(
-                command = command.event_name(),
+                stage = "prompt",
+                completed = false,
                 "prompt already open; focusing existing workflow"
             );
             self.prompt.focus_existing();
@@ -361,8 +396,8 @@ impl Runtime {
         }
         if !self.workflow.is_idle() {
             info!(
-                command = command.event_name(),
-                state = ?self.workflow.state(),
+                stage = "workflow",
+                completed = false,
                 "workflow command ignored while busy"
             );
             self.tray
@@ -379,8 +414,9 @@ impl Runtime {
             }
             AppCommand::TextOnlyPrompt => {
                 info!(
-                    command = command.event_name(),
-                    phase = 3_u8,
+                    stage = "prompt",
+                    completed = true,
+                    has_image = false,
                     "text-only command routed"
                 );
                 self.open_prompt(command, None);
@@ -389,18 +425,13 @@ impl Runtime {
     }
 
     fn capture_command(&mut self, command: AppCommand) {
-        info!(
-            command = command.event_name(),
-            phase = 3_u8,
-            "capture requested"
-        );
+        info!(stage = "capture", completed = false, "capture requested");
         match self.capture.capture() {
             Ok(CaptureOutcome::Captured(image)) => {
                 info!(
-                    command = command.event_name(),
-                    width = image.width,
-                    height = image.height,
-                    rgba_bytes = image.rgba_bytes.len(),
+                    stage = "capture",
+                    completed = true,
+                    has_image = true,
                     "capture completed in memory"
                 );
                 if let Err(error) = self.workflow.capture_completed(command) {
@@ -418,15 +449,16 @@ impl Runtime {
                 }
             }
             Ok(CaptureOutcome::Cancelled) => {
-                info!(command = command.event_name(), "capture cancelled");
+                info!(
+                    stage = "capture",
+                    completed = false,
+                    cancelled = true,
+                    "capture cancelled"
+                );
                 self.cancel_workflow();
             }
             Err(error) => {
-                error!(
-                    command = command.event_name(),
-                    error = %error,
-                    "capture failed"
-                );
+                error!(stage = "capture", completed = false, "capture failed");
                 self.workflow_failed(command, error);
             }
         }
@@ -477,7 +509,8 @@ impl Runtime {
             self.workflow_failed(pending.command, error);
             return;
         }
-        self.prompt.hide_and_clear();
+        self.prompt.set_busy(true);
+        self.prompt.set_status("正在准备网页内容，请稍候…");
         self.prepare_request(
             pending.command,
             input.provider_id,
@@ -489,7 +522,7 @@ impl Runtime {
     fn cancel_prompt(&mut self) {
         self.prompt.hide_and_clear();
         self.pending_prompt = None;
-        if self.workflow.state() == AppState::Prompting {
+        if !self.workflow.is_idle() {
             self.cancel_workflow();
         }
     }
@@ -530,12 +563,13 @@ impl Runtime {
     fn handoff_browser_request(&mut self, request: DispatchRequest) {
         info!(
             request_id = %request.id,
-            mode = ?request.mode,
             provider_id = %request.provider_id,
+            stage = "request_prepared",
             has_image = request.image.is_some(),
             auto_submit = request.auto_submit,
             "dispatch request prepared for browser surface"
         );
+        self.pending_dispatch = Some(request.clone());
         let provider = match self.config.merged_providers().and_then(|providers| {
             providers
                 .into_iter()
@@ -557,6 +591,7 @@ impl Runtime {
             self.browser_workflow_failed(error);
             return;
         }
+        let adapter_override = provider.adapter_override.clone();
         let launch = match self.config.browser.target_preference(&provider.id) {
             BrowserTargetPreference::DesktopPwa => BrowserLaunch::DesktopPwa(DesktopPwaJob {
                 provider_id: provider.id.clone(),
@@ -565,6 +600,8 @@ impl Runtime {
                     .browser
                     .desktop_shortcut(&provider.id)
                     .map(str::to_owned),
+                start_url: provider.start_url.clone(),
+                url_patterns: provider.url_patterns.clone(),
             }),
             BrowserTargetPreference::DedicatedChrome => {
                 BrowserLaunch::DedicatedChrome(DedicatedChromeJob {
@@ -572,7 +609,7 @@ impl Runtime {
                     profile_dir: self.config.browser.profile_dir.clone(),
                     connect_timeout: Duration::from_millis(self.config.browser.connect_timeout_ms),
                     page_timeout: Duration::from_millis(self.config.browser.page_timeout_ms),
-                    lifecycle: self.config.browser.lifecycle.clone(),
+                    lifecycle: self.config.browser.lifecycle,
                     start_url: provider.start_url,
                     url_patterns: provider.url_patterns,
                 })
@@ -580,10 +617,20 @@ impl Runtime {
         };
         let opens_desktop_pwa = matches!(&launch, BrowserLaunch::DesktopPwa(_));
         let job = BrowserJob {
-            request_id: request.id.clone(),
+            request: request.clone(),
+            policy: match PreparationPolicy::new(
+                self.config.browser.page_timeout_ms,
+                self.config.general.clipboard_fallback,
+            ) {
+                Ok(policy) => policy,
+                Err(error) => {
+                    self.browser_workflow_failed(error);
+                    return;
+                }
+            },
+            adapter_override,
             launch,
         };
-        self.pending_dispatch = Some(request);
         if let Err(error) = self.browser.prepare(job) {
             self.browser_workflow_failed(error);
             return;
@@ -619,15 +666,19 @@ impl Runtime {
                     }
                     info!(
                         request_id = %request_id,
+                        provider_id = self
+                            .pending_dispatch
+                            .as_ref()
+                            .map_or("", |request| request.provider_id.as_str()),
                         stage = ?stage,
+                        completed = true,
                         "dedicated browser workflow advanced"
                     );
                 }
-                BrowserEvent::Ready {
+                BrowserEvent::Prepared {
                     request_id,
                     surface,
-                    target_id,
-                    created,
+                    outcome,
                 } => {
                     if !self.is_current_request(&request_id) {
                         continue;
@@ -640,38 +691,101 @@ impl Runtime {
                         self.browser_workflow_failed(error);
                         return;
                     }
-                    info!(
-                        request_id = %request_id,
-                        target_id = %target_id,
-                        created,
-                        surface = ?surface,
-                        "browser surface is ready"
-                    );
-                    self.pending_dispatch = None;
-                    if let Err(error) = self.workflow.defer_page_preparation() {
+                    if let Err(error) = self.workflow.page_prepared(&outcome) {
                         self.browser_workflow_failed(error);
                         return;
                     }
-                    match surface {
-                        BrowserSurface::DedicatedChrome => self.tray.notify(
-                            "AskBridge 专用 Chrome 已就绪",
-                            "目标页面已打开并置前；网页内容准备将在 Phase 5 接入。",
-                        ),
-                        BrowserSurface::DesktopPwa => self.tray.notify(
-                            "ChatGPT 桌面网页端已打开",
-                            "已复用现有登录会话；内容准备将在 Phase 5 接入。",
-                        ),
+                    let cancelled = matches!(&outcome, DispatchOutcome::Cancelled);
+                    let preparation = match &outcome {
+                        DispatchOutcome::PreparedForUser(preparation)
+                        | DispatchOutcome::ManualFallbackReady(preparation) => Some(preparation),
+                        DispatchOutcome::Cancelled => None,
+                    };
+                    info!(
+                        request_id = %request_id,
+                        provider_id = self
+                            .pending_dispatch
+                            .as_ref()
+                            .map_or("", |request| request.provider_id.as_str()),
+                        stage = "page_preparation",
+                        completed = !cancelled,
+                        text_inserted = preparation.is_some_and(|value| value.text_inserted),
+                        attachment_prepared = preparation
+                            .is_some_and(|value| value.attachment_prepared),
+                        manual_fallback = preparation
+                            .is_some_and(|value| value.manual_fallback_required),
+                        cancelled,
+                        "page preparation completed"
+                    );
+                    match outcome {
+                        DispatchOutcome::PreparedForUser(_) => {
+                            self.pending_dispatch = None;
+                            if let Err(error) = self.workflow.finish_delivery() {
+                                self.browser_workflow_failed(error);
+                                return;
+                            }
+                            if self.prompt.is_visible() {
+                                if self.config.general.hide_prompt_after_prepare {
+                                    self.prompt.hide_and_clear();
+                                } else {
+                                    self.prompt.set_status(
+                                        "网页内容已准备完成；请在网页确认发送，或关闭此窗口。",
+                                    );
+                                }
+                            }
+                            self.tray.notify(
+                                "AskBridge 已准备网页内容",
+                                "文字和附件已验证就绪；请在网页中确认后手动发送。",
+                            );
+                            if surface == BrowserSurface::DedicatedChrome
+                                && self.config.browser.lifecycle
+                                    == BrowserLifecycle::CloseAfterDispatch
+                                && crate::util::confirm_close_managed_browser(
+                                    self._main_window.hwnd(),
+                                )
+                                && let Err(error) = self.browser.close_managed()
+                            {
+                                self.tray.notify(
+                                    "AskBridge 无法关闭专用 Chrome",
+                                    &user_facing_error(&error),
+                                );
+                            }
+                        }
+                        DispatchOutcome::ManualFallbackReady(preparation) => {
+                            self.show_manual_fallback(preparation);
+                        }
+                        DispatchOutcome::Cancelled => {
+                            if self.prompt.is_visible() {
+                                self.prompt.hide_and_clear();
+                            }
+                            self.pending_dispatch = None;
+                            let _ = self.workflow.finish_cancelling();
+                        }
                     }
                 }
                 BrowserEvent::WarmupReady => {
-                    info!("dedicated browser started with AskBridge");
+                    info!(
+                        stage = "browser_warmup",
+                        completed = true,
+                        "dedicated browser is connected"
+                    );
+                    self.settings
+                        .set_status("AskBridge 专用 Chrome 已启动，CDP 回环连接正常。");
                     self.tray.notify(
-                        "AskBridge 专用 Chrome 已启动",
-                        "浏览器生命周期设置为“随 AskBridge 启动”。",
+                        "AskBridge 专用 Chrome 已就绪",
+                        "浏览器已启动并通过本机回环连接验证。",
                     );
                 }
                 BrowserEvent::WarmupFailed { error } => {
-                    error!(error = %error, "dedicated browser startup warmup failed");
+                    error!(
+                        stage = "browser_warmup",
+                        completed = false,
+                        "dedicated browser startup warmup failed"
+                    );
+                    self.settings.set_status(&format!(
+                        "AskBridge 专用 Chrome 操作失败：{}",
+                        user_facing_error(&error)
+                    ));
                     self.tray
                         .notify("AskBridge 专用 Chrome 启动失败", &user_facing_error(&error));
                 }
@@ -686,16 +800,22 @@ impl Runtime {
     }
 
     fn warmup_browser_if_configured(&self) {
-        if self.config.browser.lifecycle != "on_startup" {
+        if self.config.browser.lifecycle != BrowserLifecycle::OnStartup {
             return;
         }
         let job = BrowserWarmupJob {
             configured_chrome_path: self.config.browser.chrome_path.clone(),
             profile_dir: self.config.browser.profile_dir.clone(),
             connect_timeout: Duration::from_millis(self.config.browser.connect_timeout_ms),
+            page_timeout: Duration::from_millis(self.config.browser.page_timeout_ms),
+            open_url: None,
         };
-        if let Err(error) = self.browser.warmup(job) {
-            error!(error = %error, "failed to queue dedicated browser startup");
+        if self.browser.warmup(job).is_err() {
+            error!(
+                stage = "browser_warmup_queue",
+                completed = false,
+                "failed to queue dedicated browser startup"
+            );
         }
     }
 
@@ -706,12 +826,74 @@ impl Runtime {
     }
 
     fn browser_workflow_failed(&mut self, error: AppError) {
+        let request_id = self
+            .pending_dispatch
+            .as_ref()
+            .map_or("", |request| request.id.as_str());
+        let provider_id = self
+            .pending_dispatch
+            .as_ref()
+            .map_or("", |request| request.provider_id.as_str());
         error!(
-            state = ?self.workflow.state(),
-            error = %error,
+            request_id = %request_id,
+            provider_id = %provider_id,
+            stage = "browser_workflow",
+            completed = false,
             "browser surface workflow failed"
         );
+        if self.config.general.clipboard_fallback
+            && self.pending_dispatch.is_some()
+            && self
+                .workflow
+                .prepare_fallback_after_browser_failure()
+                .is_ok()
+        {
+            let Some(request) = self.pending_dispatch.as_ref() else {
+                return;
+            };
+            let target_url = self
+                .config
+                .merged_providers()
+                .ok()
+                .and_then(|providers| {
+                    providers
+                        .into_iter()
+                        .find(|provider| provider.id == request.provider_id)
+                        .map(|provider| provider.start_url)
+                })
+                .unwrap_or_else(|| "about:blank".to_owned());
+            let hint = if matches!(
+                &error,
+                AppError::ChromeNotFound
+                    | AppError::BrowserLaunchFailed
+                    | AppError::DesktopShortcutNotFound(_)
+                    | AppError::BrowserProfileRejected(_)
+                    | AppError::BrowserProfileInUse
+            ) {
+                RecoveryHint::ReopenProviderPage
+            } else {
+                RecoveryHint::Retry
+            };
+            self.tray.notify(
+                "AskBridge 已安全停止自动准备",
+                "请求仍保留；可在人工兜底中复制内容或重试。",
+            );
+            self.show_manual_fallback(PreparationOutcome::manual_fallback(
+                target_url,
+                PreparationFailureStage::PageReadiness,
+                hint,
+                false,
+                false,
+            ));
+            return;
+        }
+
         self.pending_dispatch = None;
+        if self.prompt.is_visible() {
+            self.prompt.set_busy(false);
+            self.prompt
+                .set_status("自动准备失败，输入仍保留；请检查设置后重试。");
+        }
         self.tray
             .notify("AskBridge 无法打开目标页面", &user_facing_error(&error));
         if !self.workflow.is_idle() && self.workflow.state() != AppState::Error {
@@ -719,6 +901,55 @@ impl Runtime {
         }
         if self.workflow.state() == AppState::Error {
             let _ = self.workflow.recover();
+        }
+    }
+
+    fn show_manual_fallback(&mut self, preparation: PreparationOutcome) {
+        if let Err(error) = self.workflow.fallback_prepared() {
+            self.browser_workflow_failed(error);
+            return;
+        }
+        let Some(request) = self.pending_dispatch.clone() else {
+            self.browser_workflow_failed(AppError::InvalidPreparation(
+                "fallback request was not retained".to_owned(),
+            ));
+            return;
+        };
+        match fallback::show(self._main_window.hwnd(), &request, &preparation) {
+            Ok(FallbackAction::Retry) => {
+                if self.prompt.is_visible() {
+                    self.prompt.hide_and_clear();
+                }
+                if let Err(error) = self.workflow.retry_fallback() {
+                    self.browser_workflow_failed(error);
+                    return;
+                }
+                self.handoff_browser_request(request);
+            }
+            Ok(FallbackAction::Cancel) => {
+                if self.prompt.is_visible() {
+                    self.prompt.hide_and_clear();
+                }
+                self.pending_dispatch = None;
+                if let Err(error) = self
+                    .workflow
+                    .begin_cancelling()
+                    .and_then(|_| self.workflow.finish_cancelling())
+                {
+                    self.browser_workflow_failed(error);
+                }
+            }
+            Err(error) => {
+                self.pending_dispatch = None;
+                if self.prompt.is_visible() {
+                    self.prompt.set_busy(false);
+                    self.prompt
+                        .set_status("人工兜底未能打开，输入仍保留；请稍后重试。");
+                }
+                let _ = self.workflow.finish_delivery();
+                self.tray
+                    .notify("AskBridge 人工兜底失败", &user_facing_error(&error));
+            }
         }
     }
 
@@ -737,11 +968,20 @@ impl Runtime {
         }
     }
 
-    fn workflow_failed(&mut self, command: AppCommand, error: AppError) {
+    fn workflow_failed(&mut self, _command: AppCommand, error: AppError) {
+        let request_id = self
+            .pending_dispatch
+            .as_ref()
+            .map_or("", |request| request.id.as_str());
+        let provider_id = self
+            .pending_dispatch
+            .as_ref()
+            .map_or("", |request| request.provider_id.as_str());
         error!(
-            command = command.event_name(),
-            state = ?self.workflow.state(),
-            error = %error,
+            request_id = %request_id,
+            provider_id = %provider_id,
+            stage = "workflow",
+            completed = false,
             "workflow failed"
         );
         self.prompt.hide_and_clear();
@@ -758,64 +998,56 @@ impl Runtime {
     }
 
     fn apply_settings(&mut self) {
-        let requested = match self.settings.read_hotkeys() {
-            Ok(hotkeys) => hotkeys,
+        let candidate = match self.settings.read_config(&self.config) {
+            Ok(candidate) => candidate,
             Err(error) => {
                 self.settings
                     .set_status(&format!("无法应用：{}", user_facing_error(&error)));
                 return;
             }
         };
-        let chrome_path = match self.settings.read_chrome_path() {
-            Ok(path) => path,
-            Err(error) => {
-                self.settings
-                    .set_status(&format!("无法应用：{}", user_facing_error(&error)));
-                return;
-            }
-        };
-        if let Some(path) = chrome_path.as_deref()
+        if let Some(path) = candidate.browser.chrome_path.as_deref()
             && let Err(error) = ChromeInstallation::discover(Some(path))
         {
             self.settings
                 .set_status(&format!("无法应用：{}", user_facing_error(&error)));
             return;
         }
-        self.persist_settings(
-            requested,
-            chrome_path,
-            self.settings.use_chatgpt_desktop_pwa(),
-            "设置已保存并立即生效。",
-        );
+        self.persist_settings(candidate, "设置已保存并立即生效。");
     }
 
     fn restore_default_hotkeys(&mut self) {
-        self.persist_settings(
-            HotkeyConfig::default(),
-            self.config.browser.chrome_path.clone(),
-            self.config.browser.target_preference("chatgpt") == BrowserTargetPreference::DesktopPwa,
-            "已恢复默认快捷键并立即生效。",
-        );
+        let mut candidate = self.config.clone();
+        candidate.hotkeys = HotkeyConfig::default();
+        self.persist_settings(candidate, "已恢复默认快捷键并立即生效。");
     }
 
-    fn persist_settings(
-        &mut self,
-        requested: HotkeyConfig,
-        chrome_path: Option<String>,
-        use_chatgpt_desktop_pwa: bool,
-        success_message: &str,
-    ) {
-        let mut candidate = self.config.clone();
-        candidate.hotkeys = requested.clone();
-        candidate.browser.chrome_path = chrome_path;
-        candidate.browser.target_preferences.insert(
-            "chatgpt".to_owned(),
-            if use_chatgpt_desktop_pwa {
-                BrowserTargetPreference::DesktopPwa
-            } else {
-                BrowserTargetPreference::DedicatedChrome
-            },
-        );
+    fn persist_settings(&mut self, candidate: AppConfig, success_message: &str) {
+        let requested = candidate.hotkeys.clone();
+        let browser_changed = self.config.browser != candidate.browser;
+        let debug_logging_changed =
+            self.config.general.debug_logging != candidate.general.debug_logging;
+        let startup_snapshot = match startup::snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.settings
+                    .set_status(&format!("无法应用：{}", user_facing_error(&error)));
+                return;
+            }
+        };
+        if let Err(error) = startup::apply(candidate.general.start_on_login) {
+            self.settings
+                .set_status(&format!("无法应用：{}", user_facing_error(&error)));
+            return;
+        }
+        if candidate.general.start_on_login
+            && !startup::is_current_executable_registered().unwrap_or(false)
+        {
+            let _ = startup::restore(&startup_snapshot);
+            self.settings
+                .set_status("无法应用：开机启动项写入后未能通过校验。");
+            return;
+        }
         let store = &self.store;
         let result = self
             .hotkeys
@@ -823,19 +1055,94 @@ impl Runtime {
         match result {
             Ok(()) => {
                 self.config = candidate;
+                let mut runtime_warnings = Vec::new();
+                if debug_logging_changed
+                    && let Err(error) =
+                        logging::set_debug_logging(self.config.general.debug_logging)
+                {
+                    runtime_warnings.push(user_facing_error(&error));
+                }
+                if browser_changed {
+                    if let Err(error) = self.browser.reconfigure() {
+                        runtime_warnings.push(user_facing_error(&error));
+                    } else {
+                        self.warmup_browser_if_configured();
+                    }
+                }
                 if self.paused {
                     let _ = self.hotkeys.pause();
                 }
-                self.settings
-                    .refresh(&self.config.hotkeys, &self.config.browser);
-                self.settings.set_status(success_message);
-                info!("hotkey configuration updated");
+                if let Err(error) = self.settings.refresh(&self.config) {
+                    self.settings.set_status(&format!(
+                        "已保存，但界面刷新失败：{}",
+                        user_facing_error(&error)
+                    ));
+                    return;
+                }
+                if runtime_warnings.is_empty() {
+                    self.settings.set_status(success_message);
+                } else {
+                    self.settings.set_status(&format!(
+                        "设置已保存；运行时刷新失败，下次启动会生效：{}",
+                        runtime_warnings.join("；")
+                    ));
+                }
+                info!(stage = "settings", completed = true, "settings updated");
             }
             Err(error) => {
-                error!(error = %error, "hotkey configuration update failed");
+                let _ = startup::restore(&startup_snapshot);
+                error!(
+                    stage = "settings",
+                    completed = false,
+                    "hotkey configuration update failed"
+                );
                 self.settings
                     .set_status(&format!("无法应用：{}", user_facing_error(&error)));
             }
+        }
+    }
+
+    fn open_browser_tool(&mut self, open_login: bool) {
+        let message = if open_login {
+            "正在打开默认供应商页面；请只在 AskBridge 专用 Chrome 中自行登录。"
+        } else {
+            "正在启动并检查 AskBridge 专用 Chrome。"
+        };
+        self.settings.set_status(message);
+        let open_url = if open_login {
+            match self.config.merged_providers().and_then(|providers| {
+                providers
+                    .into_iter()
+                    .find(|provider| {
+                        provider.enabled && provider.id == self.config.default_provider_id
+                    })
+                    .map(|provider| provider.start_url)
+                    .ok_or_else(|| {
+                        AppError::InvalidProvider(
+                            "default provider is missing or disabled".to_owned(),
+                        )
+                    })
+            }) {
+                Ok(url) => Some(url),
+                Err(error) => {
+                    self.settings
+                        .set_status(&format!("浏览器操作失败：{}", user_facing_error(&error)));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let job = BrowserWarmupJob {
+            configured_chrome_path: self.config.browser.chrome_path.clone(),
+            profile_dir: self.config.browser.profile_dir.clone(),
+            connect_timeout: Duration::from_millis(self.config.browser.connect_timeout_ms),
+            page_timeout: Duration::from_millis(self.config.browser.page_timeout_ms),
+            open_url,
+        };
+        if let Err(error) = self.browser.warmup(job) {
+            self.settings
+                .set_status(&format!("浏览器操作失败：{}", user_facing_error(&error)));
         }
     }
 
@@ -861,12 +1168,11 @@ impl Runtime {
         } else {
             let errors = self.hotkeys.pause();
             if !errors.is_empty() {
-                let summary = errors
-                    .iter()
-                    .map(user_facing_error)
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                error!(errors = %summary, "one or more hotkeys could not be paused");
+                error!(
+                    stage = "hotkeys",
+                    completed = false,
+                    "one or more hotkeys could not be paused"
+                );
                 self.tray
                     .notify("AskBridge 快捷键暂停失败", "部分快捷键仍然处于活动状态。");
                 return;
@@ -972,7 +1278,8 @@ unsafe extern "system" fn window_proc(
         // SAFETY: The message carries only integer values and targets this live owner window.
         if unsafe { PostMessageW(window, WM_TRAY_DISPATCH, wparam, lparam) } == 0 {
             error!(
-                win32_code = last_error(),
+                stage = "tray_callback",
+                completed = false,
                 "failed to queue tray callback for runtime dispatch"
             );
         }
@@ -997,14 +1304,6 @@ fn next_request_id(created_at_ms: u64) -> String {
     format!("askbridge-{created_at_ms:013x}-{sequence:08x}")
 }
 
-fn init_logging() {
-    let _ = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_target(false)
-        .with_max_level(tracing::Level::INFO)
-        .try_init();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1021,6 +1320,14 @@ mod tests {
         assert_ne!(ACTIVATE_MESSAGE, WM_CAPTURE_BUSY);
         assert_ne!(ACTIVATE_MESSAGE, WM_BROWSER_EVENT);
         assert_ne!(WM_CAPTURE_BUSY, WM_BROWSER_EVENT);
+    }
+
+    #[test]
+    fn profile_in_use_error_has_actionable_message() {
+        let message = user_facing_error(&AppError::BrowserProfileInUse);
+        assert!(message.contains("AskBridge 专用 Chrome"));
+        assert!(message.contains("关闭"));
+        assert!(message.contains("重试"));
     }
 
     #[test]

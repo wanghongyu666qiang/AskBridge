@@ -1,0 +1,80 @@
+{
+  "schema_version": 2,
+  "providers": [
+    {
+      "id": "chatgpt",
+      "login_url_patterns": [
+        "https://chatgpt.com/auth/",
+        "https://auth.openai.com/"
+      ],
+      "login_selectors": [],
+      "composer_selectors": [
+        "#prompt-textarea",
+        "[data-testid=\"prompt-textarea\"]",
+        "div.ProseMirror[contenteditable=\"true\"]"
+      ],
+      "file_input_selectors": [
+        "#upload-files"
+      ]
+    },
+    {
+      "id": "gemini",
+      "login_url_patterns": [
+        "https://accounts.google.com/",
+        "https://gemini.google.com/signin"
+      ],
+      "login_selectors": [
+        "a[href*=\"//accounts.google.com/\"]"
+      ],
+      "composer_selectors": [
+        "rich-textarea [contenteditable=\"true\"]",
+        ".ql-editor[contenteditable=\"true\"]",
+        "[aria-label*=\"Enter a prompt\"]",
+        "[aria-label*=\"输入提示\"]"
+      ],
+      "file_input_selectors": [
+        "input[type=\"file\"][accept*=\"image\"]",
+        "input[type=\"file\"][accept*=\"png\"]"
+      ]
+    },
+    {
+      "id": "claude",
+      "login_url_patterns": [
+        "https://claude.ai/login",
+        "https://claude.ai/logout",
+        "https://claude.ai/auth/",
+        "https://auth.anthropic.com/"
+      ],
+      "login_selectors": [],
+      "composer_selectors": [
+        "[data-testid=\"chat-input\"] [contenteditable=\"true\"]",
+        "[contenteditable=\"true\"].ProseMirror",
+        "[aria-label*=\"Talk to Claude\"]",
+        "[aria-label*=\"Message Claude\"]"
+      ],
+      "file_input_selectors": [
+        "#chat-input-file-upload-onpage"
+      ]
+    },
+    {
+      "id": "doubao",
+      "login_url_patterns": [
+        "https://www.doubao.com/login",
+        "https://www.doubao.com/auth/",
+        "https://passport.doubao.com/",
+        "https://sso.doubao.com/"
+      ],
+      "login_selectors": [],
+      "composer_selectors": [
+        "textarea[data-testid=\"chat_input_input\"]",
+        "[data-testid=\"chat_input_input\"] [contenteditable=\"true\"]",
+        "div[contenteditable=\"true\"][data-slate-editor=\"true\"]",
+        "[aria-label*=\"输入消息\"]"
+      ],
+      "file_input_selectors": [
+        "input[type=\"file\"][accept*=\"image\"]",
+        "input[type=\"file\"][accept*=\"png\"]"
+      ]
+    }
+  ]
+}

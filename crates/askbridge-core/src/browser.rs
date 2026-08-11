@@ -51,7 +51,7 @@ impl TargetResolver {
     }
 }
 
-fn matches_any_pattern(url: &str, patterns: &[String]) -> bool {
+pub fn matches_any_pattern(url: &str, patterns: &[String]) -> bool {
     patterns.iter().any(|pattern| {
         let pattern = pattern.trim_end_matches('/');
         url == pattern

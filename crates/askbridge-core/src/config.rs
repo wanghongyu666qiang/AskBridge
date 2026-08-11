@@ -9,6 +9,7 @@ use crate::{
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 pub const DEFAULT_QUICK_PROMPT: &str = "请分析这张截图，并解释其中的内容。";
+const MAX_BROWSER_TIMEOUT_MS: u64 = 120_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -232,22 +233,14 @@ impl BrowserConfig {
                 "browser profile_dir must not be empty".to_owned(),
             ));
         }
-        if self.connect_timeout_ms == 0 || self.page_timeout_ms == 0 {
+        if self.connect_timeout_ms == 0
+            || self.page_timeout_ms == 0
+            || self.connect_timeout_ms > MAX_BROWSER_TIMEOUT_MS
+            || self.page_timeout_ms > MAX_BROWSER_TIMEOUT_MS
+        {
             return Err(AppError::ConfigurationInvalid(
-                "browser timeouts must be greater than zero".to_owned(),
+                "browser timeouts must be between 1 and 120000 milliseconds".to_owned(),
             ));
-        }
-        if !matches!(
-            self.lifecycle.as_str(),
-            "on_demand_keep_running"
-                | "on_demand_idle_close"
-                | "close_after_dispatch"
-                | "on_startup"
-        ) {
-            return Err(AppError::ConfigurationInvalid(format!(
-                "unsupported browser lifecycle '{}'",
-                self.lifecycle
-            )));
         }
         for (provider_id, shortcut) in &self.desktop_shortcuts {
             if provider_id.trim().is_empty() || shortcut.trim().is_empty() {
@@ -341,6 +334,8 @@ pub struct GeneralConfig {
     pub auto_submit: bool,
     #[serde(default = "default_true", alias = "restore_clipboard")]
     pub clipboard_fallback: bool,
+    #[serde(default = "default_true")]
+    pub hide_prompt_after_prepare: bool,
     #[serde(default)]
     pub debug_logging: bool,
 }
@@ -351,6 +346,7 @@ impl Default for GeneralConfig {
             start_on_login: false,
             auto_submit: false,
             clipboard_fallback: true,
+            hide_prompt_after_prepare: true,
             debug_logging: false,
         }
     }
@@ -362,8 +358,8 @@ pub struct BrowserConfig {
     pub chrome_path: Option<String>,
     #[serde(default = "default_profile_dir")]
     pub profile_dir: String,
-    #[serde(default = "default_browser_lifecycle")]
-    pub lifecycle: String,
+    #[serde(default)]
+    pub lifecycle: BrowserLifecycle,
     #[serde(default = "default_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
     #[serde(default = "default_page_timeout_ms", alias = "target_timeout_ms")]
@@ -379,7 +375,7 @@ impl Default for BrowserConfig {
         Self {
             chrome_path: None,
             profile_dir: default_profile_dir(),
-            lifecycle: default_browser_lifecycle(),
+            lifecycle: BrowserLifecycle::default(),
             connect_timeout_ms: default_connect_timeout_ms(),
             page_timeout_ms: default_page_timeout_ms(),
             target_preferences: default_target_preferences(),
@@ -394,6 +390,16 @@ pub enum BrowserTargetPreference {
     #[default]
     DedicatedChrome,
     DesktopPwa,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserLifecycle {
+    #[default]
+    OnDemandKeepRunning,
+    OnDemandIdleClose,
+    CloseAfterDispatch,
+    OnStartup,
 }
 
 const fn current_schema_version() -> u32 {
@@ -432,10 +438,6 @@ fn default_profile_dir() -> String {
     "BrowserProfile".to_owned()
 }
 
-fn default_browser_lifecycle() -> String {
-    "on_demand_keep_running".to_owned()
-}
-
 fn default_target_preferences() -> HashMap<String, BrowserTargetPreference> {
     HashMap::from([("chatgpt".to_owned(), BrowserTargetPreference::DesktopPwa)])
 }
@@ -472,6 +474,7 @@ mod tests {
         );
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(config.merged_providers().expect("providers").len(), 4);
+        assert!(config.general.hide_prompt_after_prepare);
     }
 
     #[test]
@@ -505,6 +508,30 @@ mod tests {
         );
         assert_eq!(config.merged_providers().expect("providers").len(), 4);
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn browser_lifecycle_is_typed_but_keeps_stable_configuration_strings() {
+        let mut config: AppConfig = serde_json::from_str(
+            r#"{"schema_version":3,"browser":{"lifecycle":"close_after_dispatch"}}"#,
+        )
+        .expect("known lifecycle");
+        config.migrate().expect("current config");
+        assert_eq!(
+            config.browser.lifecycle,
+            BrowserLifecycle::CloseAfterDispatch
+        );
+        assert!(
+            serde_json::to_string(&config)
+                .expect("serialize config")
+                .contains(r#""lifecycle":"close_after_dispatch""#)
+        );
+        assert!(
+            serde_json::from_str::<AppConfig>(
+                r#"{"schema_version":3,"browser":{"lifecycle":"unknown"}}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -595,5 +622,17 @@ mod tests {
             config.validate(),
             Err(AppError::ConfigurationInvalid(_))
         ));
+    }
+
+    #[test]
+    fn rejects_zero_or_unbounded_browser_timeouts() {
+        for timeout in [0, MAX_BROWSER_TIMEOUT_MS + 1, u64::MAX] {
+            let mut config = AppConfig::default();
+            config.browser.page_timeout_ms = timeout;
+            assert!(matches!(
+                config.validate(),
+                Err(AppError::ConfigurationInvalid(_))
+            ));
+        }
     }
 }

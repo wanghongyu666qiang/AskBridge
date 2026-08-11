@@ -130,39 +130,49 @@ impl ConfigStore {
     }
 }
 
+#[cfg(windows)]
 fn replace_file(temporary_path: &Path, destination: &Path) -> Result<()> {
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
+
+    use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_WRITE_THROUGH, ReplaceFileW};
+
     if !destination.exists() {
         return fs::rename(temporary_path, destination)
             .map_err(|source| AppError::io("installing configuration", destination, source));
     }
 
-    let previous_path = destination.with_extension("json.previous");
-    if previous_path.exists() {
-        fs::remove_file(&previous_path).map_err(|source| {
-            AppError::io(
-                "removing previous configuration backup",
-                &previous_path,
-                source,
-            )
-        })?;
+    fn wide(path: &Path) -> Vec<u16> {
+        OsStr::new(path).encode_wide().chain(Some(0)).collect()
     }
-    fs::rename(destination, &previous_path)
-        .map_err(|source| AppError::io("staging previous configuration", &previous_path, source))?;
-    if let Err(source) = fs::rename(temporary_path, destination) {
-        let _ = fs::rename(&previous_path, destination);
+
+    let destination_wide = wide(destination);
+    let temporary_wide = wide(temporary_path);
+    // SAFETY: Both path buffers are valid NUL-terminated UTF-16 strings for the
+    // duration of the call. No backup is requested and reserved pointers are null.
+    let replaced = unsafe {
+        ReplaceFileW(
+            destination_wide.as_ptr(),
+            temporary_wide.as_ptr(),
+            ptr::null(),
+            REPLACEFILE_WRITE_THROUGH,
+            ptr::null(),
+            ptr::null(),
+        )
+    };
+    if replaced == 0 {
         return Err(AppError::io(
-            "installing replacement configuration",
+            "atomically replacing configuration",
             destination,
-            source,
+            std::io::Error::last_os_error(),
         ));
     }
-    fs::remove_file(&previous_path).map_err(|source| {
-        AppError::io(
-            "removing previous configuration backup",
-            &previous_path,
-            source,
-        )
-    })
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(temporary_path: &Path, destination: &Path) -> Result<()> {
+    fs::rename(temporary_path, destination)
+        .map_err(|source| AppError::io("atomically replacing configuration", destination, source))
 }
 
 #[cfg(test)]
@@ -177,6 +187,7 @@ mod tests {
         expected.general.debug_logging = true;
         store.save(&expected).expect("save config");
         assert_eq!(store.load().expect("load config"), expected);
+        assert!(!directory.path().join("config.json.previous").exists());
     }
 
     #[test]

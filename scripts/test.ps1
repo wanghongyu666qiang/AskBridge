@@ -15,11 +15,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Formatting check failed with exit code $LASTEXITCODE." }
 
     Write-Host "[2/3] Running Clippy"
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --offline -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "Clippy failed with exit code $LASTEXITCODE." }
 
     Write-Host "[3/3] Running tests"
-    cargo test --workspace
+    cargo test --workspace --offline
     if ($LASTEXITCODE -ne 0) { throw "Tests failed with exit code $LASTEXITCODE." }
 }
 finally {

@@ -1,6 +1,8 @@
 use std::{
+    collections::HashSet,
     io::{Read, Write},
     net::TcpStream,
+    path::Path,
     sync::atomic::{AtomicBool, Ordering},
     thread,
     time::{Duration, Instant},
@@ -9,7 +11,7 @@ use std::{
 use askbridge_core::{AppError, Result};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tungstenite::{Message, client};
+use tungstenite::{Message, WebSocket, client};
 
 use super::DevToolsEndpoint;
 
@@ -95,7 +97,7 @@ impl CdpClient {
                 websocket_url,
                 "Runtime.evaluate",
                 Some(json!({
-                    "expression": "document.readyState",
+                    "expression": "({ ready: document.readyState, url: location.href })",
                     "returnByValue": true
                 })),
                 cancelled,
@@ -111,6 +113,171 @@ impl CdpClient {
     pub fn close_browser(&self, cancelled: &AtomicBool) -> Result<()> {
         self.browser_command("Browser.close", None, cancelled)
             .map(|_| ())
+    }
+
+    pub(crate) fn evaluate_in_target(
+        &self,
+        target: &CdpTarget,
+        expression: &str,
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<Value> {
+        self.target_command(
+            target,
+            "Runtime.evaluate",
+            Some(json!({
+                "expression": expression,
+                "returnByValue": true,
+                "awaitPromise": false
+            })),
+            cancelled,
+            timeout,
+        )
+    }
+
+    pub(crate) fn target_url_matches(
+        &self,
+        target: &CdpTarget,
+        expected_url: &str,
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<bool> {
+        let expression = exact_url_check_expression(expected_url)?;
+        let result = self.target_command(
+            target,
+            "Runtime.evaluate",
+            Some(json!({
+                "expression": expression,
+                "returnByValue": true,
+                "awaitPromise": false
+            })),
+            cancelled,
+            timeout,
+        )?;
+        result
+            .pointer("/result/value")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                AppError::BrowserProtocol("target URL verification returned no value".to_owned())
+            })
+    }
+
+    pub(crate) fn set_file_input(
+        &self,
+        target: &CdpTarget,
+        expected_url: &str,
+        file_path: &Path,
+        preferred_selectors: &[String],
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<FileInputResult> {
+        let websocket_url = target
+            .web_socket_debugger_url
+            .as_deref()
+            .ok_or(AppError::TargetNotFound)?;
+        self.verify_target_websocket(target, websocket_url)?;
+        let mut socket =
+            ProtocolSocket::connect(&self.endpoint, websocket_url, cancelled, timeout)?;
+        if !socket.target_url_matches(expected_url, cancelled)? {
+            return Ok(FileInputResult::NavigationChanged);
+        }
+        let document = socket.command(
+            "DOM.getDocument",
+            Some(json!({"depth": 0, "pierce": true})),
+            cancelled,
+        )?;
+        let root_id = document
+            .pointer("/root/nodeId")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| AppError::BrowserProtocol("DOM root has no node id".to_owned()))?;
+        let mut candidates =
+            query_acceptable_file_inputs(&mut socket, root_id, preferred_selectors, cancelled)?;
+        if candidates.is_empty() {
+            candidates = query_acceptable_file_inputs(
+                &mut socket,
+                root_id,
+                &["input[type=file]".to_owned()],
+                cancelled,
+            )?;
+        }
+        let node_id = match candidates.as_slice() {
+            [] => return Ok(FileInputResult::NotFound),
+            [node_id] => *node_id,
+            [_, _, ..] => return Ok(FileInputResult::Ambiguous),
+        };
+        if !socket.target_url_matches(expected_url, cancelled)? {
+            return Ok(FileInputResult::NavigationChanged);
+        }
+        let file_path = file_path.to_str().ok_or_else(|| {
+            AppError::InvalidPreparation("temporary image path is not Unicode".to_owned())
+        })?;
+        let resolved = socket.command(
+            "DOM.resolveNode",
+            Some(json!({"nodeId": node_id})),
+            cancelled,
+        )?;
+        let object_id = resolved
+            .pointer("/object/objectId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                AppError::BrowserProtocol("file input could not be resolved".to_owned())
+            })?
+            .to_owned();
+        let file_name = file_path
+            .rsplit(['\\', '/'])
+            .next()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::InvalidPreparation("temporary image has no file name".to_owned())
+            })?;
+        let baseline = attachment_receipt(&mut socket, &object_id, file_name, cancelled)?;
+        socket.command(
+            "DOM.setFileInputFiles",
+            Some(json!({"files": [file_path], "nodeId": node_id})),
+            cancelled,
+        )?;
+        socket.command(
+            "Runtime.callFunctionOn",
+            Some(json!({
+                "objectId": object_id,
+                "functionDeclaration": "function() { this.dispatchEvent(new Event('input', { bubbles: true })); this.dispatchEvent(new Event('change', { bubbles: true })); }"
+            })),
+            cancelled,
+        )?;
+
+        let deadline = Instant::now() + timeout;
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(AppError::BrowserCancelled);
+            }
+            if !socket.target_url_matches(expected_url, cancelled)? {
+                return Ok(FileInputResult::NavigationChanged);
+            }
+            let receipt = attachment_receipt(&mut socket, &object_id, file_name, cancelled)?;
+            if has_new_attachment_receipt(baseline, receipt) {
+                return Ok(FileInputResult::Prepared);
+            }
+            if Instant::now() >= deadline {
+                return Ok(FileInputResult::VerificationFailed);
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn target_command(
+        &self,
+        target: &CdpTarget,
+        method: &str,
+        params: Option<Value>,
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let websocket_url = target
+            .web_socket_debugger_url
+            .as_deref()
+            .ok_or(AppError::TargetNotFound)?;
+        self.verify_target_websocket(target, websocket_url)?;
+        self.websocket_command(websocket_url, method, params, cancelled, timeout)
     }
 
     #[cfg(test)]
@@ -140,51 +307,8 @@ impl CdpClient {
         cancelled: &AtomicBool,
         timeout: Duration,
     ) -> Result<Value> {
-        let stream = TcpStream::connect_timeout(&self.endpoint.socket_addr(), timeout)
-            .map_err(|_| AppError::BrowserConnectionFailed("CDP handshake failed".to_owned()))?;
-        configure_socket_timeout(&stream, timeout)?;
-        let (mut socket, _) = client(url, stream)
-            .map_err(|_| AppError::BrowserConnectionFailed("CDP handshake failed".to_owned()))?;
-
-        let mut command = json!({"id": 1, "method": method});
-        if let Some(params) = params {
-            command["params"] = params;
-        }
-        socket
-            .send(Message::Text(command.to_string().into()))
-            .map_err(|_| AppError::BrowserProtocol("CDP command send failed".to_owned()))?;
-
-        let deadline = Instant::now() + timeout;
-        for _ in 0..MAX_PROTOCOL_MESSAGES {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(AppError::BrowserCancelled);
-            }
-            if Instant::now() >= deadline {
-                return Err(AppError::BrowserConnectionFailed(
-                    "CDP command timed out".to_owned(),
-                ));
-            }
-            let message = socket
-                .read()
-                .map_err(|_| AppError::BrowserProtocol("CDP response read failed".to_owned()))?;
-            let Message::Text(text) = message else {
-                continue;
-            };
-            let response: Value = serde_json::from_str(text.as_ref())
-                .map_err(|_| AppError::BrowserProtocol("invalid CDP response".to_owned()))?;
-            if response.get("id").and_then(Value::as_u64) != Some(1) {
-                continue;
-            }
-            if response.get("error").is_some() {
-                return Err(AppError::BrowserProtocol(format!(
-                    "CDP method {method} was rejected"
-                )));
-            }
-            return Ok(response.get("result").cloned().unwrap_or(Value::Null));
-        }
-        Err(AppError::BrowserProtocol(
-            "CDP response limit exceeded".to_owned(),
-        ))
+        let mut socket = ProtocolSocket::connect(&self.endpoint, url, cancelled, timeout)?;
+        socket.command(method, params, cancelled)
     }
 
     fn request_json<T: for<'de> Deserialize<'de>>(&self, method: &str, path: &str) -> Result<T> {
@@ -258,6 +382,279 @@ impl CdpClient {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AttachmentReceipt {
+    file_count: u64,
+    named_count: u64,
+    preview_count: u64,
+    busy_count: u64,
+}
+
+fn has_new_attachment_receipt(baseline: AttachmentReceipt, current: AttachmentReceipt) -> bool {
+    current.file_count > 0
+        && current.busy_count == 0
+        && (current.named_count > baseline.named_count
+            || current.preview_count > baseline.preview_count)
+}
+
+fn attachment_receipt(
+    socket: &mut ProtocolSocket,
+    object_id: &str,
+    file_name: &str,
+    cancelled: &AtomicBool,
+) -> Result<AttachmentReceipt> {
+    let value = socket.command(
+        "Runtime.callFunctionOn",
+        Some(json!({
+            "objectId": object_id,
+            "functionDeclaration": r#"function(expectedName) {
+                const visible = (element) => {
+                    const style = getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+                };
+                const root = this.closest('form') || this.parentElement || document.body;
+                const expected = String(expectedName || '').toLowerCase();
+                let named = 0;
+                let previews = 0;
+                let busy = 0;
+                for (const element of root.querySelectorAll('*')) {
+                    if (!visible(element)) continue;
+                    const attributes = [
+                        element.getAttribute('aria-label'),
+                        element.getAttribute('title'),
+                        element.getAttribute('data-testid')
+                    ].filter(Boolean).join(' ').toLowerCase();
+                    const text = (element.textContent || '').trim().toLowerCase();
+                    if (expected && (attributes.includes(expected) || text.includes(expected))) named++;
+                    if (element.tagName === 'IMG') {
+                        const source = String(element.getAttribute('src') || '');
+                        if (source.startsWith('blob:') || source.startsWith('data:image/')) previews++;
+                    }
+                    const state = String(element.getAttribute('data-state') || '').toLowerCase();
+                    if (element.getAttribute('aria-busy') === 'true' || element.getAttribute('role') === 'progressbar' || state === 'uploading' || state === 'pending') busy++;
+                }
+                return {
+                    fileCount: this.files ? this.files.length : 0,
+                    namedCount: named,
+                    previewCount: previews,
+                    busyCount: busy
+                };
+            }"#,
+            "arguments": [{"value": file_name}],
+            "returnByValue": true
+        })),
+        cancelled,
+    )?;
+    let result = value
+        .pointer("/result/value")
+        .ok_or_else(|| AppError::BrowserProtocol("attachment receipt is missing".to_owned()))?;
+    let count = |name: &str| {
+        result
+            .get(name)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| AppError::BrowserProtocol(format!("attachment receipt has no {name}")))
+    };
+    Ok(AttachmentReceipt {
+        file_count: count("fileCount")?,
+        named_count: count("namedCount")?,
+        preview_count: count("previewCount")?,
+        busy_count: count("busyCount")?,
+    })
+}
+
+fn query_acceptable_file_inputs(
+    socket: &mut ProtocolSocket,
+    root_id: i64,
+    selectors: &[String],
+    cancelled: &AtomicBool,
+) -> Result<Vec<i64>> {
+    let mut node_ids = HashSet::new();
+    for selector in selectors {
+        let query = socket.command(
+            "DOM.querySelectorAll",
+            Some(json!({"nodeId": root_id, "selector": selector})),
+            cancelled,
+        )?;
+        let queried = query
+            .get("nodeIds")
+            .and_then(Value::as_array)
+            .ok_or_else(|| AppError::BrowserProtocol("file input query failed".to_owned()))?;
+        for node_id in queried.iter().filter_map(Value::as_i64) {
+            node_ids.insert(node_id);
+        }
+    }
+    let mut candidates = Vec::new();
+    for node_id in node_ids {
+        let attributes = socket.command(
+            "DOM.getAttributes",
+            Some(json!({"nodeId": node_id})),
+            cancelled,
+        )?;
+        if file_input_accepts_png(&attributes) {
+            candidates.push(node_id);
+        }
+    }
+    candidates.sort_unstable();
+    Ok(candidates)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileInputResult {
+    Prepared,
+    NotFound,
+    Ambiguous,
+    VerificationFailed,
+    NavigationChanged,
+}
+
+struct ProtocolSocket {
+    socket: WebSocket<TcpStream>,
+    next_id: u64,
+    deadline: Instant,
+}
+
+impl ProtocolSocket {
+    fn connect(
+        endpoint: &DevToolsEndpoint,
+        url: &str,
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<Self> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(AppError::BrowserCancelled);
+        }
+        let stream = TcpStream::connect_timeout(&endpoint.socket_addr(), timeout)
+            .map_err(|_| AppError::BrowserConnectionFailed("CDP handshake failed".to_owned()))?;
+        configure_socket_timeout(&stream, timeout)?;
+        let (socket, _) = client(url, stream)
+            .map_err(|_| AppError::BrowserConnectionFailed("CDP handshake failed".to_owned()))?;
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            AppError::BrowserConnectionFailed("CDP command timeout is too large".to_owned())
+        })?;
+        Ok(Self {
+            socket,
+            next_id: 1,
+            deadline,
+        })
+    }
+
+    fn command(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+        cancelled: &AtomicBool,
+    ) -> Result<Value> {
+        let command_id = self.next_id;
+        self.next_id += 1;
+        let mut command = json!({"id": command_id, "method": method});
+        if let Some(params) = params {
+            command["params"] = params;
+        }
+        self.socket
+            .send(Message::Text(command.to_string().into()))
+            .map_err(|_| AppError::BrowserProtocol("CDP command send failed".to_owned()))?;
+
+        for _ in 0..MAX_PROTOCOL_MESSAGES {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(AppError::BrowserCancelled);
+            }
+            if Instant::now() >= self.deadline {
+                return Err(AppError::BrowserConnectionFailed(
+                    "CDP command timed out".to_owned(),
+                ));
+            }
+            let message = match self.socket.read() {
+                Ok(message) => message,
+                Err(_) if cancelled.load(Ordering::Acquire) => {
+                    return Err(AppError::BrowserCancelled);
+                }
+                Err(_) if Instant::now() >= self.deadline => {
+                    return Err(AppError::BrowserConnectionFailed(
+                        "CDP command timed out".to_owned(),
+                    ));
+                }
+                Err(_) => {
+                    return Err(AppError::BrowserProtocol(
+                        "CDP response read failed".to_owned(),
+                    ));
+                }
+            };
+            let Message::Text(text) = message else {
+                continue;
+            };
+            let response: Value = serde_json::from_str(text.as_ref())
+                .map_err(|_| AppError::BrowserProtocol("invalid CDP response".to_owned()))?;
+            if response.get("id").and_then(Value::as_u64) != Some(command_id) {
+                continue;
+            }
+            if response.get("error").is_some() {
+                return Err(AppError::BrowserProtocol(format!(
+                    "CDP method {method} was rejected"
+                )));
+            }
+            return Ok(response.get("result").cloned().unwrap_or(Value::Null));
+        }
+        Err(AppError::BrowserProtocol(
+            "CDP response limit exceeded".to_owned(),
+        ))
+    }
+
+    fn target_url_matches(&mut self, expected_url: &str, cancelled: &AtomicBool) -> Result<bool> {
+        let expression = exact_url_check_expression(expected_url)?;
+        let result = self.command(
+            "Runtime.evaluate",
+            Some(json!({
+                "expression": expression,
+                "returnByValue": true,
+                "awaitPromise": false
+            })),
+            cancelled,
+        )?;
+        result
+            .pointer("/result/value")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                AppError::BrowserProtocol("target URL verification returned no value".to_owned())
+            })
+    }
+}
+
+fn file_input_accepts_png(result: &Value) -> bool {
+    let Some(attributes) = result.get("attributes").and_then(Value::as_array) else {
+        return false;
+    };
+    let pairs: Vec<(&str, &str)> = attributes
+        .chunks_exact(2)
+        .filter_map(|pair| Some((pair[0].as_str()?, pair[1].as_str()?)))
+        .collect();
+    if pairs
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("disabled"))
+    {
+        return false;
+    }
+    pairs
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("accept"))
+        .is_none_or(|(_, accept)| {
+            accept.trim().is_empty()
+                || accept.split(',').any(|value| {
+                    matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "image/*" | "image/png" | ".png"
+                    )
+                })
+        })
+}
+
+fn exact_url_check_expression(expected_url: &str) -> Result<String> {
+    let expected_url = serde_json::to_string(expected_url).map_err(|_| {
+        AppError::InvalidPreparation("expected target URL could not be encoded".to_owned())
+    })?;
+    Ok(format!("location.href === {expected_url}"))
+}
+
 fn configure_socket_timeout(stream: &TcpStream, timeout: Duration) -> Result<()> {
     stream
         .set_read_timeout(Some(timeout))
@@ -303,10 +700,13 @@ fn split_loopback_websocket(url: &str) -> Result<(u16, &str)> {
 }
 
 fn is_interactive_ready_state(result: &Value) -> bool {
-    result
-        .pointer("/result/value")
-        .and_then(Value::as_str)
-        .is_some_and(|state| matches!(state, "interactive" | "complete"))
+    let Some(value) = result.pointer("/result/value") else {
+        return false;
+    };
+    let ready = value.get("ready").and_then(Value::as_str);
+    let url = value.get("url").and_then(Value::as_str);
+    ready.is_some_and(|state| matches!(state, "interactive" | "complete"))
+        && url.is_some_and(|url| validate_page_url(url).is_ok())
 }
 
 fn parse_http_response(response: &[u8]) -> Result<Vec<u8>> {
@@ -560,7 +960,19 @@ fn percent_encode(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        net::TcpListener,
+        path::Path,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::Duration,
+    };
+
     use super::*;
+    use tungstenite::{Message, accept};
 
     #[test]
     fn parses_successful_http_response_without_logging_body() {
@@ -617,15 +1029,18 @@ mod tests {
     }
 
     #[test]
-    fn only_interactive_and_complete_ready_states_are_accepted() {
+    fn only_interactive_http_pages_are_accepted() {
         assert!(!is_interactive_ready_state(&json!({
-            "result": {"value": "loading"}
+            "result": {"value": {"ready": "loading", "url": "https://example.test/"}}
+        })));
+        assert!(!is_interactive_ready_state(&json!({
+            "result": {"value": {"ready": "complete", "url": "about:blank"}}
         })));
         assert!(is_interactive_ready_state(&json!({
-            "result": {"value": "interactive"}
+            "result": {"value": {"ready": "interactive", "url": "https://example.test/"}}
         })));
         assert!(is_interactive_ready_state(&json!({
-            "result": {"value": "complete"}
+            "result": {"value": {"ready": "complete", "url": "http://127.0.0.1:1234/test"}}
         })));
     }
 
@@ -643,5 +1058,244 @@ mod tests {
         }
         assert!(split_loopback_websocket("ws://192.0.2.1:9222/devtools/browser/id").is_err());
         assert!(split_loopback_websocket("wss://localhost:9222/devtools/browser/id").is_err());
+    }
+
+    #[test]
+    fn file_inputs_must_be_enabled_and_accept_png() {
+        assert!(file_input_accepts_png(&json!({
+            "attributes": ["type", "file", "accept", "image/*"]
+        })));
+        assert!(file_input_accepts_png(&json!({
+            "attributes": ["type", "file"]
+        })));
+        assert!(!file_input_accepts_png(&json!({
+            "attributes": ["type", "file", "accept", "application/pdf"]
+        })));
+        assert!(!file_input_accepts_png(&json!({
+            "attributes": ["type", "file", "accept", "image/png", "disabled", ""]
+        })));
+    }
+
+    #[test]
+    fn exact_url_guard_is_a_read_only_runtime_check() {
+        let expression =
+            exact_url_check_expression("https://example.test/chat").expect("expression");
+        assert_eq!(
+            expression,
+            r#"location.href === "https://example.test/chat""#
+        );
+        assert!(!expression.contains("querySelector"));
+        assert!(!expression.contains("setFileInputFiles"));
+    }
+
+    #[test]
+    fn stalled_protocol_read_preserves_cancellation() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("listener");
+        let port = listener.local_addr().expect("address").port();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("connection");
+            let mut socket = accept(stream).expect("websocket");
+            let _ = socket.read().expect("command");
+            thread::sleep(Duration::from_millis(100));
+        });
+
+        let endpoint = DevToolsEndpoint::parse(&format!("{port}\n/devtools/browser/cancel-read\n"))
+            .expect("endpoint");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut socket = ProtocolSocket::connect(
+            &endpoint,
+            &format!("ws://127.0.0.1:{port}/devtools/page/target"),
+            &cancelled,
+            Duration::from_millis(250),
+        )
+        .expect("socket");
+        let cancellation = Arc::clone(&cancelled);
+        let cancel_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            cancellation.store(true, Ordering::Release);
+        });
+
+        let result = socket.command("Runtime.evaluate", None, &cancelled);
+
+        assert!(matches!(result, Err(AppError::BrowserCancelled)));
+        cancel_thread.join().expect("cancellation thread");
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn file_input_navigation_guard_precedes_dom_queries() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("listener");
+        let port = listener.local_addr().expect("address").port();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("connection");
+            let mut socket = accept(stream).expect("websocket");
+            let Message::Text(message) = socket.read().expect("command") else {
+                panic!("expected text command");
+            };
+            let command: Value = serde_json::from_str(message.as_ref()).expect("JSON command");
+            assert_eq!(command["method"], "Runtime.evaluate");
+            assert!(
+                command["params"]["expression"]
+                    .as_str()
+                    .expect("expression")
+                    .contains("location.href ===")
+            );
+            socket
+                .send(Message::Text(
+                    json!({
+                        "id": command["id"],
+                        "result": {"result": {"value": false}}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("response");
+        });
+
+        let endpoint =
+            DevToolsEndpoint::parse(&format!("{port}\n/devtools/browser/guard-before-query\n"))
+                .expect("endpoint");
+        let client = CdpClient {
+            endpoint,
+            timeout: Duration::from_secs(2),
+        };
+        let target = CdpTarget {
+            id: "target".to_owned(),
+            kind: "page".to_owned(),
+            url: "https://example.test/chat".to_owned(),
+            web_socket_debugger_url: Some(format!("ws://127.0.0.1:{port}/devtools/page/target")),
+        };
+        let cancelled = AtomicBool::new(false);
+        let result = client
+            .set_file_input(
+                &target,
+                "https://example.test/chat",
+                Path::new("fixture.png"),
+                &[],
+                &cancelled,
+                Duration::from_secs(2),
+            )
+            .expect("guard result");
+        assert_eq!(result, FileInputResult::NavigationChanged);
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn file_input_rechecks_navigation_before_set_file_input_files() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("listener");
+        let port = listener.local_addr().expect("address").port();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("connection");
+            let mut socket = accept(stream).expect("websocket");
+            let mut methods = Vec::new();
+            let mut runtime_evaluations = 0;
+            loop {
+                let Ok(Message::Text(message)) = socket.read() else {
+                    break;
+                };
+                let command: Value = serde_json::from_str(message.as_ref()).expect("JSON command");
+                let id = command["id"].clone();
+                let method = command["method"].as_str().expect("method").to_owned();
+                methods.push(method.clone());
+                let result = match method.as_str() {
+                    "Runtime.evaluate" => {
+                        runtime_evaluations += 1;
+                        json!({"result": {"value": runtime_evaluations == 1}})
+                    }
+                    "DOM.getDocument" => json!({"root": {"nodeId": 1}}),
+                    "DOM.querySelectorAll" => json!({"nodeIds": [42]}),
+                    "DOM.getAttributes" => {
+                        json!({"attributes": ["type", "file", "accept", "image/png"]})
+                    }
+                    "DOM.setFileInputFiles" => panic!("file mutation bypassed navigation guard"),
+                    other => panic!("unexpected CDP method {other}"),
+                };
+                socket
+                    .send(Message::Text(
+                        json!({"id": id, "result": result}).to_string().into(),
+                    ))
+                    .expect("response");
+            }
+            methods
+        });
+
+        let endpoint =
+            DevToolsEndpoint::parse(&format!("{port}\n/devtools/browser/guard-before-set\n"))
+                .expect("endpoint");
+        let client = CdpClient {
+            endpoint,
+            timeout: Duration::from_secs(2),
+        };
+        let target = CdpTarget {
+            id: "target".to_owned(),
+            kind: "page".to_owned(),
+            url: "https://example.test/chat".to_owned(),
+            web_socket_debugger_url: Some(format!("ws://127.0.0.1:{port}/devtools/page/target")),
+        };
+        let cancelled = AtomicBool::new(false);
+        let result = client
+            .set_file_input(
+                &target,
+                "https://example.test/chat",
+                Path::new("fixture.png"),
+                &[],
+                &cancelled,
+                Duration::from_secs(2),
+            )
+            .expect("guard result");
+        assert_eq!(result, FileInputResult::NavigationChanged);
+        let methods = server.join().expect("server");
+        assert_eq!(
+            methods,
+            [
+                "Runtime.evaluate",
+                "DOM.getDocument",
+                "DOM.querySelectorAll",
+                "DOM.getAttributes",
+                "Runtime.evaluate"
+            ]
+        );
+    }
+
+    #[test]
+    fn file_input_state_alone_never_claims_page_attachment_readiness() {
+        let baseline = AttachmentReceipt {
+            file_count: 0,
+            named_count: 2,
+            preview_count: 1,
+            busy_count: 0,
+        };
+        assert!(!has_new_attachment_receipt(
+            baseline,
+            AttachmentReceipt {
+                file_count: 1,
+                ..baseline
+            }
+        ));
+        assert!(!has_new_attachment_receipt(
+            baseline,
+            AttachmentReceipt {
+                file_count: 1,
+                named_count: 3,
+                busy_count: 1,
+                ..baseline
+            }
+        ));
+        assert!(has_new_attachment_receipt(
+            baseline,
+            AttachmentReceipt {
+                file_count: 1,
+                named_count: 3,
+                ..baseline
+            }
+        ));
+        assert!(has_new_attachment_receipt(
+            baseline,
+            AttachmentReceipt {
+                file_count: 1,
+                preview_count: 2,
+                ..baseline
+            }
+        ));
     }
 }

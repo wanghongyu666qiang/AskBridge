@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 
 use askbridge_core::{AppError, ProviderConfig, Result};
+use tracing::error;
 use windows_sys::Win32::{
     Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
     Graphics::Gdi::{
@@ -10,7 +11,7 @@ use windows_sys::Win32::{
     UI::{
         Controls::EM_SETLIMITTEXT,
         HiDpi::GetDpiForSystem,
-        Input::KeyboardAndMouse::SetFocus,
+        Input::KeyboardAndMouse::{EnableWindow, SetFocus},
         WindowsAndMessaging::{
             BS_DEFPUSHBUTTON, CB_ADDSTRING, CB_ERR, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL,
             CBS_DROPDOWNLIST, CreateWindowExW, DefWindowProcW, DestroyWindow, ES_AUTOVSCROLL,
@@ -136,6 +137,8 @@ pub struct PromptWindow {
     window: HWND,
     provider: HWND,
     editor: HWND,
+    submit: HWND,
+    cancel: HWND,
     status: HWND,
     provider_ids: Vec<String>,
     _fonts: PromptFonts,
@@ -341,6 +344,8 @@ impl PromptWindow {
             window,
             provider,
             editor,
+            submit,
+            cancel,
             status,
             provider_ids: Vec::new(),
             _fonts: fonts,
@@ -392,6 +397,7 @@ impl PromptWindow {
         }
         set_text(self.editor, "");
         self.set_status("");
+        self.set_busy(false);
         self.focus_existing();
         Ok(())
     }
@@ -407,6 +413,7 @@ impl PromptWindow {
     }
 
     pub fn hide_and_clear(&self) {
+        self.set_busy(false);
         set_text(self.editor, "");
         self.set_status("");
         // SAFETY: window is owned by this object.
@@ -438,6 +445,16 @@ impl PromptWindow {
 
     pub fn set_status(&self, message: &str) {
         set_text(self.status, message);
+    }
+
+    pub fn set_busy(&self, busy: bool) {
+        // SAFETY: These controls are owned by this window and live on the UI thread.
+        unsafe {
+            EnableWindow(self.provider, i32::from(!busy));
+            EnableWindow(self.editor, i32::from(!busy));
+            EnableWindow(self.submit, i32::from(!busy));
+            EnableWindow(self.cancel, 1);
+        }
     }
 
     pub const fn hwnd(&self) -> HWND {
@@ -567,8 +584,13 @@ pub unsafe extern "system" fn prompt_window_proc(
                 wparam
             };
             // SAFETY: The target is our hidden main window on the same UI thread.
-            unsafe {
-                PostMessageW(main_window, WM_COMMAND, forwarded, lparam);
+            if unsafe { PostMessageW(main_window, WM_COMMAND, forwarded, lparam) } == 0 {
+                error!(
+                    stage = "prompt_command_dispatch",
+                    completed = false,
+                    win32_code = last_error(),
+                    "failed to forward a prompt command to the runtime"
+                );
             }
         }
         return 0;

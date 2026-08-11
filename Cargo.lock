@@ -16,6 +16,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "windows-sys",
 ]
 
 [[package]]
@@ -26,6 +27,7 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "tungstenite",

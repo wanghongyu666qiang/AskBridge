@@ -3,6 +3,7 @@ use std::{
     ffi::OsStr,
     fs,
     io::ErrorKind,
+    net::TcpStream,
     os::windows::{ffi::OsStrExt, process::CommandExt},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus},
@@ -117,7 +118,7 @@ impl ChromeManager {
     ) -> Result<DevToolsEndpoint> {
         self.clear_finished_child()?;
         if self.child.is_none() {
-            clear_stale_endpoint(&self.profile)?;
+            prepare_endpoint_for_launch(&self.profile)?;
             let args = launch_args(self.profile.path());
             let child = Command::new(self.installation.path())
                 .args(args)
@@ -131,6 +132,10 @@ impl ChromeManager {
 
     pub fn managed_process_id(&self) -> Option<u32> {
         self.child.as_ref().map(Child::id)
+    }
+
+    pub fn read_managed_endpoint(&self) -> Result<DevToolsEndpoint> {
+        DevToolsEndpoint::read(&self.profile.endpoint_file())
     }
 
     pub fn wait_for_managed_exit(&mut self, timeout: Duration) -> Result<bool> {
@@ -196,6 +201,19 @@ impl ChromeManager {
             .map_err(|_| AppError::BrowserLaunchFailed)
             .map(Option::flatten)
     }
+}
+
+fn prepare_endpoint_for_launch(profile: &ManagedProfile) -> Result<()> {
+    let endpoint_path = profile.endpoint_file();
+    if !endpoint_path.exists() {
+        return Ok(());
+    }
+    if let Ok(endpoint) = DevToolsEndpoint::read(&endpoint_path)
+        && TcpStream::connect_timeout(&endpoint.socket_addr(), Duration::from_millis(250)).is_ok()
+    {
+        return Err(AppError::BrowserProfileInUse);
+    }
+    clear_stale_endpoint(profile)
 }
 
 fn clear_stale_endpoint(profile: &ManagedProfile) -> Result<()> {
@@ -340,14 +358,49 @@ mod tests {
 
     #[test]
     fn stale_endpoint_is_removed_before_a_new_managed_process() {
-        let path = env::temp_dir().join(format!("askbridge-stale-endpoint-{}", std::process::id()));
+        let path = unique_test_profile("stale-endpoint");
         let profile = ManagedProfile::open(&path.to_string_lossy(), &path).expect("profile");
         fs::write(profile.endpoint_file(), b"9222\n/devtools/browser/stale\n")
             .expect("stale endpoint");
 
-        clear_stale_endpoint(&profile).expect("clear endpoint");
+        prepare_endpoint_for_launch(&profile).expect("clear endpoint");
         assert!(!profile.endpoint_file().exists());
 
         fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn live_endpoint_is_preserved_and_reported_as_in_use() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let port = listener.local_addr().expect("address").port();
+        let path = unique_test_profile("live-endpoint");
+        let profile = ManagedProfile::open(&path.to_string_lossy(), &path).expect("profile");
+        fs::write(
+            profile.endpoint_file(),
+            format!("{port}\n/devtools/browser/live\n"),
+        )
+        .expect("live endpoint");
+
+        assert!(matches!(
+            prepare_endpoint_for_launch(&profile),
+            Err(AppError::BrowserProfileInUse)
+        ));
+        assert!(profile.endpoint_file().exists());
+
+        drop(listener);
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    fn unique_test_profile(label: &str) -> PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        env::temp_dir().join(format!(
+            "askbridge-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ))
     }
 }

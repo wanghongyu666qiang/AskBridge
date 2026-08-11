@@ -1,43 +1,48 @@
-# AskBridge 项目交接文档（Phase 4）
+# AskBridge 项目交接文档（历史阶段记录）
 
-更新时间：2026-08-01
+更新时间：2026-08-10
 项目目录：`D:\AskBridge`
 远端仓库：`https://github.com/wanghongyu666qiang/AskBridge.git`
 当前分支：`main`
-Phase 4 开发基线：`main` 上未提交工作区；最近已推送提交为 `3b61d78 fix: eliminate capture overlay drag flicker`
+Phase 6 开发基线：Phase 5 已验收但仍位于 `main` 未提交工作区；最近已推送提交为 `4a97eb0 feat: complete Phase 4 browser targets and CDP`
+
+> 当前 Phase 0–8 候选实现、2026-08-10 自动/真实验收证据和剩余阻塞项以 [`ACCEPTANCE_REPORT.md`](ACCEPTANCE_REPORT.md) 为准。本文后续内容保留阶段历史和旧环境证据；其中“下一步”“当前不包含”和旧版本号描述不再代表当前状态。
 
 ## 当前有效交接信息
 
 ### 1. 基线与范围
 
 - 仓库内的 [`docs/DEVELOPMENT_SPEC.md`](DEVELOPMENT_SPEC.md) 是当前唯一开发基线。
-- Phase 0–3 及后续托盘/截图稳定性修复已提交并推送；Phase 4 实施边界见 [`PHASE_4_PLAN.md`](PHASE_4_PLAN.md)。
+- Phase 0–4 及后续托盘/截图稳定性修复已提交并推送；Phase 5 已完成实现和真实验收，Phase 6 实施边界见 [`PHASE_6_PLAN.md`](PHASE_6_PLAN.md)。
 - 本轮额外修复真实 Windows Shell 托盘回调无法到达 Runtime，以及截图拖选时遮罩闪烁的问题。
-- Phase 4 的桌面 PWA、专用 Chrome、CDP 和页面目标基础已经实现；Phase 5 的网页输入、附件上传和内容准备尚未开始。
+- Phase 4 的桌面 PWA、专用 Chrome、CDP 和页面目标基础已经完成；Phase 5 的通用网页准备和人工兜底已验收；Phase 6 的四家真实网页文字准备和 ChatGPT 图片准备已通过，Gemini、Claude、豆包图片仍安全进入人工兜底，Windows UI 最终串联验收待完成。
 - 用户确认 AskBridge 的全部运行数据留在 D 盘；当前开发工作区使用 `D:\AskBridge\data`。配置和 257 个专用 Chrome 配置条目已从旧 `%LOCALAPPDATA%` 位置非破坏性复制，旧 C 盘副本暂未删除。
 - 本机 `Alt+A` 与现有截图工具冲突；用户确认将“直接文字提问”当前配置和项目默认值改为 `Alt+W`。
 - 正式程序不使用 Electron、Tauri、Python、WebView、浏览器扩展或本地 HTTP 服务。
 
 ### 2. 当前 Git 状态
 
-`main` 与 `origin/main` 当前均指向 `3b61d78`。Phase 4 工作区尚未提交、尚未推送。
+`main` 与 `origin/main` 当前均指向 `4a97eb0`。Phase 5 与当前 Phase 6 工作区均尚未提交、尚未推送。
 
-Phase 4 修改：
+Phase 5 修改：
 
-- `Cargo.lock`
 - `README.md`
-- `crates/askbridge-core/src/browser.rs`
-- `crates/askbridge-core/src/error.rs`
-- `crates/askbridge-core/src/lib.rs`
-- `crates/askbridge-core/src/workflow.rs`
+- `crates/askbridge-core/src/{browser,error,lib,preparation,workflow}.rs`
 - `crates/askbridge-win/Cargo.toml`
-- `crates/askbridge-win/src/app.rs`
-- `crates/askbridge-win/src/browser/`
-- `crates/askbridge-win/src/data_dir.rs`
-- `crates/askbridge-win/src/main.rs`
-- `crates/askbridge-win/src/settings.rs`
+- `crates/askbridge-win/{app.manifest,askbridge.rc,build.rs}`
+- `crates/askbridge-win/src/{adapter,app,browser,capture,clipboard,fallback,main}.rs`
+- `docs/DEVELOPMENT_SPEC.md`
 - `docs/HANDOFF.md`
-- `docs/PHASE_4_PLAN.md`
+- `docs/PHASE_5_PLAN.md`
+
+Phase 6 在上述未提交基线上继续修改：
+
+- `crates/askbridge-core/src/{lib,preparation,provider}.rs`
+- `crates/askbridge-win/src/adapter/{mod.rs,rules.rs,builtin_rules.json}`
+- `crates/askbridge-win/src/{app,fallback}.rs`
+- `crates/askbridge-win/src/browser/{cdp,mod,worker}.rs`
+- `README.md`
+- `docs/{DEVELOPMENT_SPEC,HANDOFF,PHASE_6_PLAN}.md`
 
 ### 3. Phase 4 当前实现
 
@@ -66,20 +71,67 @@ Phase 4 修改：
 - 截图拖动不再为每个 `WM_MOUSEMOVE` 强制同步整窗重绘；连续事件由 Windows 合并为延迟重绘，重复坐标不触发绘制。
 - 遮罩、透明选区、边框和文字先在兼容内存位图中完成，再通过一次 `BitBlt` 显示，避免分层窗口暴露中间绘制帧。
 
-### 4. 自动检查与构建产物
+### 4. Phase 5 当前实现
 
-以下检查已在当前 Phase 4 源码上通过：
+- `PreparationPolicy`、`PreparationOutcome` 和 `DispatchOutcome` 已进入 core，并通过受控构造和校验集中维护成功/兜底不变量。
+- `WorkflowController` 已覆盖 `PreparingPage -> PreparedForUser` 与 `PreparingPage -> PreparingFallback -> FallbackReady`，支持重试、取消和清理回到空闲。
+- `ProviderAdapter.prepare(...)` 是应用与页面差异之间的单一主要调用面；调用方不依赖定位、上传、输入或验证步骤。
+- 专用 Chrome 通用 adapter 会重新确认目标和 URL，评分可见且可编辑的 textarea/contenteditable/role=textbox；低分或多个高分候选停止并进入兜底。
+- 文字通过固定内置 CDP 输入程序触发正常 input 事件并回读验证；程序没有点击、按键发送或自动提交路径。
+- 图片使用唯一且接受 PNG 的 `input[type=file]` 与 `DOM.setFileInputFiles`；缺失、禁用、多个候选或验证失败都会停止。
+- 临时截图只写入 `D:\AskBridge\data\Temp`（或当前 AskBridge 数据目录的 `Temp`），随机文件名不包含问题，CDP 文件控件确认后立即删除；启动时只清理 24 小时前的 `askbridge-*.png`。
+- 桌面 PWA 当前没有足够可靠的 UI Automation 证据，因此不猜窗口或控件，统一返回人工兜底。
+- 人工兜底 Task Dialog 保留请求，提供“复制图片”“复制问题”“重试自动投递”“取消”；窗口存续期间修改剪贴板，关闭时尽力恢复 `CF_UNICODETEXT` 与 `CF_DIB`。
+- Windows GNU 与 MSVC 构建都会嵌入 Common Controls v6 清单；这修复了 `TaskDialogIndirect` 静态导入在系统 comctl32 v5 下令程序进入 Rust `main` 前退出的问题。Debug 模式同时把启动错误写到 stderr，便于以后区分加载器失败和应用错误。
+- 真实 Chrome ignored 集成路径已在 Chrome `150.0.7871.187` 上通过稳定本地页面的文字输入、PNG 文件控件准备、结果验证和清理。
+- Phase 5 验收时尚未开始供应商专用规则；当前 Phase 6 已在其上继续实现，所有请求仍固定 `auto_submit=false`。
+
+### 5. Phase 6 当前实现
+
+- 2026-08-04 已从官方页面重新核验 ChatGPT、Gemini、Claude、豆包入口；编译时默认入口保持 `chatgpt.com`、`gemini.google.com/app`、`claude.ai/new` 和 `doubao.com/chat/`。ChatGPT、Gemini、Claude 的匿名登录跳转与规则一致；豆包仅确认同源 `/login`，动态 DOM 和后续 SSO 仍需真实浏览器验收。
+- 新增带 `schema_version=2` 的只读内嵌规则文件，启动时校验四家覆盖完整、ID 唯一、登录模式为 HTTPS，选择器不含可执行脚本结构。
+- `ProviderAdapter.prepare(...)` interface 不变；adapter implementation 内按 `adapter_override` 选择内置规则或通用模式。
+- 供应商输入框和图片文件控件选择器优先；专用规则未命中时保留 Phase 5 通用候选评分和通用 PNG 文件控件回退。
+- 明确登录 URL 返回 `LoginInBrowser` 人工兜底；专用规则和通用输入定位均失效时返回 `ProviderPageChanged`，对话框分别显示登录或网页改版提示。
+- 页面准备日志不再输出包含 `target_url` 的完整结果对象，只记录布尔结果、失败阶段和恢复提示。
+- SPA 页面会在配置的准备超时内以 100 ms 间隔等待文件控件、输入框或可见登录结构稳定；每次探测均先执行精确 URL 守卫，缺失状态不修改页面。轮询间隙至多每 25 ms 检查一次取消，单次本地 CDP 探测上限为 750 ms，探测返回时会优先保留取消语义。
+- 文件控件出现前若 SPA 在同一受信供应商边界内完成一次路由切换，adapter 会重新取得当前 target 与精确 URL 后重试一次；登录 URL 或跨供应商导航仍立即停止，不会沿用旧 URL 写入。
+- 所有路径继续固定 `auto_submit=false`；规则不含发送按钮动作，不从网络更新，不读取或记录网页正文。
+- Chrome `151.0.7922.77` 与 `D:\AskBridge\data\BrowserProfile` 的真实 provider harness 已确认 ChatGPT、Gemini、Claude、豆包均能把非敏感测试文字写入编辑区，且没有自动发送；ChatGPT 另确认 1×1 PNG 与文字同时准备成功。
+- Gemini 只暴露“上传和工具”菜单而未直接暴露唯一文件控件；Claude 的唯一文件控件在同站 SPA 路由切换后不稳定；豆包未发现可证明唯一的附件入口。三者均按既有安全边界返回 `CopyImageThenText`，没有猜控件或放宽 URL 守卫。
+
+### 6. 自动检查与构建产物
+
+当前 Phase 6 工作区新增门禁结果：
 
 - `cargo fmt --all -- --check`：通过；
 - `cargo clippy --workspace --all-targets --offline -- -D warnings`：通过；
-- `cargo test --workspace --offline`：85 个通过，0 个失败，1 个实机 Chrome 测试默认忽略；
-- `cargo build --workspace`：通过；
-- `cargo build --workspace --release`：通过。
+- `cargo test --workspace --offline`：124 个通过，0 个失败，2 个真实 Chrome 测试默认忽略；
+- `cargo test -p askbridge-win dedicated_chrome_cdp_round_trip --offline -- --ignored --nocapture`：1 个通过，真实 Chrome 正常关闭，D 盘临时配置已清理；
+- `cargo build --workspace --offline`：通过；
+- `cargo build --workspace --release --offline`：通过；
+- `git diff --check`：通过；
+- GNU 链接器仍只有既有的非致命 `.drectve` warning。
+
+| Phase 6 构建产物 | 大小 | SHA-256 |
+| --- | ---: | --- |
+| `target\debug\askbridge.exe` | 34,110,865 bytes | `CF318ECCFCC03AD05E6A3064E0A2E0BC4D23D5B51E642045F1013B10DED4FDB5` |
+| `target\release\askbridge.exe` | 1,137,664 bytes | `3687075641D89243AF12EB7F51191DBC37DE555B340959F22C9038EA8D1196B5` |
+
+以下 Phase 5 结果保留为上一阶段验收证据：
+
+以下检查已在当前 Phase 5 工作区上通过：
+
+- `cargo fmt --all -- --check`：通过；
+- `cargo clippy --workspace --all-targets --offline -- -D warnings`：通过；
+- `cargo test --workspace --offline`：95 个通过，0 个失败，1 个实机 Chrome 测试默认忽略；
+- `cargo build --workspace --offline`：通过；GNU 链接器仍输出既有的非致命 `.drectve` 警告；
+- `cargo build --workspace --release --offline`：通过。
 
 | 产物 | 大小 | SHA-256 |
 | --- | ---: | --- |
-| `target\debug\askbridge.exe` | 31,992,926 bytes | `3E6B9E78CF597F4D8A8416C1183DD5957CDE7363F41469595A710F4D06889F5F` |
-| `target\release\askbridge.exe` | 985,600 bytes | `BDF6A46C3C3555F018500B6BD6FF074C1CBB1C338BE23B5C8BB864ED1B88DAE8` |
+| `target\debug\askbridge.exe` | 33,483,475 bytes | `EAADE013D45403F9E73D6315F7588F75496D13457FAB4977283237A965306C57` |
+| `target\release\askbridge.exe` | 1,102,848 bytes | `2B76C0ABD5223CE5F575E8CB1604B184660FD9AF1B2BBC0FD22FAA4CFA8AF910` |
 
 真实 Windows 11 验证：
 
@@ -93,12 +145,20 @@ Phase 4 修改：
 - 每次成功或失败的实机测试均清理临时 Chrome 和临时配置目录；没有连接日常 Chrome 配置。
 - Computer Use 已显示检查新版设置窗口，确认 Chrome 路径输入、说明文字、按钮和状态栏布局正常。
 - 用户已完成新的真实桌面流程：`Alt+W` 输入非敏感问题并确认后，AskBridge 成功打开现有 ChatGPT PWA，并复用其中的登录状态；没有再启动无法登录的专用 ChatGPT Chrome。
+- Phase 5 真实 Chrome ignored 测试通过：隔离临时配置、回环测试页、textarea 写入、1×1 PNG 文件上传、结果验证、浏览器关闭和临时目录清理均成功；失败的沙箱内 GPU 启动尝试也完成进程与配置清理。
+- 新清单嵌入后，Debug 实机运行保持存活且 `Alt+W` 能打开问题窗口；Release 也在启动 2 秒后保持存活。Debug/Release 二进制均检测到 Common Controls v6 清单标记。
+- 桌面 PWA 文字人工兜底实机通过：自动复制内容哈希匹配，“复制问题”保持对话框打开且内容匹配，“重试自动投递”重新创建对话框并保留请求，两次取消后均恢复到验收前无 Unicode 文本的剪贴板状态；全程未自动发送。
+- 验收发现全局热键创建遮罩后会收到正常 `WM_KILLFOCUS`，旧逻辑将其误判为取消，导致真实框选后直接消失。取消原因日志精确确认 `reason=KillFocus` 后，修复为焦点切换不取消；`Esc`、右键、关闭和 `WM_CANCELMODE` 仍保留显式取消，并增加回归测试。
+- 修复后用户以真实鼠标完成 `Alt+Q` 框选，日志确认截图只在内存中完成；图片人工兜底自动复制位图、“复制问题”切到文字、“复制图片”恢复为同一位图，且对话框保持打开。取消后恢复为原先的有位图、无 Unicode 文字格式，恢复位图哈希不同于本次截图；全程未自动发送。
+- 2026-08-09 真实四家网页文字验收全部通过，均回报 `text_inserted=true`；ChatGPT 的 1×1 PNG 验收同时回报 `attachment_prepared=true`。失败/兜底轮次均正常关闭专用 Chrome，`D:\AskBridge\data\BrowserProfile\Temp` 未留下 `askbridge-*.png`。
+- 真实 profile 仍会输出既有 Service Worker、GCM、IndexedDB/WebStorage `LOCK`/IO 告警，但未阻止四家文字准备；这些告警不能作为图片准备成功证据，也未通过禁用 sandbox/GPU 等生产参数规避。
 - 验收用 Debug AskBridge 进程已停止，以解除最终构建的文件锁。
 
-### 5. 下一步
+### 7. 下一步
 
-1. 提交并推送 Phase 4。
-2. 没有用户新授权不得进入 Phase 5；下一阶段需要分别实现桌面 PWA 的 UI Automation/剪贴板 adapter 与专用 Chrome 的 CDP 页面准备 adapter。
+1. 使用真实 AskBridge 热键/UI 串联复核四家文字路径与 Gemini、Claude、豆包的 `CopyImageThenText` 对话框提示；CDP harness 已验证网页写入，但不能替代 Windows UI 串联验收。
+2. 若以后要自动处理 Gemini/豆包图片，必须先取得唯一附件触发器和触发后唯一文件控件的真实结构证据；Claude 还需解决同站路由后的控件稳定性。没有证据时保留人工兜底。
+3. 最终 Windows UI 串联验收完成前不提交、不推送；任何情况下均不进入 Phase 7。
 
 ---
 

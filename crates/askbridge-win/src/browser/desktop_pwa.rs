@@ -9,26 +9,12 @@ use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWN
 
 use crate::util::wide;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DesktopPwaTarget {
-    provider_id: String,
-}
-
-impl DesktopPwaTarget {
-    pub fn id(&self) -> String {
-        format!("desktop-pwa:{}", self.provider_id)
-    }
-}
-
 pub struct DesktopPwaLauncher;
 
 impl DesktopPwaLauncher {
-    pub fn open(provider_id: &str, configured_shortcut: Option<&str>) -> Result<DesktopPwaTarget> {
+    pub fn open(provider_id: &str, configured_shortcut: Option<&str>) -> Result<()> {
         let shortcut = discover(provider_id, configured_shortcut)?;
-        launch_shortcut(&shortcut)?;
-        Ok(DesktopPwaTarget {
-            provider_id: provider_id.to_owned(),
-        })
+        launch_shortcut(&shortcut)
     }
 }
 
