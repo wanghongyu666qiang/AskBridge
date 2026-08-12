@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory = $true)]
     [string]$ExecutablePath,
     [Parameter(Mandatory = $true)]
     [string]$OutputPath,
@@ -12,9 +13,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
-    $scriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
-    $ExecutablePath = Join-Path (Split-Path -Parent $scriptDirectory) "target\release\askbridge.exe"
+if ([string]::IsNullOrWhiteSpace($ExecutablePath) -or -not [IO.Path]::IsPathRooted($ExecutablePath)) {
+    throw "ExecutablePath must be an explicit absolute path."
 }
 $executable = (Resolve-Path -LiteralPath $ExecutablePath).Path
 if (-not [IO.Path]::IsPathRooted($OutputPath)) {

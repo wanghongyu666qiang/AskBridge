@@ -89,12 +89,25 @@ function Write-And-VerifyHashes {
     }
 }
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$repoRoot = [IO.Path]::GetFullPath((Resolve-Path (Join-Path $PSScriptRoot "..")).Path).TrimEnd('\')
 if (-not [IO.Path]::IsPathRooted($ArtifactRoot)) {
     throw "ArtifactRoot must be an explicit absolute path."
 }
 $artifactRoot = [IO.Path]::GetFullPath($ArtifactRoot).TrimEnd('\')
-New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+$targetRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "target")).TrimEnd('\')
+if ($artifactRoot.Equals($repoRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    $artifactRoot.Equals($targetRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "ArtifactRoot must be a dedicated package directory, not the repository or target root."
+}
+if (Test-Path -LiteralPath $artifactRoot) {
+    $existingItems = @(Get-ChildItem -LiteralPath $artifactRoot -Force)
+    if ($existingItems.Count -gt 0) {
+        throw "ArtifactRoot already exists and is not empty; refusing to mix package outputs with existing files."
+    }
+}
+else {
+    New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+}
 
 Push-Location $repoRoot
 try {
@@ -111,8 +124,9 @@ try {
     $zipPath = Join-Path $artifactRoot "$packageName-windows-x64.zip"
     $setupPath = Join-Path $artifactRoot "$packageName-Setup.exe"
     $sedPath = Join-Path $artifactRoot "$packageName-Setup.sed"
+    $iexpressCabPath = Join-Path $artifactRoot "~$packageName-Setup.CAB"
 
-    foreach ($target in @($packageRoot, $zipPath, $setupPath, $sedPath)) {
+    foreach ($target in @($packageRoot, $zipPath, $setupPath, $sedPath, $iexpressCabPath)) {
         $resolved = [IO.Path]::GetFullPath($target)
         if (-not $resolved.StartsWith([IO.Path]::GetFullPath($artifactRoot) + '\', [StringComparison]::OrdinalIgnoreCase)) {
             throw "Resolved package target is outside the artifact directory: $resolved"
@@ -205,6 +219,9 @@ try {
     }
     Wait-StableFile -Path $setupPath
     Remove-Item -LiteralPath $sedPath -Force
+    if (Test-Path -LiteralPath $iexpressCabPath -PathType Leaf) {
+        Remove-Item -LiteralPath $iexpressCabPath -Force
+    }
 
     Write-Host "[6/6] Writing artifact hashes"
     $hashPath = Join-Path $artifactRoot "$packageName-SHA256SUMS.txt"

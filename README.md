@@ -81,10 +81,16 @@ cargo build --workspace --release
 ```powershell
 .\scripts\build.ps1
 .\scripts\test.ps1
+.\scripts\test-powershell-syntax.ps1
+.\scripts\test-package-root-guards.ps1 -AcceptanceRoot D:\AskBridge\target\package-root-guards
+.\scripts\test-package-artifact-validator.ps1 -AcceptanceRoot D:\AskBridge\target\package-artifact-validator
+.\scripts\test-performance-report-validator.ps1 -AcceptanceRoot D:\AskBridge\target\performance-report-validator
+.\scripts\test-install-metadata-validator.ps1 -AcceptanceRoot D:\AskBridge\target\install-metadata-acceptance
+.\scripts\test-release-local.ps1 -AcceptanceRoot D:\AskBridge\target\release-local-acceptance
 .\scripts\package.ps1 -ArtifactRoot D:\你明确选择的产物目录
 ```
 
-`package.ps1` 强制要求绝对 `ArtifactRoot`，不会默认保存到 C 盘或仓库目录；它会生成扁平便携目录、ZIP、IExpress 用户级 Setup EXE 和 SHA-256 清单。安装位置同样由用户显式选择。
+`package.ps1` 强制要求绝对、专用、空的 `ArtifactRoot`，不会默认保存到 C 盘、仓库根或仓库 `target` 根；它会生成扁平便携目录、ZIP、IExpress 用户级 Setup EXE 和 SHA-256 清单。安装位置同样由用户显式选择，不能是包目录、仓库根或仓库 `target` 根。
 
 ## 手工验收 Phase 1
 
@@ -160,10 +166,10 @@ cargo build --workspace --release
 
 ## 手工验收 Phase 8
 
-1. 用 `measure-performance.ps1` 和 `measure-chrome-performance.ps1` 分别采样桌面进程和专用 Chrome，报告路径必须为明确的绝对路径。
+1. 用 `measure-performance.ps1` 和 `measure-chrome-performance.ps1 -ExecutablePath D:\AskBridge\target\release\askbridge.exe` 分别采样桌面进程和专用 Chrome；Chrome 采样必须显式传入当前 Release EXE，报告路径必须为明确的绝对路径，报告需绑定当前 Release EXE 哈希。
 2. 在明确的 D 盘临时安装根目录执行首次安装、覆盖升级、默认保留数据卸载和明确删除数据卸载。
 3. 只有全部当前门禁、真实供应商、硬件截图矩阵和安装验收通过后，才把版本改为 `1.0.0`。
-4. 运行 `scripts\package.ps1 -ArtifactRoot <明确绝对目录>`，核对便携目录、ZIP、Setup EXE、SHA-256 和最终安装烟测。
-5. 可先在仓库 `target` 的全新临时目录运行 `scripts\test-package.ps1`、`scripts\test-installer.ps1` 和 `scripts\test-setup.ps1`；验收脚本都会删除各自的隔离目录，其中安装类脚本还会恢复当前用户 Run 项。
+4. 运行 `scripts\package.ps1 -ArtifactRoot <明确绝对目录>`，再用 `validate-package-artifacts.ps1 -ArtifactRoot <明确绝对目录> -ExpectedVersion 1.0.0 -ExpectedReleaseExePath D:\AskBridge\target\release\askbridge.exe -ExpectedSourceRoot D:\AskBridge` 核对便携目录、ZIP、Setup EXE、SHA-256、包元数据、版本、体积、包内 EXE 身份、源文件一致性和外部运行时排除，最后做最终安装烟测。
+5. 可先在仓库 `target` 的全新临时目录运行 `scripts\test-release-local.ps1`，它会串起 PowerShell 脚本语法检查、验收根目录保护、打包根目录保护、包校验器自测、性能报告校验器自测、安装包元数据安全门禁、临时打包验收、自动测试、构建和 `git diff --check`，并检查原生命令非零退出码；启动项、真实安装器和程序启动验收仍需单独授权运行。
 
 2026-08-10 的已通过证据和仍待人工闭环的项目见 [`docs/ACCEPTANCE_REPORT.md`](docs/ACCEPTANCE_REPORT.md)；README 中的手工步骤不等同于已通过声明。

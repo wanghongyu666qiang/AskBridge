@@ -45,7 +45,34 @@ try {
         version = "0.9.0-acceptance"
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture "package.json") -Encoding UTF8
 
-    Write-Host "[1/5] Fresh user-level install with persistent startup"
+    Write-Host "[1/6] Reject unsafe package metadata"
+    [ordered]@{
+        product = "AskBridge"
+        version = "0.9.0-acceptance"
+        architecture = "windows-x64"
+        auto_submit = $true
+        chrome_bundled = $false
+    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture "package.json") -Encoding UTF8
+    try {
+        & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
+    }
+    catch {
+        if (-not $_.Exception.Message.StartsWith("package.json does not describe a safe AskBridge windows-x64 package.", [StringComparison]::Ordinal)) {
+            throw
+        }
+    }
+    if (Test-Path -LiteralPath $installRoot) {
+        throw "Unsafe package metadata created an install directory."
+    }
+    [ordered]@{
+        product = "AskBridge"
+        version = "0.9.0-acceptance"
+        architecture = "windows-x64"
+        auto_submit = $false
+        chrome_bundled = $false
+    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture "package.json") -Encoding UTF8
+
+    Write-Host "[2/6] Fresh user-level install with persistent startup"
     & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot -StartOnLogin
     foreach ($file in @("askbridge.exe", "install-manifest.json", "Uninstall-AskBridge.ps1")) {
         if (-not (Test-Path -LiteralPath (Join-Path $installRoot $file) -PathType Leaf)) {
@@ -59,7 +86,7 @@ try {
         throw "StartOnLogin did not update both config.json and the current-user Run value."
     }
 
-    Write-Host "[2/5] First launch preserves installer-selected startup"
+    Write-Host "[3/6] First launch preserves installer-selected startup"
     # This acceptance install lives below the repository's target directory. Explicitly select
     # the installed data directory so the development-tree detector cannot redirect the child to
     # the repository's normal data directory.
@@ -82,7 +109,7 @@ try {
         $env:ASKBRIDGE_DATA_DIR = $previousDataEnvironment
     }
 
-    Write-Host "[3/5] In-place upgrade preserves data"
+    Write-Host "[4/6] In-place upgrade preserves data"
     $dataRoot = Join-Path $installRoot "data"
     New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
     $sentinel = Join-Path $dataRoot "upgrade-preservation.txt"
@@ -90,6 +117,9 @@ try {
     [ordered]@{
         product = "AskBridge"
         version = "0.9.1-acceptance"
+        architecture = "windows-x64"
+        auto_submit = $false
+        chrome_bundled = $false
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture "package.json") -Encoding UTF8
     & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
     $manifest = Get-Content -LiteralPath (Join-Path $installRoot "install-manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -97,7 +127,7 @@ try {
         throw "Upgrade did not update the version while preserving data."
     }
 
-    Write-Host "[4/5] Default-safe uninstall preserves data"
+    Write-Host "[5/6] Default-safe uninstall preserves data"
     & (Join-Path $installRoot "Uninstall-AskBridge.ps1") -InstallRoot $installRoot -PreserveData
     if (Test-Path -LiteralPath (Join-Path $installRoot "askbridge.exe")) {
         throw "Uninstall left the application executable behind."
@@ -106,7 +136,7 @@ try {
         throw "PreserveData uninstall removed user data."
     }
 
-    Write-Host "[5/5] Explicit data-removal uninstall"
+    Write-Host "[6/6] Explicit data-removal uninstall"
     & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
     & (Join-Path $installRoot "Uninstall-AskBridge.ps1") -InstallRoot $installRoot -RemoveData
     if (Test-Path -LiteralPath (Join-Path $installRoot "data")) {

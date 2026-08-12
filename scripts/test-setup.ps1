@@ -30,25 +30,33 @@ $previousDataEnvironment = $env:ASKBRIDGE_DATA_DIR
 $setupProcess = $null
 $installedProcess = $null
 
+function Get-AskBridgePackageVersion {
+    Push-Location $repoRoot
+    try {
+        $metadata = cargo metadata --offline --no-deps --format-version 1 | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed with exit code $LASTEXITCODE." }
+        $package = $metadata.packages | Where-Object { $_.name -eq "askbridge-win" } | Select-Object -First 1
+        if ($null -eq $package) { throw "askbridge-win metadata was not found." }
+        return [string]$package.version
+    }
+    finally {
+        Pop-Location
+    }
+}
+
 try {
     Write-Host "[1/4] Build portable and self-extracting packages"
     & (Join-Path $repoRoot "scripts\package.ps1") -ArtifactRoot $artifactRoot
     if ($LASTEXITCODE -ne 0) { throw "package.ps1 failed with exit code $LASTEXITCODE." }
+    $expectedVersion = Get-AskBridgePackageVersion
+    & (Join-Path $repoRoot "scripts\validate-package-artifacts.ps1") `
+        -ArtifactRoot $artifactRoot `
+        -ExpectedVersion $expectedVersion `
+        -ExpectedReleaseExePath (Join-Path $repoRoot "target\release\askbridge.exe") `
+        -ExpectedSourceRoot $repoRoot
 
     $setup = @(Get-ChildItem -LiteralPath $artifactRoot -File -Filter "*-Setup.exe")
-    $hashFiles = @(Get-ChildItem -LiteralPath $artifactRoot -File -Filter "*-SHA256SUMS.txt")
-    if ($setup.Count -ne 1 -or $hashFiles.Count -ne 1) {
-        throw "Packaging did not produce exactly one Setup.exe and one SHA256SUMS file."
-    }
-    foreach ($line in Get-Content -LiteralPath $hashFiles[0].FullName -Encoding ASCII) {
-        if ($line -notmatch '^([0-9A-F]{64})  (.+)$') { throw "Malformed SHA256SUMS line: $line" }
-        $expectedHash = $Matches[1]
-        $leaf = $Matches[2]
-        $matches = @(Get-ChildItem -LiteralPath $artifactRoot -Recurse -File | Where-Object Name -EQ $leaf)
-        if ($matches.Count -ne 1) { throw "Hash target '$leaf' is missing or ambiguous." }
-        $actualHash = (Get-FileHash -LiteralPath $matches[0].FullName -Algorithm SHA256).Hash
-        if ($actualHash -ne $expectedHash) { throw "Hash verification failed for '$leaf'." }
-    }
+    if ($setup.Count -ne 1) { throw "Packaging did not produce exactly one Setup.exe." }
 
     Write-Host "[2/4] Run Setup.exe and verify clean exit"
     $env:ASKBRIDGE_INSTALL_ROOT = $installRoot
@@ -88,7 +96,7 @@ try {
     if (Test-Path -LiteralPath (Join-Path $installRoot "askbridge.exe")) {
         throw "Setup smoke uninstall left askbridge.exe behind."
     }
-    Write-Host "Setup.exe hashes, extraction, install, clean exit, first launch, and uninstall acceptance passed."
+    Write-Host "Setup.exe version, hashes, Release EXE identity, extraction, install, clean exit, first launch, and uninstall acceptance passed."
 }
 finally {
     foreach ($ownedProcess in @($installedProcess, $setupProcess)) {

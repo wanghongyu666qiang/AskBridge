@@ -3,6 +3,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ProfilePath,
     [Parameter(Mandatory = $true)]
+    [string]$ExecutablePath,
+    [Parameter(Mandatory = $true)]
     [string]$OutputPath,
     [ValidateRange(30, 1800)]
     [int]$DurationSeconds = 60,
@@ -18,6 +20,12 @@ if (-not [IO.Path]::IsPathRooted($ProfilePath) -or -not [IO.Path]::IsPathRooted(
 }
 $resolvedProfile = [IO.Path]::GetFullPath($ProfilePath).TrimEnd('\')
 $resolvedOutput = [IO.Path]::GetFullPath($OutputPath)
+$resolvedExecutable = $null
+if (-not [IO.Path]::IsPathRooted($ExecutablePath)) {
+    throw "ExecutablePath must be an explicit absolute path."
+}
+$resolvedExecutable = (Resolve-Path -LiteralPath $ExecutablePath).Path
+$executableHash = (Get-FileHash -LiteralPath $resolvedExecutable -Algorithm SHA256).Hash
 New-Item -ItemType Directory -Path (Split-Path -Parent $resolvedOutput) -Force | Out-Null
 
 function Get-ManagedChromeProcessIds {
@@ -81,6 +89,8 @@ $measurementEnd = [DateTimeOffset]::Now
 $report = [ordered]@{
     measured_at = [DateTimeOffset]::Now.ToString("o")
     profile_path = $resolvedProfile
+    executable = $resolvedExecutable
+    executable_sha256 = $executableHash
     requested_duration_seconds = $DurationSeconds
     actual_duration_seconds = [Math]::Round(($measurementEnd - $measurementStart).TotalSeconds, 2)
     sample_interval_seconds = $SampleIntervalSeconds

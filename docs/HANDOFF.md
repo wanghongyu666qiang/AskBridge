@@ -1,14 +1,122 @@
-# AskBridge 项目交接文档（历史阶段记录）
+# AskBridge 1.0 收尾交接
 
-更新时间：2026-08-10
+更新时间：2026-08-11
 项目目录：`D:\AskBridge`
 远端仓库：`https://github.com/wanghongyu666qiang/AskBridge.git`
 当前分支：`main`
-Phase 6 开发基线：Phase 5 已验收但仍位于 `main` 未提交工作区；最近已推送提交为 `4a97eb0 feat: complete Phase 4 browser targets and CDP`
+最近已推送提交：`c83cbfc Expand application workflow and supporting infrastructure`
 
-> 当前 Phase 0–8 候选实现、2026-08-10 自动/真实验收证据和剩余阻塞项以 [`ACCEPTANCE_REPORT.md`](ACCEPTANCE_REPORT.md) 为准。本文后续内容保留阶段历史和旧环境证据；其中“下一步”“当前不包含”和旧版本号描述不再代表当前状态。
+> 当前 Phase 0-8 候选实现、2026-08-11 自动/真实验收证据和剩余阻塞项以 [`ACCEPTANCE_REPORT.md`](ACCEPTANCE_REPORT.md) 与 [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) 为准。本文后半部分保留早期阶段记录，仅用于追溯，不作为当前接手指令。
 
-## 当前有效交接信息
+## 当前有效交接信息（2026-08-11）
+
+### 1. 状态与边界
+
+- Phase 0-8 候选实现已进入当前源码：原生 Win32 托盘、全局快捷键、截图、问题输入、桌面 PWA seam、隔离 Chrome/CDP、供应商页面准备、人工兜底、设置、日志/配置恢复、性能脚本、便携包和用户级 Setup。
+- 版本仍保持预发布 `0.1.0`。只有全部当前证据闭环后，才能改为 `1.0.0` 并生成最终包。
+- 正式程序不得引入 Electron、Tauri、Python 常驻进程、WebView、浏览器扩展、本地 HTTP 服务、模型 API、自动发送开关或网络下发规则。
+- 运行数据必须留在 D 盘或用户明确指定的位置；最终包和性能报告目录都必须由用户给出明确绝对路径，不能默认写入 C 盘。
+- `auto_submit=false` 是硬边界。真实供应商验收只准备文字或附件，消息必须停在用户可见编辑区，由用户手动发送。
+
+### 2. 当前工作区
+
+当前未提交工作主要是 Phase 8 收尾校验和文档同步：
+
+- `README.md`
+- `docs/ACCEPTANCE_REPORT.md`
+- `docs/DEVELOPMENT_SPEC.md`
+- `docs/PHASE_8_PLAN.md`
+- `docs/RELEASE_CHECKLIST.md`
+- `docs/HANDOFF.md`
+- `scripts/validate-performance-report.ps1`
+- `scripts/test-performance-report-validator.ps1`
+- `scripts/test-powershell-syntax.ps1`
+- `scripts/test-release-local.ps1`
+- `scripts/test-acceptance-root-guards.ps1`
+- `scripts/test-package-root-guards.ps1`
+- `scripts/test-install-metadata-validator.ps1`
+- `scripts/test-package-artifact-validator.ps1`
+- `scripts/validate-package-artifacts.ps1`
+
+提交前应重新执行 `git status --short`、`git diff --check` 和相关门禁，确认没有把 `target`、`data`、临时性能报告或最终发布包加入 Git。
+
+### 3. 已通过的本地门禁
+
+最近本机通过：
+
+```powershell
+$env:PATH = 'C:\Users\why17\.cargo\bin;D:\gw\MinGW-w64-x86_64-8.1.0-release-win32-seh-rt_v6-rev0\mingw64\bin;' + $env:PATH
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --offline -- -D warnings
+cargo test --workspace --offline
+cargo build --workspace --offline
+cargo build --workspace --release --offline
+git diff --check
+```
+
+`scripts\test.ps1` 已对齐为离线 fmt、Clippy 和测试入口；`scripts\build.ps1` 已对齐为 Debug/Release 离线构建入口。GNU 链接器可能输出非致命 `corrupt .drectve at end of def file` 警告，仍以命令退出码为准。
+
+### 4. Phase 8 脚本入口
+
+这些脚本只应使用明确绝对路径：
+
+```powershell
+.\scripts\test-performance-report-validator.ps1 -AcceptanceRoot D:\AskBridge\target\<全新临时目录>
+.\scripts\test-package-artifact-validator.ps1 -AcceptanceRoot D:\AskBridge\target\<全新临时目录>
+.\scripts\test-powershell-syntax.ps1
+.\scripts\test-acceptance-root-guards.ps1 -AcceptanceRoot D:\AskBridge\target\<全新临时目录>
+.\scripts\test-package-root-guards.ps1 -AcceptanceRoot D:\AskBridge\target\<全新临时目录>
+.\scripts\test-install-metadata-validator.ps1 -AcceptanceRoot D:\AskBridge\target\<全新临时目录>
+.\scripts\test-package.ps1 -AcceptanceRoot D:\AskBridge\target\<全新临时目录>
+.\scripts\test-release-local.ps1 -AcceptanceRoot D:\AskBridge\target\<全新临时目录>
+.\scripts\test-installer.ps1 -AcceptanceRoot D:\AskBridge\target\<全新临时目录>
+.\scripts\test-setup.ps1 -AcceptanceRoot D:\AskBridge\target\<全新临时目录>
+.\scripts\validate-package-artifacts.ps1 -ArtifactRoot <用户指定最终产物绝对目录> -ExpectedVersion 1.0.0 -ExpectedReleaseExePath D:\AskBridge\target\release\askbridge.exe -ExpectedSourceRoot D:\AskBridge
+.\scripts\validate-performance-report.ps1 -DesktopReportPath <桌面报告绝对路径> -ChromeReportPath <Chrome 报告绝对路径> -TimingsReportPath <准备耗时报告绝对路径> -ExecutablePath D:\AskBridge\target\release\askbridge.exe -ExpectedChromeProfilePath D:\AskBridge\data\BrowserProfile
+.\scripts\package.ps1 -ArtifactRoot <用户指定最终产物绝对目录>
+```
+
+`test-powershell-syntax.ps1` 只解析 `scripts` 下的 PowerShell 脚本，不执行安装器、浏览器或性能采样脚本。`validate-performance-report.ps1` 用于最终发布前的完整证据包校验，必须同时传入桌面报告、Chrome 报告、准备耗时报、当前 Release EXE 和 AskBridge 专用 Chrome profile；`test-performance-report-validator.ps1` 覆盖性能报告校验器的成功路径、缺失最终证据路径、旧 EXE 哈希拒绝、相对路径拒绝、错误 profile、短采样、缺 provider/测量时间戳、超限指标和缺失外部连接证据拒绝。`validate-package-artifacts.ps1` 对最终产物目录做只读校验，覆盖便携目录、ZIP 内容、Setup EXE、SHA-256 清单、包元数据、体积边界、包内 EXE 与当前 Release EXE 哈希一致、包内文档/安装脚本与当前源树一致和不捆绑外部运行时；最终发布校验还必须传入预期版本、当前 Release EXE 和当前源树。`test-package-artifact-validator.ps1` 覆盖该校验器的成功和坏包拒绝路径，`test-install-metadata-validator.ps1` 在不写启动项、不启动程序、不运行真实 Setup EXE 的前提下覆盖安装包元数据安全门禁，`test-package.ps1` 会先生成临时包再调用包校验器。`test-release-local.ps1` 串联本地安全发布门槛，并检查原生命令非零退出码；但不替代真实浏览器、全局快捷键、安装器启动、长时间性能采样和最终产物验收。安装类脚本会在隔离 D 盘目录中测试安装/升级/卸载，并恢复当前用户 Run 项。
+
+### 5. 不能误判为完成的项目
+
+以下项目仍未闭环，不能因此标记 `1.0.0`：
+
+1. `D:\AskBridge\data\BrowserProfile` 中 Claude 当前仍需要登录后复验；真实 Claude 文字准备尚未完成。
+2. ChatGPT 真实图片路径必须用新的网页附件回执门禁重跑，不能沿用旧证据。
+3. Windows 10/11、多屏、负坐标、100/125/150/200%、混合 DPI、深浅色和高对比度矩阵缺少完整硬件证据，除非用户明确发布豁免。
+4. Chrome 真实异常矩阵已有单元/回环覆盖，但独立真实机器人工验收仍未逐项完成。
+5. 当前 `target\acceptance` 性能报告只证明预发布候选；当前 Release EXE 哈希已经与旧桌面报告中的 `executable_sha256` 不一致，Chrome 报告也需要在最终采样时记录当前 EXE 哈希。
+6. 最终 ZIP/Setup/SHA-256 保存目录仍等待用户明确指定。
+
+### 6. 真实验收授权边界
+
+执行以下动作前必须先获得用户明确许可：
+
+- 启动 AskBridge 并注册全局快捷键；
+- 打开截图遮罩、读取屏幕或测试剪贴板兜底；
+- 打开或控制真实供应商网页；
+- 使用 `D:\AskBridge\data\BrowserProfile` 中的登录态；
+- 重跑 5 分钟桌面或 Chrome 性能采样；
+- 运行最终打包并保存发布产物；
+- 写注册表启动项或运行真实安装/卸载验收。
+
+请求授权时应说明会打开哪些站点、是否会写入测试文字或附件、是否会发送消息，以及所有输出目录。默认测试文字为非敏感占位文本，且不得自动发送。
+
+### 7. 1.0 收尾顺序
+
+1. 用户重新登录 Claude 专用 Chrome 后，重跑 Claude 真实文字准备，确认 `text_inserted=true` 且未发送。
+2. 重跑 ChatGPT 真实图片准备，确认网页附件回执成立；不能证明时只能验收人工兜底。
+3. 完成可用硬件矩阵，或获得用户对缺失外部矩阵的明确发布豁免。
+4. 用户给出最终性能报告目录和最终发布产物目录。
+5. 将版本改为 `1.0.0`，重跑完整自动门禁、设置 UI 验收、关键 Chrome 验收和 5 分钟 Release 性能采样。
+6. 用 `validate-performance-report.ps1` 校验新桌面和 Chrome 性能报告与当前 Release EXE 哈希一致，且 Chrome 报告来自 AskBridge 专用 profile，准备耗时报包含 provider 和测量时间戳。
+7. 运行 `package.ps1 -ArtifactRoot <用户指定绝对目录>` 生成最终便携包、ZIP、Setup EXE 和 SHA-256 清单。
+8. 用 `validate-package-artifacts.ps1 -ArtifactRoot <用户指定绝对目录> -ExpectedVersion 1.0.0 -ExpectedReleaseExePath D:\AskBridge\target\release\askbridge.exe -ExpectedSourceRoot D:\AskBridge` 复核最终发布目录。
+9. 用最终 Setup EXE 做一次安装/卸载烟测，记录哈希、大小和清理结果。
+10. 更新 `ACCEPTANCE_REPORT.md` 和 `RELEASE_CHECKLIST.md`，确认 Definition of Done 逐项有当前证据后再提交。
+
+## 历史阶段记录（仅供追溯）
 
 ### 1. 基线与范围
 

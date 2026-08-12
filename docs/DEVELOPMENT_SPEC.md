@@ -596,7 +596,16 @@ askbridge/
 ├── scripts/
 │   ├── build.ps1
 │   ├── test.ps1
-│   └── package.ps1
+│   ├── test-powershell-syntax.ps1
+│   ├── test-acceptance-root-guards.ps1
+│   ├── test-package-root-guards.ps1
+│   ├── package.ps1
+│   ├── validate-package-artifacts.ps1
+│   ├── test-package-artifact-validator.ps1
+│   ├── test-install-metadata-validator.ps1
+│   ├── validate-performance-report.ps1
+│   ├── test-performance-report-validator.ps1
+│   └── test-release-local.ps1
 └── tests/
 ```
 
@@ -1839,11 +1848,11 @@ Phase 8 的 1.0 发布验收不包含自动发送。自动发送不得因 Phase 
 **参考实现（开发与验收命令）：**
 
 ```powershell
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo build --workspace
-cargo build --workspace --release
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --offline -- -D warnings
+cargo test --workspace --offline
+cargo build --workspace --offline
+cargo build --workspace --release --offline
 ```
 
 脚本：
@@ -1851,16 +1860,28 @@ cargo build --workspace --release
 ```text
 scripts/build.ps1
 scripts/test.ps1
-scripts/package.ps1
+scripts/test-powershell-syntax.ps1
+scripts/test-acceptance-root-guards.ps1 -AcceptanceRoot <target 下全新绝对目录>
+scripts/test-package-root-guards.ps1 -AcceptanceRoot <target 下全新绝对目录>
+scripts/package.ps1 -ArtifactRoot <明确绝对目录>
+scripts/validate-package-artifacts.ps1 -ArtifactRoot <明确绝对目录> -ExpectedReleaseExePath <当前 Release EXE> -ExpectedSourceRoot <当前源树根目录>
+scripts/test-package-artifact-validator.ps1 -AcceptanceRoot <target 下全新绝对目录>
+scripts/test-install-metadata-validator.ps1 -AcceptanceRoot <target 下全新绝对目录>
+scripts/validate-performance-report.ps1 -DesktopReportPath <明确绝对路径> -ChromeReportPath <Chrome 报告绝对路径> -TimingsReportPath <准备耗时报告绝对路径> -ExecutablePath <当前 Release EXE> -ExpectedChromeProfilePath <AskBridge BrowserProfile 绝对路径>
+scripts/test-performance-report-validator.ps1 -AcceptanceRoot <target 下全新绝对目录>
+scripts/test-release-local.ps1 -AcceptanceRoot <target 下全新绝对目录>
 ```
 
 脚本要求：
 
 - 发生错误立即停止；
 - 输出明确阶段；
+- 本地发布门槛先解析全部 PowerShell 脚本，发现语法错误即停止，但不执行安装器、浏览器或性能采样脚本；
 - 不隐藏编译或测试错误；
 - 检查必要工具；
+- 默认使用离线 Cargo 门禁；
 - 生成可重复的输出目录；
+- 产物目录必须由用户显式给出绝对路径；
 - 不修改用户全局 Rust 或 Chrome 配置。
 
 安装程序要求：
@@ -2076,11 +2097,11 @@ ADR 0001 继续有效：ChatGPT 优先启动现有桌面 PWA 并复用其登录�
 正式程序不得启动本地 HTTP 服务，不得连接用户日常 Chrome 的调试端点。
 
 完成代码调整后运行：
-- cargo fmt --check
-- cargo clippy --workspace --all-targets -- -D warnings
-- cargo test --workspace
-- cargo build --workspace
-- cargo build --workspace --release
+- cargo fmt --all -- --check
+- cargo clippy --workspace --all-targets --offline -- -D warnings
+- cargo test --workspace --offline
+- cargo build --workspace --offline
+- cargo build --workspace --release --offline
 
 1.0 检查点汇报：
 1. 已完成内容；

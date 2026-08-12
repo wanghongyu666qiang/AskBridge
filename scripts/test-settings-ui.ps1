@@ -15,11 +15,21 @@ if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
     $ExecutablePath = Join-Path (Split-Path -Parent $scriptDirectory) "target\debug\askbridge.exe"
 }
 
+$scriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = [IO.Path]::GetFullPath((Split-Path -Parent $scriptDirectory)).TrimEnd('\')
+$targetRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "target")).TrimEnd('\') + '\'
 if (-not [IO.Path]::IsPathRooted($AcceptanceDataRoot) -or -not [IO.Path]::IsPathRooted($ScreenshotPath)) {
     throw "AcceptanceDataRoot and ScreenshotPath must be explicit absolute paths."
 }
 $dataRoot = [IO.Path]::GetFullPath($AcceptanceDataRoot).TrimEnd('\')
 $screenshot = [IO.Path]::GetFullPath($ScreenshotPath)
+if (-not $dataRoot.StartsWith($targetRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "AcceptanceDataRoot must be a new child of the repository target directory."
+}
+$dataRootWithSeparator = $dataRoot + '\'
+if (-not $screenshot.StartsWith($dataRootWithSeparator, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "ScreenshotPath must be inside AcceptanceDataRoot."
+}
 if (Test-Path -LiteralPath $dataRoot) {
     throw "AcceptanceDataRoot already exists; refusing to overwrite it."
 }
