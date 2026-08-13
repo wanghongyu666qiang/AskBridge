@@ -95,6 +95,21 @@ try {
     Invoke-ExpectedFailure {
         & (Join-Path $packageRoot "Install-AskBridge.ps1") -InstallRoot $packageRoot
     } "InstallRoot must be a dedicated AskBridge install directory, not the package, repository, or target root."
+    Invoke-ExpectedFailure {
+        & (Join-Path $packageRoot "Install-AskBridge.ps1") -InstallRoot (Join-Path $packageRoot "child-install")
+    } "InstallRoot must be a dedicated AskBridge install directory, not the package, repository, or target root."
+    $fixtureRepositoryRoot = Join-Path $root "fixture-repository"
+    New-Item -ItemType Directory -Path (Join-Path $fixtureRepositoryRoot ".git") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $fixtureRepositoryRoot "crates") -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $fixtureRepositoryRoot "Cargo.toml") -Encoding ASCII -Value "[workspace]"
+    Invoke-ExpectedFailure {
+        & (Join-Path $packageRoot "Install-AskBridge.ps1") -InstallRoot $fixtureRepositoryRoot
+    } "InstallRoot must be a dedicated AskBridge install directory, not a source repository root."
+    $fixtureTargetRoot = Join-Path $fixtureRepositoryRoot "target"
+    New-Item -ItemType Directory -Path $fixtureTargetRoot -Force | Out-Null
+    Invoke-ExpectedFailure {
+        & (Join-Path $packageRoot "Install-AskBridge.ps1") -InstallRoot $fixtureTargetRoot
+    } "InstallRoot must be a dedicated AskBridge install directory, not a source repository target root."
     if (Test-Path -LiteralPath $installRoot) {
         throw "Unsafe install root checks created the install directory."
     }

@@ -26,11 +26,20 @@ fn main() {
             "windres failed to embed the application manifest"
         );
         println!("cargo:rustc-link-arg-bin=askbridge={}", output.display());
+        println!(
+            "cargo:rustc-link-arg-bin=askbridge-setup={}",
+            output.display()
+        );
     } else if target.ends_with("windows-msvc") {
         let manifest = manifest_dir.join("app.manifest");
         println!("cargo:rustc-link-arg-bin=askbridge=/MANIFEST:EMBED");
         println!(
             "cargo:rustc-link-arg-bin=askbridge=/MANIFESTINPUT:{}",
+            manifest.display()
+        );
+        println!("cargo:rustc-link-arg-bin=askbridge-setup=/MANIFEST:EMBED");
+        println!(
+            "cargo:rustc-link-arg-bin=askbridge-setup=/MANIFESTINPUT:{}",
             manifest.display()
         );
     }

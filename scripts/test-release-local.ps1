@@ -21,20 +21,25 @@ function Invoke-Step {
     }
 }
 
-if ($SelfTestFailureHandling) {
+function Test-NativeFailureHandling {
     try {
-        Invoke-Step "[self-test] Verify native command failures stop the local release gate" {
+        Invoke-Step "[native-failure-self-test] Verify native command failures stop the local release gate" {
             & powershell -NoProfile -ExecutionPolicy Bypass -Command "exit 17"
         }
     }
     catch {
         if ($_.Exception.Message -like "*exit code 17*") {
-            Write-Host "Local release gate failure handling self-test passed."
-            exit 0
+            Write-Host "Local release gate native failure handling is active."
+            return
         }
         throw
     }
-    throw "SelfTestFailureHandling expected Invoke-Step to reject a native non-zero exit code."
+    throw "Native failure handling self-test expected Invoke-Step to reject a native non-zero exit code."
+}
+
+if ($SelfTestFailureHandling) {
+    Test-NativeFailureHandling
+    exit 0
 }
 
 if ([string]::IsNullOrWhiteSpace($AcceptanceRoot) -or -not [IO.Path]::IsPathRooted($AcceptanceRoot)) {
@@ -50,6 +55,8 @@ if (Test-Path -LiteralPath $root) {
 
 try {
     New-Item -ItemType Directory -Path $root -Force | Out-Null
+
+    Test-NativeFailureHandling
 
     Invoke-Step "[1/10] Validate PowerShell script syntax" {
         & (Join-Path $repoRoot "scripts\test-powershell-syntax.ps1")

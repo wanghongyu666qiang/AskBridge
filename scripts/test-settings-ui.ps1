@@ -319,7 +319,7 @@ $uiText = @{
     StartOnLogin = ConvertFrom-Utf8Base64 "55m75b2VIFdpbmRvd3Mg5ZCO5ZCv5YqoIEFza0JyaWRnZe+8iOW9k+WJjeeUqOaIt++8jOS4jemcgOeuoeeQhuWRmOadg+mZkO+8iQ=="
     ClipboardFallback = ConvertFrom-Utf8Base64 "6Ieq5Yqo5YyW5aSx6LSl5pe25ZCv55So5Ymq6LS05p2/5YWc5bqV77yM5bm25Zyo5YWz6Zet5ZCO5bC95Yqb5oGi5aSN"
     HidePrompt = ConvertFrom-Utf8Base64 "5YaF5a655YeG5aSH5a6M5oiQ5ZCO6ZqQ6JeP6L6T5YWl5qGG"
-    DebugLogging = ConvertFrom-Utf8Base64 "5ZCv55So6LCD6K+V5pel5b+X77yI5LiL5qyh5ZCv5Yqo55Sf5pWI77yb5pel5b+X5LuN5LiN6K6w5b2V6Zeu6aKY44CB5oiq5Zu+5oiW572R6aG15q2j5paH77yJ"
+    DebugLogging = ConvertFrom-Utf8Base64 "5ZCv55So6LCD6K+V5pel5b+X77yI56uL5Y2z55Sf5pWI77yb5pel5b+X5LuN5LiN6K6w5b2V6Zeu6aKY44CB5oiq5Zu+5oiW572R6aG15q2j5paH77yJ"
     Apply = ConvertFrom-Utf8Base64 "5bqU55So5pu05pS5"
 }
 

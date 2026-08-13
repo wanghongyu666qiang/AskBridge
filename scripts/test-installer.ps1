@@ -45,7 +45,7 @@ try {
         version = "0.9.0-acceptance"
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture "package.json") -Encoding UTF8
 
-    Write-Host "[1/6] Reject unsafe package metadata"
+    Write-Host "[1/9] Reject unsafe package metadata"
     [ordered]@{
         product = "AskBridge"
         version = "0.9.0-acceptance"
@@ -57,7 +57,7 @@ try {
         & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
     }
     catch {
-        if (-not $_.Exception.Message.StartsWith("package.json does not describe a safe AskBridge windows-x64 package.", [StringComparison]::Ordinal)) {
+        if (-not $_.Exception.Message.StartsWith("package.json property 'auto_submit' must be false.", [StringComparison]::Ordinal)) {
             throw
         }
     }
@@ -72,7 +72,7 @@ try {
         chrome_bundled = $false
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture "package.json") -Encoding UTF8
 
-    Write-Host "[2/6] Fresh user-level install with persistent startup"
+    Write-Host "[2/9] Fresh user-level install with persistent startup"
     & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot -StartOnLogin
     foreach ($file in @("askbridge.exe", "install-manifest.json", "Uninstall-AskBridge.ps1")) {
         if (-not (Test-Path -LiteralPath (Join-Path $installRoot $file) -PathType Leaf)) {
@@ -86,7 +86,7 @@ try {
         throw "StartOnLogin did not update both config.json and the current-user Run value."
     }
 
-    Write-Host "[3/6] First launch preserves installer-selected startup"
+    Write-Host "[3/9] First launch preserves installer-selected startup"
     # This acceptance install lives below the repository's target directory. Explicitly select
     # the installed data directory so the development-tree detector cannot redirect the child to
     # the repository's normal data directory.
@@ -109,7 +109,7 @@ try {
         $env:ASKBRIDGE_DATA_DIR = $previousDataEnvironment
     }
 
-    Write-Host "[4/6] In-place upgrade preserves data"
+    Write-Host "[4/9] In-place upgrade preserves data"
     $dataRoot = Join-Path $installRoot "data"
     New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
     $sentinel = Join-Path $dataRoot "upgrade-preservation.txt"
@@ -127,7 +127,7 @@ try {
         throw "Upgrade did not update the version while preserving data."
     }
 
-    Write-Host "[5/6] Default-safe uninstall preserves data"
+    Write-Host "[5/9] Default-safe uninstall preserves data"
     & (Join-Path $installRoot "Uninstall-AskBridge.ps1") -InstallRoot $installRoot -PreserveData
     if (Test-Path -LiteralPath (Join-Path $installRoot "askbridge.exe")) {
         throw "Uninstall left the application executable behind."
@@ -136,7 +136,74 @@ try {
         throw "PreserveData uninstall removed user data."
     }
 
-    Write-Host "[6/6] Explicit data-removal uninstall"
+    Write-Host "[6/9] Reject malformed uninstall manifest shape"
+    & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
+    $manifestPath = Join-Path $installRoot "install-manifest.json"
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $manifest | Add-Member -MemberType NoteProperty -Name unexpected_field -Value "reject"
+    $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    try {
+        & (Join-Path $installRoot "Uninstall-AskBridge.ps1") -InstallRoot $installRoot -PreserveData
+    }
+    catch {
+        if (-not $_.Exception.Message.StartsWith("The install manifest does not match the expected AskBridge field set.", [StringComparison]::Ordinal)) {
+            throw
+        }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $installRoot "askbridge.exe") -PathType Leaf)) {
+        throw "Malformed uninstall manifest shape partially removed the installed executable."
+    }
+    Remove-Item -LiteralPath $manifestPath -Force
+
+    Write-Host "[7/9] Reject unexpected uninstall manifest file list"
+    & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
+    $outsideSentinel = Join-Path $root "outside-sentinel.txt"
+    Set-Content -LiteralPath $outsideSentinel -Encoding ASCII -Value "must-not-delete"
+    $manifestPath = Join-Path $installRoot "install-manifest.json"
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $manifest.files += "..\outside-sentinel.txt"
+    $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    try {
+        & (Join-Path $installRoot "Uninstall-AskBridge.ps1") -InstallRoot $installRoot -PreserveData
+    }
+    catch {
+        if (-not $_.Exception.Message.StartsWith("The install manifest file list does not match the expected AskBridge payload.", [StringComparison]::Ordinal)) {
+            throw
+        }
+    }
+    if (-not (Test-Path -LiteralPath $outsideSentinel -PathType Leaf)) {
+        throw "Out-of-scope uninstall manifest entry removed a file outside the install root."
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $installRoot "askbridge.exe") -PathType Leaf)) {
+        throw "Out-of-scope uninstall manifest entry partially removed the installed executable."
+    }
+    Remove-Item -LiteralPath $manifestPath -Force
+
+    Write-Host "[8/9] Reject out-of-scope start menu shortcut manifest entry"
+    & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
+    $shortcutSentinel = Join-Path $root "shortcut-sentinel.lnk"
+    Set-Content -LiteralPath $shortcutSentinel -Encoding ASCII -Value "must-not-delete"
+    $manifestPath = Join-Path $installRoot "install-manifest.json"
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $manifest.start_menu_shortcut = $shortcutSentinel
+    $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    try {
+        & (Join-Path $installRoot "Uninstall-AskBridge.ps1") -InstallRoot $installRoot -PreserveData
+    }
+    catch {
+        if (-not $_.Exception.Message.StartsWith("The install manifest contains an out-of-scope start menu shortcut path.", [StringComparison]::Ordinal)) {
+            throw
+        }
+    }
+    if (-not (Test-Path -LiteralPath $shortcutSentinel -PathType Leaf)) {
+        throw "Out-of-scope start menu shortcut manifest entry removed a file outside the allowed shortcut path."
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $installRoot "askbridge.exe") -PathType Leaf)) {
+        throw "Out-of-scope start menu shortcut manifest entry partially removed the installed executable."
+    }
+    Remove-Item -LiteralPath $manifestPath -Force
+
+    Write-Host "[9/9] Explicit data-removal uninstall"
     & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
     & (Join-Path $installRoot "Uninstall-AskBridge.ps1") -InstallRoot $installRoot -RemoveData
     if (Test-Path -LiteralPath (Join-Path $installRoot "data")) {

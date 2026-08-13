@@ -89,6 +89,35 @@ function Write-And-VerifyHashes {
     }
 }
 
+function Add-SetupPayload {
+    param(
+        [string]$StubPath,
+        [string]$SetupPath,
+        [IO.FileInfo[]]$PayloadFiles
+    )
+
+    Copy-Item -LiteralPath $StubPath -Destination $SetupPath -Force
+    $stream = [IO.File]::Open($SetupPath, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $manifestLines = [Collections.Generic.List[string]]::new()
+        foreach ($file in $PayloadFiles) {
+            $offset = $stream.Position
+            $bytes = [IO.File]::ReadAllBytes($file.FullName)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $manifestLines.Add(("{0}`t{1}`t{2}" -f $file.Name, $offset, $bytes.Length))
+        }
+        $manifest = [Text.Encoding]::UTF8.GetBytes(($manifestLines -join "`n"))
+        $stream.Write($manifest, 0, $manifest.Length)
+        $magic = [Text.Encoding]::ASCII.GetBytes("ASKBRIDGESETUP10")
+        $stream.Write($magic, 0, $magic.Length)
+        $lengthBytes = [BitConverter]::GetBytes([uint64]$manifest.Length)
+        $stream.Write($lengthBytes, 0, $lengthBytes.Length)
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
 $repoRoot = [IO.Path]::GetFullPath((Resolve-Path (Join-Path $PSScriptRoot "..")).Path).TrimEnd('\')
 if (-not [IO.Path]::IsPathRooted($ArtifactRoot)) {
     throw "ArtifactRoot must be an explicit absolute path."
@@ -123,10 +152,8 @@ try {
     $packageRoot = Join-Path $artifactRoot $packageName
     $zipPath = Join-Path $artifactRoot "$packageName-windows-x64.zip"
     $setupPath = Join-Path $artifactRoot "$packageName-Setup.exe"
-    $sedPath = Join-Path $artifactRoot "$packageName-Setup.sed"
-    $iexpressCabPath = Join-Path $artifactRoot "~$packageName-Setup.CAB"
 
-    foreach ($target in @($packageRoot, $zipPath, $setupPath, $sedPath, $iexpressCabPath)) {
+    foreach ($target in @($packageRoot, $zipPath, $setupPath)) {
         $resolved = [IO.Path]::GetFullPath($target)
         if (-not $resolved.StartsWith([IO.Path]::GetFullPath($artifactRoot) + '\', [StringComparison]::OrdinalIgnoreCase)) {
             throw "Resolved package target is outside the artifact directory: $resolved"
@@ -136,6 +163,8 @@ try {
     Write-Host "[2/6] Building release binary"
     cargo build --workspace --release --offline
     if ($LASTEXITCODE -ne 0) { throw "Release build failed with exit code $LASTEXITCODE." }
+    cargo build --package askbridge-win --bin askbridge-setup --release --offline
+    if ($LASTEXITCODE -ne 0) { throw "Setup build failed with exit code $LASTEXITCODE." }
 
     Write-Host "[3/6] Preparing deterministic package directory"
     if (Test-Path -LiteralPath $packageRoot) {
@@ -169,59 +198,13 @@ try {
     Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal
 
     Write-Host "[5/6] Creating user-level self-extracting installer"
+    $setupStub = Join-Path $repoRoot "target\release\askbridge-setup.exe"
+    if (-not (Test-Path -LiteralPath $setupStub -PathType Leaf)) {
+        throw "Setup stub build did not produce $setupStub"
+    }
     $files = @(Get-ChildItem -LiteralPath $packageRoot -File | Sort-Object Name)
-    $strings = [Collections.Generic.List[string]]::new()
-    $sourceEntries = [Collections.Generic.List[string]]::new()
-    for ($index = 0; $index -lt $files.Count; $index++) {
-        $strings.Add(('FILE{0}="{1}"' -f $index, $files[$index].Name))
-        $sourceEntries.Add(('%FILE{0}%=' -f $index))
-    }
-    $sed = @(
-        "[Version]",
-        "Class=IEXPRESS",
-        "SEDVersion=3",
-        "[Options]",
-        "PackagePurpose=InstallApp",
-        "ShowInstallProgramWindow=1",
-        "HideExtractAnimation=0",
-        "UseLongFileName=1",
-        "InsideCompressed=0",
-        "CAB_FixedSize=0",
-        "CAB_ResvCodeSigning=0",
-        "RebootMode=N",
-        "InstallPrompt=%InstallPrompt%",
-        "DisplayLicense=%DisplayLicense%",
-        "FinishMessage=%FinishMessage%",
-        "TargetName=%TargetName%",
-        "FriendlyName=%FriendlyName%",
-        "AppLaunched=%AppLaunched%",
-        "PostInstallCmd=<None>",
-        "AdminQuietInstCmd=",
-        "UserQuietInstCmd=",
-        "SourceFiles=SourceFiles",
-        "[Strings]",
-        "InstallPrompt=",
-        "DisplayLicense=",
-        "FinishMessage=",
-        "TargetName=$setupPath",
-        "FriendlyName=AskBridge $version Installer",
-        "AppLaunched=powershell.exe -NoProfile -ExecutionPolicy Bypass -File Install-AskBridge.ps1"
-    ) + $strings + @(
-        "[SourceFiles]",
-        "SourceFiles0=$packageRoot\",
-        "[SourceFiles0]"
-    ) + $sourceEntries
-    $sed | Set-Content -LiteralPath $sedPath -Encoding Unicode
-    & iexpress.exe /N /Q $sedPath
-    $iexpressExitCode = $LASTEXITCODE
-    if ($iexpressExitCode -ne 0) {
-        throw "IExpress installer creation failed with exit code $iexpressExitCode."
-    }
+    Add-SetupPayload -StubPath $setupStub -SetupPath $setupPath -PayloadFiles $files
     Wait-StableFile -Path $setupPath
-    Remove-Item -LiteralPath $sedPath -Force
-    if (Test-Path -LiteralPath $iexpressCabPath -PathType Leaf) {
-        Remove-Item -LiteralPath $iexpressCabPath -Force
-    }
 
     Write-Host "[6/6] Writing artifact hashes"
     $hashPath = Join-Path $artifactRoot "$packageName-SHA256SUMS.txt"

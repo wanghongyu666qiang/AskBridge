@@ -26,18 +26,41 @@ function Resolve-SafeInstallRoot {
         throw "A drive root cannot be used as the AskBridge install directory."
     }
     $sourceRoot = [IO.Path]::GetFullPath($PackageRoot).TrimEnd('\')
-    if ($resolved.Equals($sourceRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    if ($resolved.Equals($sourceRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        $resolved.StartsWith($sourceRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
         throw "InstallRoot must be a dedicated AskBridge install directory, not the package, repository, or target root."
     }
-    $repositoryRoot = Find-NearestRepositoryRoot $sourceRoot
-    if ($null -ne $repositoryRoot) {
-        $repositoryTargetRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot "target")).TrimEnd('\')
-        if ($resolved.Equals($repositoryRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        $repositoryRoot = Find-NearestRepositoryRoot $sourceRoot
+        if ($null -ne $repositoryRoot) {
+            $repositoryTargetRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot "target")).TrimEnd('\')
+            if ($resolved.Equals($repositoryRoot, [StringComparison]::OrdinalIgnoreCase) -or
             $resolved.Equals($repositoryTargetRoot, [StringComparison]::OrdinalIgnoreCase)) {
             throw "InstallRoot must be a dedicated AskBridge install directory, not the package, repository, or target root."
         }
     }
+    Assert-DedicatedInstallRoot $resolved
     return $resolved
+}
+
+function Assert-DedicatedInstallRoot {
+    param([string]$ResolvedInstallRoot)
+
+    $hasGit = Test-Path -LiteralPath (Join-Path $ResolvedInstallRoot ".git")
+    $hasCargoManifest = Test-Path -LiteralPath (Join-Path $ResolvedInstallRoot "Cargo.toml")
+    $hasCratesDirectory = Test-Path -LiteralPath (Join-Path $ResolvedInstallRoot "crates")
+    if ($hasGit -or $hasCargoManifest -or $hasCratesDirectory) {
+        throw "InstallRoot must be a dedicated AskBridge install directory, not a source repository root."
+    }
+    $leaf = Split-Path -Leaf $ResolvedInstallRoot
+    $parent = Split-Path -Parent $ResolvedInstallRoot
+    $parentHasGit = (-not [string]::IsNullOrWhiteSpace($parent)) -and (Test-Path -LiteralPath (Join-Path $parent ".git"))
+    $parentHasCargoManifest = (-not [string]::IsNullOrWhiteSpace($parent)) -and (Test-Path -LiteralPath (Join-Path $parent "Cargo.toml"))
+    $parentHasCratesDirectory = (-not [string]::IsNullOrWhiteSpace($parent)) -and (Test-Path -LiteralPath (Join-Path $parent "crates"))
+    if ($leaf.Equals("target", [StringComparison]::OrdinalIgnoreCase) -and
+        -not [string]::IsNullOrWhiteSpace($parent) -and
+        ($parentHasGit -or $parentHasCargoManifest -or $parentHasCratesDirectory)) {
+        throw "InstallRoot must be a dedicated AskBridge install directory, not a source repository target root."
+    }
 }
 
 function Find-NearestRepositoryRoot {
@@ -47,6 +70,10 @@ function Find-NearestRepositoryRoot {
     while (-not [string]::IsNullOrWhiteSpace($current)) {
         if (Test-Path -LiteralPath (Join-Path $current ".git")) {
             return $current
+        }
+        $pathRoot = [IO.Path]::GetPathRoot($current).TrimEnd('\')
+        if ($current.Equals($pathRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            return $null
         }
         $parent = Split-Path -Parent $current
         if ([string]::IsNullOrWhiteSpace($parent) -or $parent.Equals($current, [StringComparison]::OrdinalIgnoreCase)) {
