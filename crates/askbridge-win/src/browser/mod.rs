@@ -300,7 +300,7 @@ mod integration_tests {
             Some("chatgpt"),
             vec![format!("http://127.0.0.1:{port}/phase6")],
         )?;
-        let policy = PreparationPolicy::new(5_000, true)?;
+        let policy = PreparationPolicy::new(5_000)?;
         let temp_root = profile_path.join("Temp");
         let mut page = PageSession::DedicatedChrome {
             client: &client,
@@ -420,7 +420,7 @@ mod integration_tests {
             provider.adapter_override.as_deref(),
             provider.url_patterns.clone(),
         )?;
-        let policy = PreparationPolicy::new(20_000, true)?;
+        let policy = PreparationPolicy::new(20_000)?;
         let temp_root = profile_path.join("Temp");
         let mut page = PageSession::DedicatedChrome {
             client: &client,

@@ -72,6 +72,7 @@ function New-PackageFixture {
 
     ([ordered]@{
         "askbridge.exe" = "fixture-exe"
+        "WebView2Loader.dll" = "fixture-loader"
         "README.md" = "readme"
         "PRIVACY.md" = "privacy"
         "TROUBLESHOOTING.md" = "troubleshooting"

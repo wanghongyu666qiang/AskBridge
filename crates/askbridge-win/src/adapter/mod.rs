@@ -315,6 +315,11 @@ impl GenericProviderAdapter {
                 true,
                 attachment_prepared,
             )),
+            Some("focused") => Ok(PreparationOutcome::prepared(
+                target_url,
+                false,
+                attachment_prepared,
+            )),
             Some("login_detected") => Ok(manual_fallback(
                 target_url,
                 PreparationFailureStage::PageReadiness,
@@ -383,6 +388,11 @@ impl ProviderAdapter for GenericProviderAdapter {
             } => {
                 self.prepare_dedicated_chrome(client, target, temp_root, cancelled, request, policy)
             }
+            PageSession::DesktopPwa { target_url }
+                if !request.expects_text() && request.image.is_none() =>
+            {
+                Ok(PreparationOutcome::prepared(*target_url, false, false))
+            }
             PageSession::DesktopPwa { target_url } => Ok(manual_fallback(
                 target_url,
                 PreparationFailureStage::ComposerDiscovery,
@@ -395,11 +405,6 @@ impl ProviderAdapter for GenericProviderAdapter {
                 false,
             )),
         }?;
-        if outcome.manual_fallback_required && !policy.clipboard_fallback_enabled {
-            return Err(AppError::InvalidPreparation(
-                "automatic preparation failed and clipboard fallback is disabled".to_owned(),
-            ));
-        }
         Ok(outcome)
     }
 }
@@ -552,6 +557,9 @@ fn composer_insertion_expression(
   }}
   const el = candidates[0].el;
   el.focus();
+  if (!prompt.trim()) {{
+    return {{ status: 'focused', url: location.href }};
+  }}
   if (el.matches('textarea,input')) {{
     const prototype = el.matches('textarea') ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(prototype, 'value').set;
@@ -1006,7 +1014,7 @@ mod tests {
             1,
         )
         .expect("request");
-        let policy = PreparationPolicy::new(1_000, true).expect("policy");
+        let policy = PreparationPolicy::new(1_000).expect("policy");
         let mut page = PageSession::DesktopPwa {
             target_url: "desktop-pwa://chatgpt",
         };

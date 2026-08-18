@@ -73,7 +73,7 @@ try {
         throw "Setup.exe did not exit after installation."
     }
     $setupProcess = $null
-    foreach ($file in @("askbridge.exe", "install-manifest.json", "Uninstall-AskBridge.ps1")) {
+    foreach ($file in @("askbridge.exe", "WebView2Loader.dll", "install-manifest.json", "Uninstall-AskBridge.ps1")) {
         if (-not (Test-Path -LiteralPath (Join-Path $installRoot $file) -PathType Leaf)) {
             throw "Setup.exe install is missing $file."
         }

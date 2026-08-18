@@ -41,6 +41,7 @@ function New-InstallerFixture {
     New-Item -ItemType Directory -Path $PackageRoot -Force | Out-Null
     $payload = [ordered]@{
         "askbridge.exe" = "fixture-exe"
+        "WebView2Loader.dll" = "fixture-loader"
         "README.md" = "readme"
         "PRIVACY.md" = "privacy"
         "TROUBLESHOOTING.md" = "troubleshooting"

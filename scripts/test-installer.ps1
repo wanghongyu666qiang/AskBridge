@@ -31,6 +31,7 @@ try {
     New-Item -ItemType Directory -Path $fixture -Force | Out-Null
     $payload = [ordered]@{
         (Join-Path $repoRoot "target\release\askbridge.exe") = "askbridge.exe"
+        (Join-Path $repoRoot "target\release\WebView2Loader.dll") = "WebView2Loader.dll"
         (Join-Path $repoRoot "README.md") = "README.md"
         (Join-Path $repoRoot "docs\PRIVACY.md") = "PRIVACY.md"
         (Join-Path $repoRoot "docs\TROUBLESHOOTING.md") = "TROUBLESHOOTING.md"
@@ -74,7 +75,7 @@ try {
 
     Write-Host "[2/9] Fresh user-level install with persistent startup"
     & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot -StartOnLogin
-    foreach ($file in @("askbridge.exe", "install-manifest.json", "Uninstall-AskBridge.ps1")) {
+    foreach ($file in @("askbridge.exe", "WebView2Loader.dll", "install-manifest.json", "Uninstall-AskBridge.ps1")) {
         if (-not (Test-Path -LiteralPath (Join-Path $installRoot $file) -PathType Leaf)) {
             throw "Fresh install did not create $file."
         }

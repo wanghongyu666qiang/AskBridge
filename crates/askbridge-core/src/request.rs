@@ -65,14 +65,14 @@ impl DispatchRequest {
                 "provider id must not be empty".to_owned(),
             ));
         }
-        if self.prompt.trim().is_empty() {
-            return Err(AppError::InvalidDispatchRequest(
-                "prompt must not be empty".to_owned(),
-            ));
-        }
         if self.auto_submit {
             return Err(AppError::InvalidDispatchRequest(
                 "auto_submit must remain false in AskBridge 1.0".to_owned(),
+            ));
+        }
+        if self.mode == DispatchMode::CaptureWithDefaultPrompt && self.prompt.trim().is_empty() {
+            return Err(AppError::InvalidDispatchRequest(
+                "quick capture requests must contain the configured prompt".to_owned(),
             ));
         }
         match (self.mode, self.image.is_some()) {
@@ -86,6 +86,10 @@ impl DispatchRequest {
             }
             _ => Ok(()),
         }
+    }
+
+    pub fn expects_text(&self) -> bool {
+        !self.prompt.trim().is_empty()
     }
 }
 
@@ -136,6 +140,31 @@ mod tests {
     }
 
     #[test]
+    fn allows_web_composer_handoff_without_local_prompt_text() {
+        let capture = DispatchRequest::new(
+            "capture-1".to_owned(),
+            DispatchMode::CaptureWithPrompt,
+            "chatgpt".to_owned(),
+            String::new(),
+            Some(sample_image()),
+            10,
+        )
+        .expect("capture request");
+        let text = DispatchRequest::new(
+            "text-1".to_owned(),
+            DispatchMode::TextOnlyPrompt,
+            "chatgpt".to_owned(),
+            String::new(),
+            None,
+            20,
+        )
+        .expect("text handoff request");
+
+        assert!(!capture.expects_text());
+        assert!(!text.expects_text());
+    }
+
+    #[test]
     fn enforces_image_and_required_text_invariants() {
         assert!(
             DispatchRequest::new(
@@ -161,11 +190,11 @@ mod tests {
         );
         assert!(
             DispatchRequest::new(
-                "text-1".to_owned(),
-                DispatchMode::TextOnlyPrompt,
+                "quick-1".to_owned(),
+                DispatchMode::CaptureWithDefaultPrompt,
                 "chatgpt".to_owned(),
                 "   ".to_owned(),
-                None,
+                Some(sample_image()),
                 10,
             )
             .is_err()

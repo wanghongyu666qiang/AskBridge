@@ -173,6 +173,7 @@ try {
     New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
     $payload = [ordered]@{
         (Join-Path $repoRoot "target\release\askbridge.exe") = "askbridge.exe"
+        (Join-Path $repoRoot "target\release\WebView2Loader.dll") = "WebView2Loader.dll"
         (Join-Path $repoRoot "README.md") = "README.md"
         (Join-Path $repoRoot "docs\PRIVACY.md") = "PRIVACY.md"
         (Join-Path $repoRoot "docs\TROUBLESHOOTING.md") = "TROUBLESHOOTING.md"

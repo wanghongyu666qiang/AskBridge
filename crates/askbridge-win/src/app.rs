@@ -8,8 +8,7 @@ use std::{
 use askbridge_core::{
     AppCommand, AppConfig, AppError, AppState, BrowserLifecycle, BrowserTargetPreference,
     CapturedImage, ConfigStore, DispatchMode, DispatchOutcome, DispatchRequest, HotkeyConfig,
-    PreparationFailureStage, PreparationOutcome, PreparationPolicy, RecoveryHint, Result,
-    WorkflowController,
+    PreparationOutcome, PreparationPolicy, Result, WorkflowController,
 };
 use tracing::{error, info, warn};
 use windows_sys::Win32::{
@@ -18,12 +17,11 @@ use windows_sys::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
-        Input::KeyboardAndMouse::{GetKeyState, VK_ESCAPE, VK_RETURN, VK_SHIFT},
         WindowsAndMessaging::{
             CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
             DispatchMessageW, GetMessageW, IDC_ARROW, IsDialogMessageW, LoadCursorW, MSG,
             PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage, WM_CLOSE, WM_COMMAND,
-            WM_HOTKEY, WM_KEYDOWN, WNDCLASSW, WNDPROC, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+            WM_HOTKEY, WNDCLASSW, WNDPROC, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
         },
     },
 };
@@ -34,15 +32,10 @@ use crate::{
         BrowserEvent, BrowserJob, BrowserLaunch, BrowserService, BrowserStage, BrowserSurface,
         BrowserWarmupJob, ChromeInstallation, DedicatedChromeJob, DesktopPwaJob, WM_BROWSER_EVENT,
     },
-    capture::{CaptureOutcome, CaptureService, WM_CAPTURE_BUSY},
+    capture::{CaptureOutcome, CaptureProviderChoice, CaptureService, WM_CAPTURE_BUSY},
     data_dir,
-    fallback::{self, FallbackAction},
     hotkey_manager::HotkeyManager,
     logging,
-    prompt::{
-        CONTROL_PROMPT_CANCEL, CONTROL_PROMPT_SUBMIT, PROMPT_CLASS, PromptWindow,
-        prompt_window_proc,
-    },
     settings_v2::{
         CONTROL_APPLY, CONTROL_CHECK_BROWSER, CONTROL_CLOSE, CONTROL_OPEN_BROWSER,
         CONTROL_OPEN_LOGIN, CONTROL_RESTORE_DEFAULTS, SETTINGS_CLASS, SettingsWindow,
@@ -106,15 +99,12 @@ pub fn run() -> Result<()> {
     let instance = module as HINSTANCE;
     register_window_class(MAIN_WINDOW_CLASS, instance, Some(window_proc))?;
     register_window_class(SETTINGS_CLASS, instance, Some(settings_window_proc))?;
-    register_window_class(PROMPT_CLASS, instance, Some(prompt_window_proc))?;
-
     let main_window = MainWindow::create(instance)?;
     let capture = CaptureService::new(instance, main_window.hwnd())?;
     let mut hotkeys = HotkeyManager::new(main_window.hwnd());
     let registration_errors = hotkeys.register_initial(&loaded.config.hotkeys);
     let tray = TrayIcon::create(main_window.hwnd())?;
     let settings = SettingsWindow::create(ptr::null_mut(), instance, &loaded.config, &data_root)?;
-    let prompt = PromptWindow::create(instance)?;
     let browser = BrowserService::start(main_window.hwnd(), data_root);
 
     let mut runtime = Runtime {
@@ -122,12 +112,10 @@ pub fn run() -> Result<()> {
         hotkeys,
         tray,
         settings,
-        prompt,
         browser,
         config: loaded.config,
         store,
         workflow: WorkflowController::default(),
-        pending_prompt: None,
         pending_dispatch: None,
         paused: false,
         _main_window: main_window,
@@ -211,23 +199,16 @@ fn user_facing_error(error: &AppError) -> String {
     }
 }
 
-struct PendingPrompt {
-    command: AppCommand,
-    image: Option<CapturedImage>,
-}
-
 struct Runtime {
     // Handle-backed fields are ordered before main_window so they release their resources first.
     capture: CaptureService,
     hotkeys: HotkeyManager,
     tray: TrayIcon,
     settings: SettingsWindow,
-    prompt: PromptWindow,
     browser: BrowserService,
     config: AppConfig,
     store: ConfigStore,
     workflow: WorkflowController,
-    pending_prompt: Option<PendingPrompt>,
     pending_dispatch: Option<DispatchRequest>,
     paused: bool,
     _main_window: MainWindow,
@@ -249,17 +230,8 @@ impl Runtime {
             if result == 0 {
                 break;
             }
-            if self.handle_prompt_key(&message)? {
-                continue;
-            }
             if self.handle_message(&message)? {
                 continue;
-            }
-            if self.prompt.is_visible() && self.prompt.contains(message.hwnd) {
-                // SAFETY: The prompt window is live and message belongs to it or a child.
-                if unsafe { IsDialogMessageW(self.prompt.hwnd(), &message) } != 0 {
-                    continue;
-                }
             }
             if self.settings.is_visible() && self.settings.contains(message.hwnd) {
                 // SAFETY: The settings window is live and the message belongs to it or a child.
@@ -278,13 +250,8 @@ impl Runtime {
 
     fn handle_message(&mut self, message: &MSG) -> Result<bool> {
         if message.message == ACTIVATE_MESSAGE {
-            if self.prompt.is_visible() {
-                info!("activation message received; focusing prompt");
-                self.prompt.focus_existing();
-            } else {
-                info!("activation message received; showing settings");
-                self.settings.show();
-            }
+            info!("activation message received; showing settings");
+            self.settings.show();
             return Ok(true);
         }
         match message.message {
@@ -326,34 +293,8 @@ impl Runtime {
                 self.settings.hide();
                 Ok(true)
             }
-            WM_CLOSE if message.hwnd == self.prompt.hwnd() => {
-                self.cancel_prompt();
-                Ok(true)
-            }
             _ => Ok(false),
         }
-    }
-
-    fn handle_prompt_key(&mut self, message: &MSG) -> Result<bool> {
-        if message.message != WM_KEYDOWN
-            || !self.prompt.is_visible()
-            || !self.prompt.contains(message.hwnd)
-        {
-            return Ok(false);
-        }
-        if message.wParam == usize::from(VK_ESCAPE) {
-            self.cancel_prompt();
-            return Ok(true);
-        }
-        if message.wParam == usize::from(VK_RETURN) && message.hwnd == self.prompt.editor_hwnd() {
-            // SAFETY: GetKeyState is a read-only query for the current UI thread.
-            let shift_pressed = unsafe { GetKeyState(i32::from(VK_SHIFT)) } < 0;
-            if !shift_pressed {
-                self.submit_prompt();
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     fn handle_command(&mut self, command: u16) -> Result<()> {
@@ -377,23 +318,12 @@ impl Runtime {
             CONTROL_OPEN_BROWSER => self.open_browser_tool(false),
             CONTROL_CHECK_BROWSER => self.open_browser_tool(false),
             CONTROL_OPEN_LOGIN => self.open_browser_tool(true),
-            CONTROL_PROMPT_SUBMIT => self.submit_prompt(),
-            CONTROL_PROMPT_CANCEL => self.cancel_prompt(),
             _ => {}
         }
         Ok(())
     }
 
     fn route_command(&mut self, command: AppCommand) {
-        if self.workflow.state() == AppState::Prompting && self.prompt.is_visible() {
-            info!(
-                stage = "prompt",
-                completed = false,
-                "prompt already open; focusing existing workflow"
-            );
-            self.prompt.focus_existing();
-            return;
-        }
         if !self.workflow.is_idle() {
             info!(
                 stage = "workflow",
@@ -414,19 +344,27 @@ impl Runtime {
             }
             AppCommand::TextOnlyPrompt => {
                 info!(
-                    stage = "prompt",
+                    stage = "browser_handoff",
                     completed = true,
                     has_image = false,
-                    "text-only command routed"
+                    "text-only command opens provider composer directly"
                 );
-                self.open_prompt(command, None);
+                let provider_id = self.config.default_provider_id.clone();
+                self.prepare_request(command, provider_id, String::new(), None);
             }
         }
     }
 
     fn capture_command(&mut self, command: AppCommand) {
         info!(stage = "capture", completed = false, "capture requested");
-        match self.capture.capture() {
+        let capture = match command {
+            AppCommand::CaptureWithPrompt => self
+                .capture_toolbar_providers()
+                .and_then(|providers| self.capture.capture_with_toolbar(providers)),
+            AppCommand::CaptureQuickDispatch => self.capture.capture(),
+            AppCommand::TextOnlyPrompt => unreachable!("text command does not capture"),
+        };
+        match capture {
             Ok(CaptureOutcome::Captured(image)) => {
                 info!(
                     stage = "capture",
@@ -439,7 +377,10 @@ impl Runtime {
                     return;
                 }
                 match command {
-                    AppCommand::CaptureWithPrompt => self.open_prompt(command, Some(image)),
+                    AppCommand::CaptureWithPrompt => {
+                        let provider_id = self.config.default_provider_id.clone();
+                        self.prepare_request(command, provider_id, String::new(), Some(image));
+                    }
                     AppCommand::CaptureQuickDispatch => {
                         let provider_id = self.config.default_provider_id.clone();
                         let prompt = self.config.quick_prompt.clone();
@@ -447,6 +388,34 @@ impl Runtime {
                     }
                     AppCommand::TextOnlyPrompt => unreachable!("text command does not capture"),
                 }
+            }
+            Ok(CaptureOutcome::CapturedForProvider { image, provider_id }) => {
+                info!(
+                    stage = "capture",
+                    completed = true,
+                    has_image = true,
+                    "capture completed from toolbar action"
+                );
+                if let Err(error) = self.workflow.capture_completed(command) {
+                    self.workflow_failed(command, error);
+                    return;
+                }
+                if let Err(error) = self.remember_default_provider(&provider_id) {
+                    self.workflow_failed(command, error);
+                    return;
+                }
+                self.prepare_request(command, provider_id, String::new(), Some(image));
+            }
+            Ok(CaptureOutcome::CopiedToClipboard) => {
+                info!(
+                    stage = "capture",
+                    completed = true,
+                    copied = true,
+                    "capture copied to clipboard from toolbar action"
+                );
+                self.tray
+                    .notify("AskBridge 已复制截图", "截图已复制到剪贴板。");
+                self.cancel_workflow();
             }
             Ok(CaptureOutcome::Cancelled) => {
                 info!(
@@ -461,69 +430,6 @@ impl Runtime {
                 error!(stage = "capture", completed = false, "capture failed");
                 self.workflow_failed(command, error);
             }
-        }
-    }
-
-    fn open_prompt(&mut self, command: AppCommand, image: Option<CapturedImage>) {
-        let providers = match self.config.merged_providers() {
-            Ok(providers) => providers,
-            Err(error) => {
-                self.workflow_failed(command, error);
-                return;
-            }
-        };
-        self.pending_prompt = Some(PendingPrompt { command, image });
-        if let Err(error) = self
-            .prompt
-            .show(&providers, &self.config.default_provider_id)
-        {
-            self.workflow_failed(command, error);
-        }
-    }
-
-    fn submit_prompt(&mut self) {
-        if self.workflow.state() != AppState::Prompting {
-            return;
-        }
-        let input = match self.prompt.read_input() {
-            Ok(input) => input,
-            Err(error) => {
-                self.prompt
-                    .set_status(&format!("无法继续：{}", user_facing_error(&error)));
-                return;
-            }
-        };
-        if input.prompt.trim().is_empty() {
-            self.prompt.set_status("请输入问题后再继续。");
-            self.prompt.focus_existing();
-            return;
-        }
-        let Some(pending) = self.pending_prompt.take() else {
-            self.workflow_failed(
-                AppCommand::TextOnlyPrompt,
-                AppError::InvalidDispatchRequest("prompt context is missing".to_owned()),
-            );
-            return;
-        };
-        if let Err(error) = self.workflow.prompt_submitted() {
-            self.workflow_failed(pending.command, error);
-            return;
-        }
-        self.prompt.set_busy(true);
-        self.prompt.set_status("正在准备网页内容，请稍候…");
-        self.prepare_request(
-            pending.command,
-            input.provider_id,
-            input.prompt,
-            pending.image,
-        );
-    }
-
-    fn cancel_prompt(&mut self) {
-        self.prompt.hide_and_clear();
-        self.pending_prompt = None;
-        if !self.workflow.is_idle() {
-            self.cancel_workflow();
         }
     }
 
@@ -558,6 +464,44 @@ impl Runtime {
             Ok(request) => self.handoff_browser_request(request),
             Err(error) => self.workflow_failed(command, error),
         }
+    }
+
+    fn capture_toolbar_providers(&self) -> Result<Vec<CaptureProviderChoice>> {
+        let providers = self
+            .config
+            .merged_providers()?
+            .into_iter()
+            .filter(|provider| provider.enabled)
+            .map(|provider| CaptureProviderChoice {
+                selected: provider.id == self.config.default_provider_id,
+                id: provider.id,
+                display_name: provider.display_name,
+            })
+            .collect::<Vec<_>>();
+        if providers.is_empty() {
+            return Err(AppError::InvalidProvider(
+                "no enabled providers are available".to_owned(),
+            ));
+        }
+        Ok(providers)
+    }
+
+    fn remember_default_provider(&mut self, provider_id: &str) -> Result<()> {
+        if self.config.default_provider_id == provider_id {
+            return Ok(());
+        }
+        let mut candidate = self.config.clone();
+        candidate.default_provider_id = provider_id.to_owned();
+        self.store.save(&candidate)?;
+        self.config = candidate;
+        self.settings.refresh(&self.config)?;
+        info!(
+            provider_id = %provider_id,
+            stage = "capture_toolbar",
+            completed = true,
+            "default provider updated from capture toolbar"
+        );
+        Ok(())
     }
 
     fn handoff_browser_request(&mut self, request: DispatchRequest) {
@@ -618,10 +562,7 @@ impl Runtime {
         let opens_desktop_pwa = matches!(&launch, BrowserLaunch::DesktopPwa(_));
         let job = BrowserJob {
             request: request.clone(),
-            policy: match PreparationPolicy::new(
-                self.config.browser.page_timeout_ms,
-                self.config.general.clipboard_fallback,
-            ) {
+            policy: match PreparationPolicy::new(self.config.browser.page_timeout_ms) {
                 Ok(policy) => policy,
                 Err(error) => {
                     self.browser_workflow_failed(error);
@@ -719,24 +660,27 @@ impl Runtime {
                     );
                     match outcome {
                         DispatchOutcome::PreparedForUser(_) => {
+                            let prepared_message = self.pending_dispatch.as_ref().map_or(
+                                "网页已打开；请在输入框中输入问题并手动发送。",
+                                |request| {
+                                    if request.expects_text() && request.image.is_some() {
+                                        "文字和附件已验证就绪；请在网页中确认后手动发送。"
+                                    } else if request.image.is_some() {
+                                        "截图已放入网页输入区；请继续输入问题并手动发送。"
+                                    } else if request.expects_text() {
+                                        "文字已放入网页输入区；请确认后手动发送。"
+                                    } else {
+                                        "网页已打开；请在输入框中输入问题并手动发送。"
+                                    }
+                                },
+                            );
                             self.pending_dispatch = None;
                             if let Err(error) = self.workflow.finish_delivery() {
                                 self.browser_workflow_failed(error);
                                 return;
                             }
-                            if self.prompt.is_visible() {
-                                if self.config.general.hide_prompt_after_prepare {
-                                    self.prompt.hide_and_clear();
-                                } else {
-                                    self.prompt.set_status(
-                                        "网页内容已准备完成；请在网页确认发送，或关闭此窗口。",
-                                    );
-                                }
-                            }
-                            self.tray.notify(
-                                "AskBridge 已准备网页内容",
-                                "文字和附件已验证就绪；请在网页中确认后手动发送。",
-                            );
+                            self.tray
+                                .notify("AskBridge 已准备网页内容", prepared_message);
                             if surface == BrowserSurface::DedicatedChrome
                                 && self.config.browser.lifecycle
                                     == BrowserLifecycle::CloseAfterDispatch
@@ -752,12 +696,9 @@ impl Runtime {
                             }
                         }
                         DispatchOutcome::ManualFallbackReady(preparation) => {
-                            self.show_manual_fallback(preparation);
+                            self.stop_after_preparation_boundary(preparation);
                         }
                         DispatchOutcome::Cancelled => {
-                            if self.prompt.is_visible() {
-                                self.prompt.hide_and_clear();
-                            }
                             self.pending_dispatch = None;
                             let _ = self.workflow.finish_cancelling();
                         }
@@ -841,59 +782,7 @@ impl Runtime {
             completed = false,
             "browser surface workflow failed"
         );
-        if self.config.general.clipboard_fallback
-            && self.pending_dispatch.is_some()
-            && self
-                .workflow
-                .prepare_fallback_after_browser_failure()
-                .is_ok()
-        {
-            let Some(request) = self.pending_dispatch.as_ref() else {
-                return;
-            };
-            let target_url = self
-                .config
-                .merged_providers()
-                .ok()
-                .and_then(|providers| {
-                    providers
-                        .into_iter()
-                        .find(|provider| provider.id == request.provider_id)
-                        .map(|provider| provider.start_url)
-                })
-                .unwrap_or_else(|| "about:blank".to_owned());
-            let hint = if matches!(
-                &error,
-                AppError::ChromeNotFound
-                    | AppError::BrowserLaunchFailed
-                    | AppError::DesktopShortcutNotFound(_)
-                    | AppError::BrowserProfileRejected(_)
-                    | AppError::BrowserProfileInUse
-            ) {
-                RecoveryHint::ReopenProviderPage
-            } else {
-                RecoveryHint::Retry
-            };
-            self.tray.notify(
-                "AskBridge 已安全停止自动准备",
-                "请求仍保留；可在人工兜底中复制内容或重试。",
-            );
-            self.show_manual_fallback(PreparationOutcome::manual_fallback(
-                target_url,
-                PreparationFailureStage::PageReadiness,
-                hint,
-                false,
-                false,
-            ));
-            return;
-        }
-
         self.pending_dispatch = None;
-        if self.prompt.is_visible() {
-            self.prompt.set_busy(false);
-            self.prompt
-                .set_status("自动准备失败，输入仍保留；请检查设置后重试。");
-        }
         self.tray
             .notify("AskBridge 无法打开目标页面", &user_facing_error(&error));
         if !self.workflow.is_idle() && self.workflow.state() != AppState::Error {
@@ -904,57 +793,31 @@ impl Runtime {
         }
     }
 
-    fn show_manual_fallback(&mut self, preparation: PreparationOutcome) {
-        if let Err(error) = self.workflow.fallback_prepared() {
-            self.browser_workflow_failed(error);
-            return;
-        }
-        let Some(request) = self.pending_dispatch.clone() else {
-            self.browser_workflow_failed(AppError::InvalidPreparation(
-                "fallback request was not retained".to_owned(),
-            ));
-            return;
+    fn stop_after_preparation_boundary(&mut self, preparation: PreparationOutcome) {
+        let message = if self
+            .pending_dispatch
+            .as_ref()
+            .is_some_and(|request| request.image.is_some())
+        {
+            "当前选择的网页端不能自动上传图片；请在网页中手动上传截图并发送。"
+        } else if preparation.text_inserted || preparation.attachment_prepared {
+            "部分内容已到网页；请在网页中继续完成并手动发送。"
+        } else {
+            "网页已打开，但 AskBridge 未能连续准备输入区；请直接在网页中继续。"
         };
-        match fallback::show(self._main_window.hwnd(), &request, &preparation) {
-            Ok(FallbackAction::Retry) => {
-                if self.prompt.is_visible() {
-                    self.prompt.hide_and_clear();
-                }
-                if let Err(error) = self.workflow.retry_fallback() {
-                    self.browser_workflow_failed(error);
-                    return;
-                }
-                self.handoff_browser_request(request);
+        self.pending_dispatch = None;
+        if !self.workflow.is_idle() {
+            if self.workflow.state() != AppState::Cancelling {
+                let _ = self.workflow.begin_cancelling();
             }
-            Ok(FallbackAction::Cancel) => {
-                if self.prompt.is_visible() {
-                    self.prompt.hide_and_clear();
-                }
-                self.pending_dispatch = None;
-                if let Err(error) = self
-                    .workflow
-                    .begin_cancelling()
-                    .and_then(|_| self.workflow.finish_cancelling())
-                {
-                    self.browser_workflow_failed(error);
-                }
-            }
-            Err(error) => {
-                self.pending_dispatch = None;
-                if self.prompt.is_visible() {
-                    self.prompt.set_busy(false);
-                    self.prompt
-                        .set_status("人工兜底未能打开，输入仍保留；请稍后重试。");
-                }
-                let _ = self.workflow.finish_delivery();
-                self.tray
-                    .notify("AskBridge 人工兜底失败", &user_facing_error(&error));
+            if self.workflow.state() == AppState::Cancelling {
+                let _ = self.workflow.finish_cancelling();
             }
         }
+        self.tray.notify("AskBridge 已停止本次准备", message);
     }
 
     fn cancel_workflow(&mut self) {
-        self.pending_prompt = None;
         self.pending_dispatch = None;
         self.browser.cancel();
         if self.workflow.is_idle() {
@@ -984,8 +847,6 @@ impl Runtime {
             completed = false,
             "workflow failed"
         );
-        self.prompt.hide_and_clear();
-        self.pending_prompt = None;
         self.pending_dispatch = None;
         self.tray
             .notify("AskBridge 无法继续", &user_facing_error(&error));

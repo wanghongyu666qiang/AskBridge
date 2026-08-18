@@ -209,6 +209,7 @@ Assert-BooleanFalseProperty $packageMetadata "auto_submit"
 Assert-BooleanFalseProperty $packageMetadata "chrome_bundled"
 $requiredFiles = @(
     "askbridge.exe",
+    "WebView2Loader.dll",
     "README.md",
     "PRIVACY.md",
     "TROUBLESHOOTING.md",

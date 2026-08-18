@@ -1,4 +1,4 @@
-use std::{path::Path, ptr};
+use std::{ffi::c_void, path::Path, ptr};
 
 use askbridge_core::{
     AppCommand, AppConfig, AppError, BrowserLifecycle, BrowserTargetPreference, HotkeyBinding,
@@ -6,19 +6,28 @@ use askbridge_core::{
 };
 use tracing::error;
 use windows_sys::Win32::{
-    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
-    Graphics::Gdi::{COLOR_WINDOW, DEFAULT_GUI_FONT, GetStockObject, GetSysColorBrush},
+    Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Graphics::Gdi::{
+        CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_WINDOW, CreateFontW, CreateSolidBrush,
+        DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DeleteObject, DrawTextW, FF_DONTCARE,
+        FW_NORMAL, FW_SEMIBOLD, FillRect, FrameRect, GetStockObject, GetSysColorBrush,
+        OUT_DEFAULT_PRECIS, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
+    },
     UI::{
-        Controls::{BST_CHECKED, BST_UNCHECKED, EM_SETLIMITTEXT},
+        Controls::{
+            BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SETLIMITTEXT, EM_SETMARGINS,
+            ODS_DISABLED, ODS_SELECTED,
+        },
         HiDpi::GetDpiForSystem,
         WindowsAndMessaging::{
-            BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, CB_ADDSTRING,
-            CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL, CBS_DROPDOWNLIST, CreateWindowExW,
-            DefWindowProcW, DestroyWindow, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE,
-            ES_READONLY, ES_WANTRETURN, FindWindowW, GetDlgItem, GetWindowTextLengthW,
-            GetWindowTextW, IsChild, IsWindowVisible, PostMessageW, SW_HIDE, SW_SHOW, SendMessageW,
-            SetForegroundWindow, SetWindowTextW, ShowWindow, WM_CLOSE, WM_COMMAND,
-            WM_CTLCOLORSTATIC, WM_SETFONT, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
+            BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_OWNERDRAW,
+            CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL, CBS_DROPDOWNLIST,
+            CreateWindowExW, DefWindowProcW, DestroyWindow, EC_LEFTMARGIN, EC_RIGHTMARGIN,
+            ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN, FindWindowW,
+            GetDlgCtrlID, GetDlgItem, GetWindowTextLengthW, GetWindowTextW, IsChild,
+            IsWindowVisible, PostMessageW, SW_HIDE, SW_SHOW, SendMessageW, SetForegroundWindow,
+            SetWindowTextW, ShowWindow, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DRAWITEM,
+            WM_GETFONT, WM_SETFONT, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
             WS_EX_CLIENTEDGE, WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP,
             WS_VISIBLE, WS_VSCROLL,
         },
@@ -40,6 +49,8 @@ const PAGE_HOTKEYS: u16 = 2011;
 const PAGE_PROVIDERS: u16 = 2012;
 const PAGE_BROWSER: u16 = 2013;
 const PAGE_GENERAL: u16 = 2014;
+const TITLE_LABEL: u16 = 2021;
+const SUBTITLE_LABEL: u16 = 2022;
 
 pub const CONTROL_APPLY: u16 = 2051;
 pub const CONTROL_RESTORE_DEFAULTS: u16 = 2052;
@@ -61,21 +72,30 @@ const CHECK_PROVIDER_BASE: u16 = 2210;
 const EDIT_PROVIDER_URL_BASE: u16 = 2220;
 const EDIT_CUSTOM_PROVIDERS: u16 = 2230;
 
-const CHECK_CHATGPT_DESKTOP_PWA: u16 = 2301;
+const RADIO_CHATGPT_DESKTOP_PWA: u16 = 2301;
+const RADIO_CHATGPT_DEDICATED_CHROME: u16 = 2305;
 const EDIT_CHROME_PATH: u16 = 2302;
 const COMBO_LIFECYCLE: u16 = 2303;
 const EDIT_DATA_PATH: u16 = 2304;
 
 const EDIT_QUICK_PROMPT: u16 = 2401;
 const CHECK_START_ON_LOGIN: u16 = 2402;
-const CHECK_CLIPBOARD_FALLBACK: u16 = 2403;
-const CHECK_HIDE_PROMPT: u16 = 2404;
 const CHECK_DEBUG_LOGGING: u16 = 2405;
 
-const WINDOW_WIDTH: i32 = 800;
-const WINDOW_HEIGHT: i32 = 660;
+const WINDOW_WIDTH: i32 = 840;
+const WINDOW_HEIGHT: i32 = 720;
 const MAX_SINGLE_LINE: WPARAM = 2048;
 const MAX_MULTI_LINE: WPARAM = 16_384;
+
+const COLOR_TEXT: COLORREF = rgb(30, 41, 59);
+const COLOR_MUTED: COLORREF = rgb(100, 116, 139);
+const COLOR_ACCENT: COLORREF = rgb(37, 99, 235);
+const COLOR_ACCENT_PRESSED: COLORREF = rgb(29, 78, 216);
+const COLOR_SECONDARY: COLORREF = rgb(241, 245, 249);
+const COLOR_SECONDARY_PRESSED: COLORREF = rgb(226, 232, 240);
+const COLOR_BORDER: COLORREF = rgb(203, 213, 225);
+const COLOR_DISABLED: COLORREF = rgb(148, 163, 184);
+const COLOR_WHITE: COLORREF = rgb(255, 255, 255);
 
 const LIFECYCLES: [(&str, BrowserLifecycle); 4] = [
     ("按需启动，保持运行", BrowserLifecycle::OnDemandKeepRunning),
@@ -106,6 +126,73 @@ impl UiScale {
     }
 }
 
+struct OwnedFont(*mut c_void);
+
+impl OwnedFont {
+    fn create(height: i32, weight: i32, scale: UiScale) -> Result<Self> {
+        let family = wide("Microsoft YaHei UI");
+        // SAFETY: All metrics are ordinary font attributes and family is nul-terminated.
+        let font = unsafe {
+            CreateFontW(
+                -scale.px(height),
+                0,
+                0,
+                0,
+                weight,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET as u32,
+                OUT_DEFAULT_PRECIS as u32,
+                CLIP_DEFAULT_PRECIS as u32,
+                CLEARTYPE_QUALITY as u32,
+                (DEFAULT_PITCH | FF_DONTCARE) as u32,
+                family.as_ptr(),
+            )
+        };
+        if font.is_null() {
+            return Err(AppError::Windows {
+                operation: "CreateFontW(settings)",
+                win32_code: last_error(),
+            });
+        }
+        Ok(Self(font))
+    }
+
+    const fn handle(&self) -> *mut c_void {
+        self.0
+    }
+}
+
+impl Drop for OwnedFont {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: The top-level settings window is destroyed before the fonts are dropped.
+            unsafe {
+                DeleteObject(self.0);
+            }
+        }
+    }
+}
+
+struct UiFonts {
+    title: OwnedFont,
+    body: OwnedFont,
+    label: OwnedFont,
+    small: OwnedFont,
+}
+
+impl UiFonts {
+    fn create(scale: UiScale) -> Result<Self> {
+        Ok(Self {
+            title: OwnedFont::create(24, FW_SEMIBOLD as i32, scale)?,
+            body: OwnedFont::create(16, FW_NORMAL as i32, scale)?,
+            label: OwnedFont::create(16, FW_SEMIBOLD as i32, scale)?,
+            small: OwnedFont::create(14, FW_NORMAL as i32, scale)?,
+        })
+    }
+}
+
 struct HotkeyRow {
     command: AppCommand,
     edit: HWND,
@@ -126,14 +213,14 @@ pub struct SettingsWindow {
     default_provider: HWND,
     custom_providers: HWND,
     chatgpt_desktop_pwa: HWND,
+    chatgpt_dedicated_chrome: HWND,
     chrome_path: HWND,
     lifecycle: HWND,
     quick_prompt: HWND,
     start_on_login: HWND,
-    clipboard_fallback: HWND,
-    hide_prompt_after_prepare: HWND,
     debug_logging: HWND,
     status: HWND,
+    _fonts: UiFonts,
 }
 
 impl SettingsWindow {
@@ -144,6 +231,7 @@ impl SettingsWindow {
         data_root: &Path,
     ) -> Result<Self> {
         let scale = UiScale::system();
+        let fonts = UiFonts::create(scale)?;
         let window = create_control(
             parent,
             instance,
@@ -159,6 +247,37 @@ impl SettingsWindow {
             0,
         )?;
 
+        let title = create_control(
+            window,
+            instance,
+            scale,
+            "STATIC",
+            "AskBridge",
+            WS_CHILD | WS_VISIBLE,
+            24,
+            18,
+            180,
+            32,
+            0,
+            TITLE_LABEL,
+        )?;
+        set_font(title, fonts.title.handle());
+        let subtitle = create_control(
+            window,
+            instance,
+            scale,
+            "STATIC",
+            "轻量问答路由设置",
+            WS_CHILD | WS_VISIBLE,
+            24,
+            50,
+            240,
+            24,
+            0,
+            SUBTITLE_LABEL,
+        )?;
+        set_font(subtitle, fonts.small.handle());
+
         for (index, (id, label)) in [
             (TAB_HOTKEYS, "快捷键"),
             (TAB_PROVIDERS, "供应商"),
@@ -168,7 +287,7 @@ impl SettingsWindow {
         .into_iter()
         .enumerate()
         {
-            create_control(
+            let tab = create_control(
                 window,
                 instance,
                 scale,
@@ -179,13 +298,14 @@ impl SettingsWindow {
                     | WS_TABSTOP
                     | if index == 0 { WS_GROUP } else { 0 }
                     | BS_AUTORADIOBUTTON as u32,
-                24 + index as i32 * 122,
-                18,
+                282 + index as i32 * 122,
+                34,
                 112,
                 30,
                 0,
                 id,
             )?;
+            set_font(tab, fonts.label.handle());
         }
 
         let hotkey_page = create_page(window, instance, scale, PAGE_HOTKEYS)?;
@@ -193,26 +313,22 @@ impl SettingsWindow {
         let browser_page = create_page(window, instance, scale, PAGE_BROWSER)?;
         let general_page = create_page(window, instance, scale, PAGE_GENERAL)?;
 
-        let rows = create_hotkey_page(hotkey_page, instance, scale)?;
+        let rows = create_hotkey_page(hotkey_page, instance, scale, &fonts)?;
         let (default_provider, provider_rows, custom_providers) =
-            create_provider_page(provider_page, instance, scale)?;
-        let (chatgpt_desktop_pwa, chrome_path, lifecycle) =
-            create_browser_page(browser_page, instance, scale, data_root)?;
-        let (
-            quick_prompt,
-            start_on_login,
-            clipboard_fallback,
-            hide_prompt_after_prepare,
-            debug_logging,
-        ) = create_general_page(general_page, instance, scale)?;
+            create_provider_page(provider_page, instance, scale, &fonts)?;
+        let (chatgpt_desktop_pwa, chatgpt_dedicated_chrome, chrome_path, lifecycle) =
+            create_browser_page(browser_page, instance, scale, data_root, &fonts)?;
+        let (quick_prompt, start_on_login, debug_logging) =
+            create_general_page(general_page, instance, scale, &fonts)?;
 
         create_button(
             window,
             instance,
             scale,
+            &fonts,
             "应用更改",
-            454,
-            544,
+            494,
+            604,
             104,
             CONTROL_APPLY,
         )?;
@@ -220,13 +336,24 @@ impl SettingsWindow {
             window,
             instance,
             scale,
+            &fonts,
             "恢复默认快捷键",
-            570,
-            544,
+            610,
+            604,
             132,
             CONTROL_RESTORE_DEFAULTS,
         )?;
-        create_button(window, instance, scale, "关闭", 714, 544, 64, CONTROL_CLOSE)?;
+        create_button(
+            window,
+            instance,
+            scale,
+            &fonts,
+            "关闭",
+            754,
+            604,
+            64,
+            CONTROL_CLOSE,
+        )?;
         let status = create_control(
             window,
             instance,
@@ -235,12 +362,13 @@ impl SettingsWindow {
             "准备就绪。所有设置在校验后统一应用。",
             WS_CHILD | WS_VISIBLE,
             24,
-            592,
-            754,
+            660,
+            794,
             28,
             0,
             STATUS_LABEL,
         )?;
+        set_font(status, fonts.small.handle());
 
         let mut settings = Self {
             window,
@@ -250,14 +378,14 @@ impl SettingsWindow {
             default_provider,
             custom_providers,
             chatgpt_desktop_pwa,
+            chatgpt_dedicated_chrome,
             chrome_path,
             lifecycle,
             quick_prompt,
             start_on_login,
-            clipboard_fallback,
-            hide_prompt_after_prepare,
             debug_logging,
             status,
+            _fonts: fonts,
         };
         settings.refresh(config)?;
         switch_page(window, PAGE_HOTKEYS);
@@ -347,6 +475,10 @@ impl SettingsWindow {
             self.chatgpt_desktop_pwa,
             config.browser.target_preference("chatgpt") == BrowserTargetPreference::DesktopPwa,
         );
+        set_checked(
+            self.chatgpt_dedicated_chrome,
+            config.browser.target_preference("chatgpt") == BrowserTargetPreference::DedicatedChrome,
+        );
         combo_reset(self.lifecycle);
         let mut lifecycle_selected = 0;
         for (index, (label, value)) in LIFECYCLES.into_iter().enumerate() {
@@ -359,11 +491,6 @@ impl SettingsWindow {
 
         set_text(self.quick_prompt, &config.quick_prompt)?;
         set_checked(self.start_on_login, config.general.start_on_login);
-        set_checked(self.clipboard_fallback, config.general.clipboard_fallback);
-        set_checked(
-            self.hide_prompt_after_prepare,
-            config.general.hide_prompt_after_prepare,
-        );
         set_checked(self.debug_logging, config.general.debug_logging);
         Ok(())
     }
@@ -374,8 +501,7 @@ impl SettingsWindow {
         candidate.default_provider_id = self.read_default_provider()?;
         candidate.quick_prompt = get_text(self.quick_prompt)?.trim().to_owned();
         candidate.general.start_on_login = is_checked(self.start_on_login);
-        candidate.general.clipboard_fallback = is_checked(self.clipboard_fallback);
-        candidate.general.hide_prompt_after_prepare = is_checked(self.hide_prompt_after_prepare);
+        candidate.general.hide_prompt_after_prepare = base.general.hide_prompt_after_prepare;
         candidate.general.debug_logging = is_checked(self.debug_logging);
         candidate.general.auto_submit = false;
 
@@ -507,16 +633,21 @@ fn create_page(parent: HWND, instance: HINSTANCE, scale: UiScale, id: u16) -> Re
         SETTINGS_CLASS,
         "",
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
-        18,
-        58,
-        762,
-        466,
+        24,
+        100,
+        794,
+        482,
         0,
         id,
     )
 }
 
-fn create_hotkey_page(page: HWND, instance: HINSTANCE, scale: UiScale) -> Result<Vec<HotkeyRow>> {
+fn create_hotkey_page(
+    page: HWND,
+    instance: HINSTANCE,
+    scale: UiScale,
+    _fonts: &UiFonts,
+) -> Result<Vec<HotkeyRow>> {
     create_label(page, instance, scale, "全局快捷键", 12, 8, 720, 28, 0)?;
     create_label(
         page,
@@ -601,6 +732,7 @@ fn create_provider_page(
     page: HWND,
     instance: HINSTANCE,
     scale: UiScale,
+    _fonts: &UiFonts,
 ) -> Result<(HWND, Vec<ProviderRow>, HWND)> {
     create_label(page, instance, scale, "默认供应商", 12, 8, 132, 26, 0)?;
     let default_provider = create_control(
@@ -708,20 +840,49 @@ fn create_browser_page(
     instance: HINSTANCE,
     scale: UiScale,
     data_root: &Path,
-) -> Result<(HWND, HWND, HWND)> {
+    fonts: &UiFonts,
+) -> Result<(HWND, HWND, HWND, HWND)> {
+    create_label(page, instance, scale, "ChatGPT 打开方式", 12, 8, 210, 24, 0)?;
     let pwa = create_control(
         page,
         instance,
         scale,
         "BUTTON",
-        "ChatGPT 使用桌面网页端并复用现有登录",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32,
+        "桌面网页端：复用现有登录，但截图需要手动上传",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON as u32,
         12,
-        10,
-        520,
+        38,
+        620,
         30,
         0,
-        CHECK_CHATGPT_DESKTOP_PWA,
+        RADIO_CHATGPT_DESKTOP_PWA,
+    )?;
+    set_font(pwa, fonts.body.handle());
+    let dedicated = create_control(
+        page,
+        instance,
+        scale,
+        "BUTTON",
+        "AskBridge 专用 Chrome：支持自动上传图片，需要单独登录",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON as u32,
+        12,
+        72,
+        680,
+        30,
+        0,
+        RADIO_CHATGPT_DEDICATED_CHROME,
+    )?;
+    set_font(dedicated, fonts.body.handle());
+    create_label(
+        page,
+        instance,
+        scale,
+        "这个选择会同时影响纯文字和截图提问。",
+        12,
+        106,
+        710,
+        24,
+        0,
     )?;
     create_label(
         page,
@@ -729,7 +890,7 @@ fn create_browser_page(
         scale,
         "Chrome 可执行文件",
         12,
-        58,
+        142,
         210,
         24,
         0,
@@ -740,7 +901,7 @@ fn create_browser_page(
         scale,
         "留空自动检测；填写时必须是现有 chrome.exe 的绝对路径。",
         230,
-        58,
+        142,
         492,
         24,
         0,
@@ -753,7 +914,7 @@ fn create_browser_page(
         "",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
         12,
-        86,
+        170,
         710,
         34,
         WS_EX_CLIENTEDGE,
@@ -766,7 +927,7 @@ fn create_browser_page(
         scale,
         "专用 Chrome 生命周期",
         12,
-        142,
+        226,
         210,
         24,
         0,
@@ -779,7 +940,7 @@ fn create_browser_page(
         "",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST as u32,
         230,
-        136,
+        220,
         350,
         220,
         0,
@@ -791,7 +952,7 @@ fn create_browser_page(
         scale,
         "AskBridge 数据目录",
         12,
-        196,
+        280,
         210,
         24,
         0,
@@ -804,7 +965,7 @@ fn create_browser_page(
         &data_root.to_string_lossy(),
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL as u32 | ES_READONLY as u32,
         12,
-        224,
+        308,
         710,
         34,
         WS_EX_CLIENTEDGE,
@@ -817,7 +978,7 @@ fn create_browser_page(
         scale,
         "浏览器工具只控制 AskBridge 专用配置，不连接日常 Chrome。",
         12,
-        278,
+        362,
         710,
         24,
         0,
@@ -826,9 +987,10 @@ fn create_browser_page(
         page,
         instance,
         scale,
+        fonts,
         "打开 AskBridge 浏览器",
         12,
-        316,
+        400,
         190,
         CONTROL_OPEN_BROWSER,
     )?;
@@ -836,9 +998,10 @@ fn create_browser_page(
         page,
         instance,
         scale,
+        fonts,
         "检查连接",
         216,
-        316,
+        400,
         130,
         CONTROL_CHECK_BROWSER,
     )?;
@@ -846,20 +1009,22 @@ fn create_browser_page(
         page,
         instance,
         scale,
+        fonts,
         "打开默认供应商登录页面",
         360,
-        316,
+        400,
         226,
         CONTROL_OPEN_LOGIN,
     )?;
-    Ok((pwa, chrome, lifecycle))
+    Ok((pwa, dedicated, chrome, lifecycle))
 }
 
 fn create_general_page(
     page: HWND,
     instance: HINSTANCE,
     scale: UiScale,
-) -> Result<(HWND, HWND, HWND, HWND, HWND)> {
+    fonts: &UiFonts,
+) -> Result<(HWND, HWND, HWND)> {
     create_label(
         page,
         instance,
@@ -897,36 +1062,20 @@ fn create_general_page(
         page,
         instance,
         scale,
+        fonts,
         "登录 Windows 后启动 AskBridge（当前用户，不需管理员权限）",
         12,
         176,
         CHECK_START_ON_LOGIN,
     )?;
-    let clipboard = create_check(
-        page,
-        instance,
-        scale,
-        "自动化失败时启用剪贴板兜底，并在关闭后尽力恢复",
-        12,
-        220,
-        CHECK_CLIPBOARD_FALLBACK,
-    )?;
-    let hide_prompt = create_check(
-        page,
-        instance,
-        scale,
-        "内容准备完成后隐藏输入框",
-        12,
-        264,
-        CHECK_HIDE_PROMPT,
-    )?;
     let debug = create_check(
         page,
         instance,
         scale,
+        fonts,
         "启用调试日志（立即生效；日志仍不记录问题、截图或网页正文）",
         12,
-        308,
+        220,
         CHECK_DEBUG_LOGGING,
     )?;
     create_label(
@@ -935,12 +1084,12 @@ fn create_general_page(
         scale,
         "AskBridge 1.0 没有自动发送开关；所有请求始终由用户在网页中确认发送。",
         12,
-        364,
+        276,
         710,
         44,
         0,
     )?;
-    Ok((quick_prompt, start_on_login, clipboard, hide_prompt, debug))
+    Ok((quick_prompt, start_on_login, debug))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -971,16 +1120,18 @@ fn create_label(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_check(
     parent: HWND,
     instance: HINSTANCE,
     scale: UiScale,
+    fonts: &UiFonts,
     text: &str,
     x: i32,
     y: i32,
     id: u16,
 ) -> Result<HWND> {
-    create_control(
+    let check = create_control(
         parent,
         instance,
         scale,
@@ -993,7 +1144,9 @@ fn create_check(
         32,
         0,
         id,
-    )
+    )?;
+    set_font(check, fonts.body.handle());
+    Ok(check)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1001,26 +1154,29 @@ fn create_button(
     parent: HWND,
     instance: HINSTANCE,
     scale: UiScale,
+    fonts: &UiFonts,
     text: &str,
     x: i32,
     y: i32,
     width: i32,
     id: u16,
 ) -> Result<HWND> {
-    create_control(
+    let button = create_control(
         parent,
         instance,
         scale,
         "BUTTON",
         text,
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
         x,
         y,
         width,
         36,
         0,
         id,
-    )
+    )?;
+    set_font(button, fonts.label.handle());
+    Ok(button)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1038,6 +1194,7 @@ fn create_control(
     extended_style: u32,
     id: u16,
 ) -> Result<HWND> {
+    let is_edit = class == "EDIT";
     let class = wide(class);
     let text = wide(text);
     // SAFETY: Class/text buffers are valid for the call, and parent/instance are live.
@@ -1071,8 +1228,23 @@ fn create_control(
             GetStockObject(DEFAULT_GUI_FONT) as WPARAM,
             1,
         );
+        if is_edit {
+            SendMessageW(
+                control,
+                EM_SETMARGINS,
+                (EC_LEFTMARGIN | EC_RIGHTMARGIN) as WPARAM,
+                make_lparam(10, 10),
+            );
+        }
     }
     Ok(control)
+}
+
+fn set_font(window: HWND, font: *mut c_void) {
+    // SAFETY: font is owned by SettingsWindow and outlives the child window.
+    unsafe {
+        SendMessageW(window, WM_SETFONT, font as WPARAM, 1);
+    }
 }
 
 fn set_limit(edit: HWND, limit: WPARAM) {
@@ -1245,6 +1417,96 @@ fn switch_page(window: HWND, page: u16) {
     }
 }
 
+fn draw_owner_button(item: &DRAWITEMSTRUCT) -> LRESULT {
+    let primary = item.CtlID == CONTROL_APPLY as u32
+        || item.CtlID == CONTROL_OPEN_BROWSER as u32
+        || item.CtlID == CONTROL_OPEN_LOGIN as u32;
+    let disabled = item.itemState & ODS_DISABLED != 0;
+    let pressed = item.itemState & ODS_SELECTED != 0;
+    let fill_color = if primary {
+        if pressed {
+            COLOR_ACCENT_PRESSED
+        } else {
+            COLOR_ACCENT
+        }
+    } else if pressed {
+        COLOR_SECONDARY_PRESSED
+    } else {
+        COLOR_SECONDARY
+    };
+    let border_color = if primary { fill_color } else { COLOR_BORDER };
+    let text_color = if disabled {
+        COLOR_DISABLED
+    } else if primary {
+        COLOR_WHITE
+    } else {
+        COLOR_TEXT
+    };
+
+    // SAFETY: item contains the valid HDC and RECT supplied by WM_DRAWITEM.
+    unsafe {
+        let fill = CreateSolidBrush(fill_color);
+        if !fill.is_null() {
+            FillRect(item.hDC, &item.rcItem, fill);
+            DeleteObject(fill);
+        }
+
+        let border = CreateSolidBrush(border_color);
+        if !border.is_null() {
+            FrameRect(item.hDC, &item.rcItem, border);
+            DeleteObject(border);
+        }
+
+        SetBkMode(item.hDC, TRANSPARENT as i32);
+        SetTextColor(item.hDC, text_color);
+
+        let font = SendMessageW(item.hwndItem, WM_GETFONT, 0, 0) as *mut c_void;
+        let previous_font = if font.is_null() {
+            ptr::null_mut()
+        } else {
+            SelectObject(item.hDC, font)
+        };
+
+        let mut text = [0_u16; 96];
+        let copied = GetWindowTextW(item.hwndItem, text.as_mut_ptr(), text.len() as i32);
+        let mut text_rect: RECT = item.rcItem;
+        DrawTextW(
+            item.hDC,
+            text.as_ptr(),
+            copied,
+            &mut text_rect,
+            0x0000_0001 | 0x0000_0004 | 0x0000_0020,
+        );
+
+        if !previous_font.is_null() {
+            SelectObject(item.hDC, previous_font);
+        }
+    }
+    1
+}
+
+fn static_control_color(window: HWND, device_context: *mut c_void) -> LRESULT {
+    // SAFETY: window and device_context are supplied by WM_CTLCOLORSTATIC for a live control.
+    unsafe {
+        SetBkMode(device_context, TRANSPARENT as i32);
+        let id = GetDlgCtrlID(window);
+        let color = match id as u16 {
+            SUBTITLE_LABEL | STATUS_LABEL => COLOR_MUTED,
+            _ => COLOR_TEXT,
+        };
+        SetTextColor(device_context, color);
+        GetSysColorBrush(COLOR_WINDOW) as LRESULT
+    }
+}
+
+const fn rgb(red: u8, green: u8, blue: u8) -> COLORREF {
+    red as COLORREF | ((green as COLORREF) << 8) | ((blue as COLORREF) << 16)
+}
+
+const fn make_lparam(low: u16, high: u16) -> LPARAM {
+    (low as usize | ((high as usize) << 16)) as LPARAM
+}
+
 pub unsafe extern "system" fn settings_window_proc(
     window: HWND,
     message: u32,
@@ -1282,10 +1544,15 @@ pub unsafe extern "system" fn settings_window_proc(
             }
             0
         }
-        WM_CTLCOLORSTATIC => {
-            // SAFETY: COLOR_WINDOW always yields a process-lifetime system brush.
-            unsafe { GetSysColorBrush(COLOR_WINDOW) as LRESULT }
+        WM_DRAWITEM => {
+            if lparam == 0 {
+                return 0;
+            }
+            // SAFETY: For WM_DRAWITEM, lparam points to a DRAWITEMSTRUCT valid for this call.
+            let item = unsafe { &*(lparam as *const DRAWITEMSTRUCT) };
+            draw_owner_button(item)
         }
+        WM_CTLCOLORSTATIC => static_control_color(lparam as HWND, wparam as *mut c_void),
         WM_CLOSE => {
             // SAFETY: window is the live settings window receiving this close request.
             unsafe {
@@ -1333,5 +1600,14 @@ mod tests {
         let source = include_str!("settings_v2.rs");
         let forbidden_control = ["CHECK_", "AUTO_", "SUBMIT"].concat();
         assert!(!source.contains(&forbidden_control));
+    }
+
+    #[test]
+    fn browser_page_exposes_explicit_chatgpt_target_choices() {
+        let source = include_str!("settings_v2.rs");
+        assert!(source.contains("桌面网页端：复用现有登录，但截图需要手动上传"));
+        assert!(source.contains("AskBridge 专用 Chrome：支持自动上传图片，需要单独登录"));
+        let forbidden = ["截图提问会", "自动使用 AskBridge 专用 Chrome"].concat();
+        assert!(!source.contains(&forbidden));
     }
 }

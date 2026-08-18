@@ -332,8 +332,6 @@ pub struct GeneralConfig {
     pub start_on_login: bool,
     #[serde(default)]
     pub auto_submit: bool,
-    #[serde(default = "default_true", alias = "restore_clipboard")]
-    pub clipboard_fallback: bool,
     #[serde(default = "default_true")]
     pub hide_prompt_after_prepare: bool,
     #[serde(default)]
@@ -345,7 +343,6 @@ impl Default for GeneralConfig {
         Self {
             start_on_login: false,
             auto_submit: false,
-            clipboard_fallback: true,
             hide_prompt_after_prepare: true,
             debug_logging: false,
         }

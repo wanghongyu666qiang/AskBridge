@@ -233,6 +233,7 @@ Assert-PortableExecutableHeader $setupFile.FullName "Setup EXE"
 
 $requiredPayload = @(
     "askbridge.exe",
+    "WebView2Loader.dll",
     "README.md",
     "PRIVACY.md",
     "TROUBLESHOOTING.md",
@@ -247,7 +248,8 @@ foreach ($file in $requiredPayload) {
 }
 $portableFileNames = @((Get-ChildItem -LiteralPath $portableRoot.FullName -Force -File | ForEach-Object Name) | Sort-Object)
 $unexpectedRuntimePayload = @(Get-ChildItem -LiteralPath $portableRoot.FullName -Force -Recurse -File | Where-Object {
-    $_.Name -match 'chrome|rust|cargo' -or $_.Extension -in @(".dll", ".msi")
+    $_.Name -match 'chrome|rust|cargo' -or
+    ($_.Extension -in @(".dll", ".msi") -and $_.Name -ne "WebView2Loader.dll")
 })
 if ($unexpectedRuntimePayload.Count -gt 0) {
     throw "Package unexpectedly bundled external runtime files: $($unexpectedRuntimePayload.FullName -join '; ')"
@@ -365,6 +367,7 @@ if ($setupFile.Length -gt $MaxSetupBytes) {
 $staticResources = @(Get-ChildItem -LiteralPath $portableRoot.FullName -Force -File | Where-Object {
     $_.Name -notin @(
         "askbridge.exe",
+        "WebView2Loader.dll",
         "README.md",
         "PRIVACY.md",
         "TROUBLESHOOTING.md",

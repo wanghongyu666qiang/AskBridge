@@ -11,12 +11,11 @@ pub enum SubmissionMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparationPolicy {
     pub timeout_ms: u64,
-    pub clipboard_fallback_enabled: bool,
     pub submission_mode: SubmissionMode,
 }
 
 impl PreparationPolicy {
-    pub fn new(timeout_ms: u64, clipboard_fallback_enabled: bool) -> Result<Self> {
+    pub fn new(timeout_ms: u64) -> Result<Self> {
         if timeout_ms == 0 {
             return Err(AppError::InvalidPreparation(
                 "preparation timeout must be greater than zero".to_owned(),
@@ -24,7 +23,6 @@ impl PreparationPolicy {
         }
         Ok(Self {
             timeout_ms,
-            clipboard_fallback_enabled,
             submission_mode: SubmissionMode::UserConfirmationRequired,
         })
     }
@@ -127,7 +125,9 @@ impl PreparationOutcome {
                 "prepared result is internally inconsistent".to_owned(),
             ));
         }
-        if !self.text_inserted || (request.image.is_some() && !self.attachment_prepared) {
+        if (request.expects_text() && !self.text_inserted)
+            || (request.image.is_some() && !self.attachment_prepared)
+        {
             return Err(AppError::InvalidPreparation(
                 "prepared result has not verified all requested content".to_owned(),
             ));
@@ -191,6 +191,25 @@ mod tests {
     }
 
     #[test]
+    fn prepared_results_can_only_focus_web_composer_when_no_text_is_requested() {
+        let request = DispatchRequest::new(
+            "request-1".to_owned(),
+            DispatchMode::TextOnlyPrompt,
+            "chatgpt".to_owned(),
+            String::new(),
+            None,
+            1,
+        )
+        .expect("request");
+        let outcome = PreparationOutcome::prepared("https://example.test/chat", false, false);
+
+        assert!(matches!(
+            DispatchOutcome::from_preparation(&request, outcome),
+            Ok(DispatchOutcome::PreparedForUser(_))
+        ));
+    }
+
+    #[test]
     fn fallback_results_require_stage_and_recovery_hint() {
         let request = text_request();
         let fallback = PreparationOutcome::manual_fallback(
@@ -231,9 +250,9 @@ mod tests {
 
     #[test]
     fn policy_rejects_unbounded_zero_timeout() {
-        assert!(PreparationPolicy::new(0, true).is_err());
+        assert!(PreparationPolicy::new(0).is_err());
         assert_eq!(
-            PreparationPolicy::new(1_000, true)
+            PreparationPolicy::new(1_000)
                 .expect("policy")
                 .submission_mode,
             SubmissionMode::UserConfirmationRequired

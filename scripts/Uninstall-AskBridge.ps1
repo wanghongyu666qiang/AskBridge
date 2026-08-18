@@ -74,6 +74,7 @@ function Assert-ManifestFileList {
     $files = @($value)
     $expectedFiles = @(
         "askbridge.exe",
+        "WebView2Loader.dll",
         "README.md",
         "PRIVACY.md",
         "TROUBLESHOOTING.md",

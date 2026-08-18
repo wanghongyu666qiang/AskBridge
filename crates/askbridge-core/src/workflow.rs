@@ -22,7 +22,7 @@ impl WorkflowController {
             AppCommand::CaptureWithPrompt | AppCommand::CaptureQuickDispatch => {
                 AppState::SelectingRegion
             }
-            AppCommand::TextOnlyPrompt => AppState::Prompting,
+            AppCommand::TextOnlyPrompt => AppState::PreparingDispatch,
         };
         Ok(self.state)
     }
@@ -30,7 +30,7 @@ impl WorkflowController {
     pub fn capture_completed(&mut self, command: AppCommand) -> Result<AppState> {
         self.require_state(AppState::SelectingRegion, "capture_completed")?;
         self.state = match command {
-            AppCommand::CaptureWithPrompt => AppState::Prompting,
+            AppCommand::CaptureWithPrompt => AppState::PreparingDispatch,
             AppCommand::CaptureQuickDispatch => AppState::PreparingDispatch,
             AppCommand::TextOnlyPrompt => {
                 return Err(self.invalid_transition("capture_completed(text_only_prompt)"));
@@ -187,7 +187,7 @@ mod tests {
     };
 
     #[test]
-    fn capture_with_prompt_reaches_dispatch_preparation() {
+    fn capture_with_prompt_skips_local_prompt_and_reaches_dispatch_preparation() {
         let mut workflow = WorkflowController::default();
 
         assert_eq!(
@@ -200,10 +200,6 @@ mod tests {
             workflow
                 .capture_completed(AppCommand::CaptureWithPrompt)
                 .expect("capture"),
-            AppState::Prompting
-        );
-        assert_eq!(
-            workflow.prompt_submitted().expect("prompt"),
             AppState::PreparingDispatch
         );
     }
@@ -224,10 +220,6 @@ mod tests {
         let mut text = WorkflowController::default();
         assert_eq!(
             text.start(AppCommand::TextOnlyPrompt).expect("text start"),
-            AppState::Prompting
-        );
-        assert_eq!(
-            text.prompt_submitted().expect("text prompt"),
             AppState::PreparingDispatch
         );
     }
@@ -269,7 +261,6 @@ mod tests {
     fn phase4_browser_path_reaches_page_preparation_boundary() {
         let mut workflow = WorkflowController::default();
         workflow.start(AppCommand::TextOnlyPrompt).expect("start");
-        workflow.prompt_submitted().expect("prompt");
 
         assert_eq!(
             workflow.begin_browser().expect("begin browser"),
@@ -301,7 +292,6 @@ mod tests {
     fn phase4_rejects_out_of_order_browser_events() {
         let mut workflow = WorkflowController::default();
         workflow.start(AppCommand::TextOnlyPrompt).expect("start");
-        workflow.prompt_submitted().expect("prompt");
 
         assert!(matches!(
             workflow.browser_connected(),
@@ -318,7 +308,6 @@ mod tests {
     fn phase4_desktop_surface_skips_cdp_states() {
         let mut workflow = WorkflowController::default();
         workflow.start(AppCommand::TextOnlyPrompt).expect("start");
-        workflow.prompt_submitted().expect("prompt");
         workflow.begin_browser().expect("begin target");
 
         assert_eq!(
@@ -406,7 +395,6 @@ mod tests {
     fn workflow_at_preparing_page() -> WorkflowController {
         let mut workflow = WorkflowController::default();
         workflow.start(AppCommand::TextOnlyPrompt).expect("start");
-        workflow.prompt_submitted().expect("prompt");
         workflow.begin_browser().expect("browser");
         workflow.browser_started().expect("started");
         workflow.browser_connected().expect("connected");
