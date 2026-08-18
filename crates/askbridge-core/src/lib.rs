@@ -21,12 +21,9 @@ pub use config::{
     HotkeyConfig,
 };
 pub use config_store::{ConfigLoad, ConfigStore};
-pub use error::{AppError, Result};
+pub use error::{AppError, PreparationFailureStage, PreparationRecovery, Result};
 pub use hotkey::{HotkeyBinding, HotkeyValidationError, ModifierKey, VirtualKey};
-pub use preparation::{
-    DispatchOutcome, PreparationFailureStage, PreparationOutcome, PreparationPolicy, RecoveryHint,
-    SubmissionMode,
-};
+pub use preparation::{PreparationOutcome, PreparationPolicy, SubmissionMode};
 pub use provider::{BUILT_IN_ADAPTER_IDS, ProviderConfig, ProviderOverride};
 pub use request::{DispatchMode, DispatchRequest};
 pub use state::AppState;

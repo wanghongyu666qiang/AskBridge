@@ -326,27 +326,14 @@ impl HotkeyConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GeneralConfig {
     #[serde(default)]
     pub start_on_login: bool,
     #[serde(default)]
     pub auto_submit: bool,
-    #[serde(default = "default_true")]
-    pub hide_prompt_after_prepare: bool,
     #[serde(default)]
     pub debug_logging: bool,
-}
-
-impl Default for GeneralConfig {
-    fn default() -> Self {
-        Self {
-            start_on_login: false,
-            auto_submit: false,
-            hide_prompt_after_prepare: true,
-            debug_logging: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -427,10 +414,6 @@ fn default_text_only_prompt() -> HotkeyBinding {
     HotkeyBinding::new(true, vec![ModifierKey::Alt], VirtualKey::Letter('W'))
 }
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_profile_dir() -> String {
     "BrowserProfile".to_owned()
 }
@@ -471,7 +454,6 @@ mod tests {
         );
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(config.merged_providers().expect("providers").len(), 4);
-        assert!(config.general.hide_prompt_after_prepare);
     }
 
     #[test]

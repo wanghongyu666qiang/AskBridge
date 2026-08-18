@@ -1,175 +1,67 @@
 # AskBridge
 
-AskBridge 是一个面向 Windows 10/11 的超轻量桌面快捷操作层。当前仓库已完成 Phase 0–8 的候选实现：原生 Win32 托盘、全局快捷键、区域截图、问题输入、现有桌面 PWA 复用、隔离的专用 Chrome/CDP、通用页面准备、安全人工兜底、完整设置、开机启动、日志/配置恢复、性能测量和用户级安装。版本仍保持预发布状态；Claude 重新登录后的真实写入、Windows 10/11 与完整多屏/混合 DPI/主题硬件矩阵，以及用户指定位置的最终发布包尚待闭环，不能提前标记 `1.0.0`。
+AskBridge 是一个面向 Windows 10/11 的轻量截图问答工具。它在用户框选截图后显示紧凑工具条，将截图准备到所选 AI 网页的编辑区；最终发送始终由用户在网页中确认。
 
-当前功能和架构基线见 [`docs/DEVELOPMENT_SPEC.md`](docs/DEVELOPMENT_SPEC.md)。
-最新实现/验证/待办的严格拆分见 [`docs/ACCEPTANCE_REPORT.md`](docs/ACCEPTANCE_REPORT.md)。
+## 使用方式
 
-## 当前能力
+- `Alt+Q`：框选截图并停留在截图层。工具条可以复制截图、取消、切换模型或使用当前模型继续。
+- `Alt+Shift+Q`：框选后使用默认模型和设置中的快速提示词直接准备网页内容，不显示工具条。
+- `Alt+W`：直接打开默认模型的网页输入区，文字由用户在网页中输入。
+- 截图工具条中，`Esc` 等同“取消”，`Enter` 等同“问问当前模型”。
+- 在工具条中选择模型后，该模型会成为下次默认模型。
 
-- 启动后仅驻留系统托盘，不创建可见主窗口。
-- 注册三个默认全局快捷键：
-  - `Alt+Q`：截图并提问；
-  - `Alt+Shift+Q`：截图快速投递；
-  - `Alt+W`：直接文字提问。
-- 快捷键可在托盘“设置…”中修改、禁用、恢复默认，并在应用后立即生效。
-- 修改快捷键时先占用新组合；系统注册或配置保存失败时保留旧组合。
-- 检测 AskBridge 内部重复、缺少修饰键、危险系统组合和被其他程序占用的组合。
-- 配置使用 schema v3 并通过 Windows 原子替换保存至 AskBridge 数据目录中的 `config.json`；开发工作区默认使用仓库根目录下的 `data`，便携版本默认使用程序旁的 `data`，也可通过绝对路径环境变量 `ASKBRIDGE_DATA_DIR` 覆盖。
-- 使用当前用户会话的命名互斥体保证只有一个托盘实例；第二次启动会通知已有实例打开设置。
-- `Alt+Q` 和 `Alt+Shift+Q` 会打开覆盖虚拟桌面的原生区域选择遮罩。
-- 截图选择支持反向拖动、负坐标显示器、当前尺寸提示、`Esc`/右键取消和高 DPI。
-- 确认选区后先隐藏遮罩并同步桌面合成，再通过 GDI 捕获实际屏幕像素，遮罩不会进入截图。
-- 截图以 RGBA 像素保存在内存中；独立 PNG 编码器供后续网页上传流程使用。
-- 截图成功或取消都不会修改系统剪贴板，也不会把截图落盘。
-- `Alt+Q` 截图后打开原生问题窗口，`Alt+W` 直接打开同一文字提问入口。
-- 问题窗口支持启用供应商选择、多行文本、`Enter` 继续、`Shift+Enter` 换行、`Esc` 取消和 `Tab` 焦点切换。
-- `Alt+Shift+Q` 使用默认供应商和默认问题直接准备请求，不显示问题窗口。
-- 三条入口统一构造 `DispatchRequest`，并由状态机保证同一时刻只有一个主要工作流。
-- AskBridge 1.0 始终将 `auto_submit` 固定为 `false`。
-- ChatGPT 默认打开用户桌面的 `ChatGPT.lnk`，复用该 PWA 已有的登录状态；设置页可以关闭此模式。
-- 桌面 PWA adapter 只发现、校验并启动用户选择的 `.lnk`，不读取日常 Chrome 的 Cookie、历史记录、密码或网页正文。
-- 其他供应商以及关闭桌面 PWA 模式后的 ChatGPT 使用 AskBridge 专用 Chrome；该 Chrome 使用 AskBridge 数据目录中的 `BrowserProfile`。
-- Chrome 默认按注册信息和常见位置自动检测，也可在设置页手动填写 `chrome.exe` 完整路径。
-- 调试端口由 Chrome 动态分配；AskBridge 只读取专用目录里的运行时端点，并只连接回环地址。
-- 后台浏览器工作线程执行 CDP 握手、目标枚举、唯一选择、创建、激活和页面就绪等待，不阻塞托盘 UI。
-- 首次使用专用 Chrome 时用户自行登录；桌面 PWA 模式直接复用现有会话。AskBridge 不读取密码、验证码、Cookie 或网页正文。
-- 专用 Chrome 的通用适配器会对输入候选评分；只有候选唯一且足够可信时才插入文字，并通过唯一可用的图片文件控件准备截图。
-- ChatGPT、Gemini、Claude 和豆包使用带 schema 版本的只读内置覆盖规则；供应商选择器未命中时仍回到通用评分，不从网络下载或执行规则。
-- 明确的登录跳转会提示用户在专用 Chrome 中自行登录；内置规则和通用定位同时失效时提示网页可能改版。
-- 页面导航变化、输入框歧义、附件控件缺失、上传忙碌或网页未出现新的附件回执都会停止自动操作，不会仅凭文件控件已有文件就误报成功。
-- 桌面 PWA 当前不猜测 Chromium 窗口或输入控件，统一进入人工兜底；兜底提供复制图片、复制问题、重试和取消，并尽力恢复原剪贴板。
-- 自动准备成功后只停留在可由用户检查并发送的状态；所有路径都不会自动发送。
-- 设置中的调试日志和 Chrome 路径会在保存后立即重载；浏览器生命周期使用固定枚举，选择“每次准备后询问关闭”时必须由用户确认已完成发送后才正常关闭专用 Chrome。
-- 结构化日志只记录命令、状态、请求 ID、供应商、尺寸和是否带图，不记录问题原文或截图内容。
+AskBridge 不会自动点击发送按钮，所有请求的 `auto_submit` 都固定为 `false`。
 
-## 当前明确不包含
+## 主要能力
 
-当前仍不包含可靠的桌面 PWA UI Automation 自动插入和自动发送。浏览器扩展不属于正式架构。项目不使用 Electron、Tauri、Python、WebView 或内嵌浏览器；正式程序不启动本地 HTTP 服务，测试进程只按开发规格临时监听 `127.0.0.1` 随机端口。
+- 多显示器区域截图，支持负坐标、副屏、混合 DPI、反向拖动和尺寸提示。
+- WebView2 截图工具条，保留原生绘制作为 WebView2 初始化失败时的可用性保护。
+- ChatGPT、Gemini、Claude、豆包和自定义 HTTPS 供应商。
+- 可为 ChatGPT 选择桌面网页端或 AskBridge 专用 Chrome；截图自动上传需要专用 Chrome。
+- 专用 Chrome 使用独立的 `BrowserProfile`，不连接日常 Chrome 配置。
+- 通过本机回环 CDP 定位网页输入区、准备文字和图片，并验证页面回执。
+- 托盘设置、全局快捷键、当前用户开机启动、日志轮换和便携安装。
+- “复制”只在用户明确点击后将截图写入剪贴板。
 
-## 架构
+页面需要登录、发生导航、输入区不唯一、附件控件缺失或网页结构变化时，AskBridge 会直接停止本次准备并给出明确提示，不会猜测控件或要求用户切换到另一套中间流程。
 
-```text
-askbridge-core
-  领域命令、配置模型、Provider、DispatchRequest、准备结果、工作流状态机、
-  目标选择规则、快捷键解析/校验、统一错误、配置仓储
+## 数据位置
 
-askbridge-win
-  Win32 消息循环、单实例、RegisterHotKey、系统托盘、原生设置窗口、
-  原生问题窗口、多显示器枚举、截图遮罩、GDI 屏幕捕获、
-  RGBA 转换、PNG 编码、桌面 PWA 快捷方式 adapter、Chrome 生命周期、
-  回环 HTTP/WebSocket CDP、通用页面 adapter、内置供应商规则、
-  剪贴板兜底和后台目标编排
-```
+- 开发工作区：`D:\AskBridge\data`
+- 便携或安装版本：`askbridge.exe` 同目录的 `data`
+- 显式覆盖：绝对路径环境变量 `ASKBRIDGE_DATA_DIR`
 
-核心配置和规则不依赖 UI；Windows handle 由对应的 RAII 对象释放。常驻路径没有轮询、网络请求或高频计时器。
+配置位于 `data\config.json`，日志位于 `data\logs\askbridge.log`，专用 Chrome 登录资料位于 `data\BrowserProfile`。网页上传所需的临时 PNG 位于 `data\Temp`，完成、失败或取消后会删除。
 
 ## 构建
 
-需要 stable Rust 和 Windows GNU 或 MSVC 构建链。
+需要 stable Rust、Windows GNU 或 MSVC 构建链，以及 Microsoft Edge WebView2 Runtime。
 
 ```powershell
-cargo fmt --check
+cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo build --workspace
 cargo build --workspace --release
 ```
 
-也可以使用：
+也可以运行仓库脚本：
 
 ```powershell
 .\scripts\build.ps1
 .\scripts\test.ps1
 .\scripts\test-powershell-syntax.ps1
-.\scripts\test-package-root-guards.ps1 -AcceptanceRoot D:\AskBridge\target\package-root-guards
-.\scripts\test-package-artifact-validator.ps1 -AcceptanceRoot D:\AskBridge\target\package-artifact-validator
-.\scripts\test-performance-report-validator.ps1 -AcceptanceRoot D:\AskBridge\target\performance-report-validator
-.\scripts\test-install-metadata-validator.ps1 -AcceptanceRoot D:\AskBridge\target\install-metadata-acceptance
 .\scripts\test-release-local.ps1 -AcceptanceRoot D:\AskBridge\target\release-local-acceptance
 .\scripts\package.ps1 -ArtifactRoot D:\你明确选择的产物目录
 ```
 
-`package.ps1` 强制要求绝对、专用、空的 `ArtifactRoot`，不会默认保存到 C 盘、仓库根或仓库 `target` 根；它会生成扁平便携目录、ZIP、IExpress 用户级 Setup EXE 和 SHA-256 清单。安装位置同样由用户显式选择，不能是包目录、仓库根或仓库 `target` 根。
+`package.ps1` 要求传入绝对、专用、空的 `ArtifactRoot`，不会默认把发布产物保存到 C 盘。安装位置同样由用户显式选择。
 
-## 手工验收 Phase 1
+## 安全边界
 
-1. 运行 `target\debug\askbridge.exe`。
-2. 分别按 `Alt+Q`、`Alt+Shift+Q`、`Alt+W`，确认托盘通知中的命令名称正确。
-3. 从托盘打开设置，修改一个快捷键并应用，确认旧组合失效、新组合立即生效。
-4. 尝试重复组合、`Ctrl+C` 或已被系统占用的组合，确认配置不生效且原组合仍可用。
-5. 取消“启用”后应用，再使用“恢复默认”确认两种操作均立即生效并在重启后保留。
+- 不调用模型 API，不运行本地模型。
+- 不读取密码、验证码、Cookie、网页正文或历史对话。
+- 不记录问题原文、截图内容、剪贴板内容或完整聊天 URL。
+- 不连接日常 Chrome 调试端点，不使用固定远程调试端口。
+- 不自动发送，不绕过供应商登录或安全机制。
 
-## 手工验收 Phase 2
-
-1. 按 `Alt+Q`，确认虚拟桌面被半透明遮罩覆盖并显示操作说明。
-2. 从任意方向拖动鼠标，确认选区透明、边框可见且尺寸实时更新。
-3. 在剪贴板中预先放置可识别内容，按 `Esc` 或右键取消，确认剪贴板不变。
-4. 完成非零选区，确认遮罩立即隐藏并出现“截图已捕获”及正确尺寸提示。
-5. 再次检查预先放置的剪贴板内容，确认截图成功路径同样没有修改剪贴板。
-6. 运行自动化测试，确认 BGRA→RGBA 转换、RGBA 缓冲区校验和内存 PNG 文件头测试通过。
-7. 在 125%/150% 缩放、左侧负坐标副屏和跨屏选区场景重复验证。
-
-## 手工验收 Phase 3
-
-1. 按 `Alt+W`，确认原生问题窗口显示启用供应商和多行问题输入框。
-2. 用上下方向键切换供应商，用 `Tab` 在供应商、问题和按钮之间移动焦点。
-3. 在问题框中按 `Shift+Enter`，确认插入换行且窗口保持打开；按 `Enter`，确认准备请求并关闭窗口。
-4. 再次打开窗口后按 `Esc`，确认取消且下一次快捷键仍能正常启动工作流。
-5. 按 `Alt+Q` 完成区域截图，确认随后打开同一问题窗口并能准备带图请求。
-6. 按 `Alt+Shift+Q` 完成区域截图，确认不打开问题窗口并直接准备默认问题请求。
-7. 在截图框选或问题窗口打开期间重复触发快捷键，确认不会启动第二个工作流。
-8. 确认三种成功路径都生成同一结构的请求并交给 Phase 4；不会修改剪贴板或自动发送。
-
-## 手工验收 Phase 4
-
-1. 从设置页确认“ChatGPT 使用桌面网页端”和“Chrome 可执行文件”设置存在。
-2. 保持桌面网页端模式启用，按 `Alt+W` 提交非敏感测试问题，确认桌面的 ChatGPT PWA 打开并复用现有登录状态。
-3. 确认 ChatGPT PWA 成功打开；当前 Phase 5 工作区随后会进入人工兜底，可先取消以只检查目标载体。
-4. 关闭桌面网页端模式后再次测试 ChatGPT，确认 AskBridge 专用 Chrome 按需启动。
-5. 在 Chrome 启动信息中确认专用目录为 AskBridge 数据目录中的 `BrowserProfile`，而不是日常 `User Data`。
-6. 确认目标标签被创建或激活；唯一匹配标签可复用，多匹配且无可靠焦点证据时新建标签。
-7. 操作期间确认托盘和设置窗口仍能响应；默认生命周期下专用 Chrome 保持运行。
-8. 目标载体选择本身不得连接日常 Chrome 调试端点或自动发送；页面准备与剪贴板行为按下一节单独验收。
-
-## 手工验收 Phase 5
-
-以下步骤会打开目标载体并在兜底时临时修改剪贴板，执行前应先获得用户确认：
-
-1. 关闭 ChatGPT 桌面 PWA 模式，用 `Alt+W` 投递非敏感问题；确认专用 Chrome 唯一输入框收到文字，但消息没有发送。
-2. 用 `Alt+Q` 投递非敏感截图和问题；确认唯一图片文件控件收到截图、问题文字已插入，临时 PNG 已删除，消息仍未发送。
-3. 在测试页面制造两个同分输入框或移除文件控件；确认 AskBridge 停止自动化并打开人工兜底，不声称准备成功。
-4. 在人工兜底中分别点击“复制图片”和“复制问题”，手动粘贴并确认内容正确；关闭后检查原剪贴板常见文字/位图格式已尽力恢复。
-5. 点击“重试自动投递”，确认保留同一请求并重新解析目标；点击“取消”，确认工作流回到空闲且下次快捷键可用。
-6. 启用 ChatGPT 桌面 PWA 模式；确认当前版本安全进入人工兜底，不猜测 PWA 窗口或输入控件。
-7. 检查日志，确认不存在问题原文、截图像素、PNG 数据或网页正文。
-
-## 手工验收 Phase 6
-
-以下步骤会启动 AskBridge、占用全局快捷键、打开专用 Chrome、访问真实供应商网页，并可能短暂修改剪贴板；执行前必须获得用户明确许可：
-
-1. 分别选择 ChatGPT、Gemini、Claude 和豆包，用非敏感文字请求验证当前官方入口仍可访问。
-2. 已登录时确认供应商专用输入选择器优先准备文字，消息停留在编辑区且没有自动发送。
-3. 未登录时确认 AskBridge 停止自动准备并提示在专用 Chrome 中自行登录；日志不得出现登录信息。
-4. 用非敏感测试截图验证唯一图片文件控件；附件和文字均准备完成后仍由用户手动发送。
-5. 若供应商规则未命中但通用输入框评分仍能唯一确认，确认通用回退继续工作。
-6. 在稳定测试页同时移除供应商选择器和通用输入框，确认人工兜底明确提示网页可能改版。
-7. 检查日志，确认不存在目标 URL、问题原文、截图数据、网页正文、密码、验证码或 Cookie。
-
-## 手工验收 Phase 7
-
-1. 运行 `scripts\test-settings-ui.ps1` 时为隔离数据目录和截图提供明确的 D 盘绝对路径。
-2. 检查快捷键、供应商、浏览器、常规四页；保存快速提示词和自定义供应商后重启确认持久化。
-3. 启用并撤销当前用户开机启动，确认 Run 值只指向当前 AskBridge 可执行文件且失败时恢复旧值。
-4. 用损坏配置副本验证备份与默认恢复；检查日志轮换和临时图片清理不触碰非 AskBridge 文件。
-5. 人工兜底涉及剪贴板时先记录原内容，关闭后确认常见文字/位图格式已尽力恢复。
-
-## 手工验收 Phase 8
-
-1. 用 `measure-performance.ps1` 和 `measure-chrome-performance.ps1 -ExecutablePath D:\AskBridge\target\release\askbridge.exe` 分别采样桌面进程和专用 Chrome；Chrome 采样必须显式传入当前 Release EXE，报告路径必须为明确的绝对路径，报告需绑定当前 Release EXE 哈希。
-2. 在明确的 D 盘临时安装根目录执行首次安装、覆盖升级、默认保留数据卸载和明确删除数据卸载。
-3. 只有全部当前门禁、真实供应商、硬件截图矩阵和安装验收通过后，才把版本改为 `1.0.0`。
-4. 运行 `scripts\package.ps1 -ArtifactRoot <明确绝对目录>`，再用 `validate-package-artifacts.ps1 -ArtifactRoot <明确绝对目录> -ExpectedVersion 1.0.0 -ExpectedReleaseExePath D:\AskBridge\target\release\askbridge.exe -ExpectedSourceRoot D:\AskBridge` 核对便携目录、ZIP、Setup EXE、SHA-256、包元数据、版本、体积、包内 EXE 身份、源文件一致性和外部运行时排除，最后做最终安装烟测。
-5. 可先在仓库 `target` 的全新临时目录运行 `scripts\test-release-local.ps1`，它会串起 PowerShell 脚本语法检查、验收根目录保护、打包根目录保护、包校验器自测、性能报告校验器自测、安装包元数据安全门禁、临时打包验收、自动测试、构建和 `git diff --check`，并检查原生命令非零退出码；启动项、真实安装器和程序启动验收仍需单独授权运行。
-
-2026-08-10 的已通过证据和仍待人工闭环的项目见 [`docs/ACCEPTANCE_REPORT.md`](docs/ACCEPTANCE_REPORT.md)；README 中的手工步骤不等同于已通过声明。
+更多信息见 [隐私说明](docs/PRIVACY.md) 和 [故障排查](docs/TROUBLESHOOTING.md)。

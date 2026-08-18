@@ -7,8 +7,8 @@ use std::{
 
 use askbridge_core::{
     AppCommand, AppConfig, AppError, AppState, BrowserLifecycle, BrowserTargetPreference,
-    CapturedImage, ConfigStore, DispatchMode, DispatchOutcome, DispatchRequest, HotkeyConfig,
-    PreparationOutcome, PreparationPolicy, Result, WorkflowController,
+    CapturedImage, ConfigStore, DispatchMode, DispatchRequest, HotkeyConfig, PreparationPolicy,
+    PreparationRecovery, Result, WorkflowController,
 };
 use tracing::{error, info, warn};
 use windows_sys::Win32::{
@@ -166,7 +166,6 @@ fn user_facing_error(error: &AppError) -> String {
         AppError::HotkeyConflict(details) => format!("快捷键设置互相冲突：{details}"),
         AppError::InvalidHotkey(details) => format!("快捷键格式无效：{details}"),
         AppError::ConfigurationInvalid(details) => format!("配置无效：{details}"),
-        AppError::CaptureCancelled => "截图已取消。".to_owned(),
         AppError::CaptureFailed(details) => format!("截图失败：{details}"),
         AppError::InvalidDispatchRequest(details) => format!("问题无法继续：{details}"),
         AppError::InvalidProvider(details) => format!("供应商无效：{details}"),
@@ -195,6 +194,22 @@ fn user_facing_error(error: &AppError) -> String {
         AppError::BrowserCancelled => "浏览器操作已取消。".to_owned(),
         AppError::TargetNotFound => "未找到可用的目标页面。".to_owned(),
         AppError::TargetTimeout => "目标页面加载超时，请检查浏览器后重试。".to_owned(),
+        AppError::PreparationFailed { recovery, .. } => match recovery {
+            PreparationRecovery::LoginInBrowser => {
+                "请先在所选浏览器中登录当前供应商，然后重试。".to_owned()
+            }
+            PreparationRecovery::UseDedicatedChrome => {
+                "当前网页端不能自动上传截图；请在设置中为该供应商选择 AskBridge 专用 Chrome。"
+                    .to_owned()
+            }
+            PreparationRecovery::ReopenProviderPage => {
+                "页面已经离开目标供应商，请重新打开供应商页面后重试。".to_owned()
+            }
+            PreparationRecovery::ProviderPageChanged => {
+                "供应商页面结构已经变化，AskBridge 暂时无法定位输入区。".to_owned()
+            }
+            PreparationRecovery::Retry => "网页输入区准备失败，请检查页面后重试。".to_owned(),
+        },
         _ => error.to_string(),
     }
 }
@@ -632,16 +647,10 @@ impl Runtime {
                         self.browser_workflow_failed(error);
                         return;
                     }
-                    if let Err(error) = self.workflow.page_prepared(&outcome) {
+                    if let Err(error) = self.workflow.page_prepared() {
                         self.browser_workflow_failed(error);
                         return;
                     }
-                    let cancelled = matches!(&outcome, DispatchOutcome::Cancelled);
-                    let preparation = match &outcome {
-                        DispatchOutcome::PreparedForUser(preparation)
-                        | DispatchOutcome::ManualFallbackReady(preparation) => Some(preparation),
-                        DispatchOutcome::Cancelled => None,
-                    };
                     info!(
                         request_id = %request_id,
                         provider_id = self
@@ -649,59 +658,39 @@ impl Runtime {
                             .as_ref()
                             .map_or("", |request| request.provider_id.as_str()),
                         stage = "page_preparation",
-                        completed = !cancelled,
-                        text_inserted = preparation.is_some_and(|value| value.text_inserted),
-                        attachment_prepared = preparation
-                            .is_some_and(|value| value.attachment_prepared),
-                        manual_fallback = preparation
-                            .is_some_and(|value| value.manual_fallback_required),
-                        cancelled,
+                        completed = true,
+                        text_inserted = outcome.text_inserted,
+                        attachment_prepared = outcome.attachment_prepared,
                         "page preparation completed"
                     );
-                    match outcome {
-                        DispatchOutcome::PreparedForUser(_) => {
-                            let prepared_message = self.pending_dispatch.as_ref().map_or(
-                                "网页已打开；请在输入框中输入问题并手动发送。",
-                                |request| {
-                                    if request.expects_text() && request.image.is_some() {
-                                        "文字和附件已验证就绪；请在网页中确认后手动发送。"
-                                    } else if request.image.is_some() {
-                                        "截图已放入网页输入区；请继续输入问题并手动发送。"
-                                    } else if request.expects_text() {
-                                        "文字已放入网页输入区；请确认后手动发送。"
-                                    } else {
-                                        "网页已打开；请在输入框中输入问题并手动发送。"
-                                    }
-                                },
-                            );
-                            self.pending_dispatch = None;
-                            if let Err(error) = self.workflow.finish_delivery() {
-                                self.browser_workflow_failed(error);
-                                return;
+                    let prepared_message = self.pending_dispatch.as_ref().map_or(
+                        "网页已打开；请在输入框中输入问题并手动发送。",
+                        |request| {
+                            if request.expects_text() && request.image.is_some() {
+                                "文字和附件已验证就绪；请在网页中确认后手动发送。"
+                            } else if request.image.is_some() {
+                                "截图已放入网页输入区；请继续输入问题并手动发送。"
+                            } else if request.expects_text() {
+                                "文字已放入网页输入区；请确认后手动发送。"
+                            } else {
+                                "网页已打开；请在输入框中输入问题并手动发送。"
                             }
-                            self.tray
-                                .notify("AskBridge 已准备网页内容", prepared_message);
-                            if surface == BrowserSurface::DedicatedChrome
-                                && self.config.browser.lifecycle
-                                    == BrowserLifecycle::CloseAfterDispatch
-                                && crate::util::confirm_close_managed_browser(
-                                    self._main_window.hwnd(),
-                                )
-                                && let Err(error) = self.browser.close_managed()
-                            {
-                                self.tray.notify(
-                                    "AskBridge 无法关闭专用 Chrome",
-                                    &user_facing_error(&error),
-                                );
-                            }
-                        }
-                        DispatchOutcome::ManualFallbackReady(preparation) => {
-                            self.stop_after_preparation_boundary(preparation);
-                        }
-                        DispatchOutcome::Cancelled => {
-                            self.pending_dispatch = None;
-                            let _ = self.workflow.finish_cancelling();
-                        }
+                        },
+                    );
+                    self.pending_dispatch = None;
+                    if let Err(error) = self.workflow.finish_delivery() {
+                        self.browser_workflow_failed(error);
+                        return;
+                    }
+                    self.tray
+                        .notify("AskBridge 已准备网页内容", prepared_message);
+                    if surface == BrowserSurface::DedicatedChrome
+                        && self.config.browser.lifecycle == BrowserLifecycle::CloseAfterDispatch
+                        && crate::util::confirm_close_managed_browser(self._main_window.hwnd())
+                        && let Err(error) = self.browser.close_managed()
+                    {
+                        self.tray
+                            .notify("AskBridge 无法关闭专用 Chrome", &user_facing_error(&error));
                     }
                 }
                 BrowserEvent::WarmupReady => {
@@ -791,30 +780,6 @@ impl Runtime {
         if self.workflow.state() == AppState::Error {
             let _ = self.workflow.recover();
         }
-    }
-
-    fn stop_after_preparation_boundary(&mut self, preparation: PreparationOutcome) {
-        let message = if self
-            .pending_dispatch
-            .as_ref()
-            .is_some_and(|request| request.image.is_some())
-        {
-            "当前选择的网页端不能自动上传图片；请在网页中手动上传截图并发送。"
-        } else if preparation.text_inserted || preparation.attachment_prepared {
-            "部分内容已到网页；请在网页中继续完成并手动发送。"
-        } else {
-            "网页已打开，但 AskBridge 未能连续准备输入区；请直接在网页中继续。"
-        };
-        self.pending_dispatch = None;
-        if !self.workflow.is_idle() {
-            if self.workflow.state() != AppState::Cancelling {
-                let _ = self.workflow.begin_cancelling();
-            }
-            if self.workflow.state() == AppState::Cancelling {
-                let _ = self.workflow.finish_cancelling();
-            }
-        }
-        self.tray.notify("AskBridge 已停止本次准备", message);
     }
 
     fn cancel_workflow(&mut self) {

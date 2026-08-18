@@ -11,7 +11,7 @@ use std::{
 };
 
 use askbridge_core::{
-    AppError, BrowserLifecycle, BrowserTarget, DispatchOutcome, DispatchRequest, FocusEvidence,
+    AppError, BrowserLifecycle, BrowserTarget, DispatchRequest, FocusEvidence, PreparationOutcome,
     PreparationPolicy, Result, TargetDecision, TargetResolver,
 };
 use windows_sys::Win32::{
@@ -93,7 +93,7 @@ pub enum BrowserEvent {
     Prepared {
         request_id: String,
         surface: BrowserSurface,
-        outcome: DispatchOutcome,
+        outcome: PreparationOutcome,
     },
     WarmupReady,
     WarmupFailed {
@@ -362,8 +362,8 @@ fn prepare_browser_job(
             let mut page = PageSession::DesktopPwa {
                 target_url: &desktop.start_url,
             };
-            let preparation = adapter.prepare(&mut page, &job.request, &job.policy)?;
-            let outcome = DispatchOutcome::from_preparation(&job.request, preparation)?;
+            let outcome = adapter.prepare(&mut page, &job.request, &job.policy)?;
+            outcome.validate_for(&job.request)?;
             send_event(
                 owner,
                 events,
@@ -441,8 +441,8 @@ fn prepare_dedicated_browser_job(
         temp_root: &temp_root,
         cancelled,
     };
-    let preparation = adapter.prepare(&mut page, request, policy)?;
-    let outcome = DispatchOutcome::from_preparation(request, preparation)?;
+    let outcome = adapter.prepare(&mut page, request, policy)?;
+    outcome.validate_for(request)?;
     send_event(
         owner,
         events,

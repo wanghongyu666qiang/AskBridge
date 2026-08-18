@@ -501,7 +501,6 @@ impl SettingsWindow {
         candidate.default_provider_id = self.read_default_provider()?;
         candidate.quick_prompt = get_text(self.quick_prompt)?.trim().to_owned();
         candidate.general.start_on_login = is_checked(self.start_on_login);
-        candidate.general.hide_prompt_after_prepare = base.general.hide_prompt_after_prepare;
         candidate.general.debug_logging = is_checked(self.debug_logging);
         candidate.general.auto_submit = false;
 

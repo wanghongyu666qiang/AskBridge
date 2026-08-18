@@ -34,8 +34,8 @@ mod integration_tests {
     use super::*;
     use crate::adapter::{GenericProviderAdapter, PageSession, ProviderAdapter};
     use askbridge_core::{
-        AppConfig, CapturedImage, DispatchMode, DispatchOutcome, DispatchRequest,
-        PreparationPolicy, RecoveryHint, ScreenRect,
+        AppConfig, CapturedImage, DispatchMode, DispatchRequest, PreparationPolicy,
+        PreparationRecovery, ScreenRect,
     };
 
     #[test]
@@ -309,12 +309,7 @@ mod integration_tests {
             cancelled,
         };
         let preparation = adapter.prepare(&mut page, &request, &policy)?;
-        let outcome = DispatchOutcome::from_preparation(&request, preparation)?;
-        if !matches!(outcome, DispatchOutcome::PreparedForUser(_)) {
-            return Err(askbridge_core::AppError::InvalidPreparation(
-                "Phase 6 integration did not prepare both inputs".to_owned(),
-            ));
-        }
+        preparation.validate_for(&request)?;
 
         let login_url = format!("http://127.0.0.1:{port}/login-shell");
         let login_target = client.create_target(&login_url)?;
@@ -336,16 +331,17 @@ mod integration_tests {
             temp_root: &temp_root,
             cancelled,
         };
-        let login_preparation = login_adapter.prepare(&mut login_page, &login_request, &policy)?;
-        let login_outcome = DispatchOutcome::from_preparation(&login_request, login_preparation)?;
-        if !matches!(
-            login_outcome,
-            DispatchOutcome::ManualFallbackReady(ref fallback)
-                if fallback.recovery_hint == Some(RecoveryHint::LoginInBrowser)
-        ) {
-            return Err(askbridge_core::AppError::InvalidPreparation(
-                "login shell was not classified as LoginInBrowser".to_owned(),
-            ));
+        match login_adapter.prepare(&mut login_page, &login_request, &policy) {
+            Err(askbridge_core::AppError::PreparationFailed {
+                recovery: PreparationRecovery::LoginInBrowser,
+                ..
+            }) => {}
+            Err(error) => return Err(error),
+            Ok(_) => {
+                return Err(askbridge_core::AppError::InvalidPreparation(
+                    "login shell was not classified as LoginInBrowser".to_owned(),
+                ));
+            }
         }
         Ok(())
     }
@@ -428,38 +424,18 @@ mod integration_tests {
             temp_root: &temp_root,
             cancelled,
         };
-        let preparation = adapter.prepare(&mut page, &request, &policy)?;
-        let outcome = DispatchOutcome::from_preparation(&request, preparation)?;
-        match outcome {
-            DispatchOutcome::PreparedForUser(prepared)
-                if prepared.text_inserted
-                    && (!expects_attachment || prepared.attachment_prepared) =>
-            {
-                eprintln!(
-                    "Phase 6 live provider: provider={provider_id} text_inserted=true attachment_prepared={}",
-                    prepared.attachment_prepared
-                );
-                Ok(())
-            }
-            DispatchOutcome::PreparedForUser(_) => {
-                Err(askbridge_core::AppError::InvalidPreparation(format!(
-                    "provider '{provider_id}' reported prepared without verified text"
-                )))
-            }
-            DispatchOutcome::ManualFallbackReady(fallback)
-                if fallback.recovery_hint == Some(RecoveryHint::LoginInBrowser) =>
-            {
-                Err(askbridge_core::AppError::InvalidPreparation(format!(
-                    "provider '{provider_id}' requires login; live preparation was not accepted"
-                )))
-            }
-            DispatchOutcome::ManualFallbackReady(fallback) => {
-                Err(askbridge_core::AppError::InvalidPreparation(format!(
-                    "provider '{provider_id}' required fallback at {:?} with {:?}",
-                    fallback.failure_stage, fallback.recovery_hint
-                )))
-            }
-            DispatchOutcome::Cancelled => Err(askbridge_core::AppError::BrowserCancelled),
+        let prepared = adapter.prepare(&mut page, &request, &policy)?;
+        prepared.validate_for(&request)?;
+        if prepared.text_inserted && (!expects_attachment || prepared.attachment_prepared) {
+            eprintln!(
+                "Phase 6 live provider: provider={provider_id} text_inserted=true attachment_prepared={}",
+                prepared.attachment_prepared
+            );
+            Ok(())
+        } else {
+            Err(askbridge_core::AppError::InvalidPreparation(format!(
+                "provider '{provider_id}' reported prepared without verified text"
+            )))
         }
     }
 

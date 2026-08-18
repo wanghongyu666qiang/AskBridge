@@ -4,6 +4,24 @@ use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, AppError>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreparationFailureStage {
+    PageReadiness,
+    ComposerDiscovery,
+    AttachmentPreparation,
+    Verification,
+    NavigationChanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreparationRecovery {
+    Retry,
+    ReopenProviderPage,
+    LoginInBrowser,
+    ProviderPageChanged,
+    UseDedicatedChrome,
+}
+
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("hotkey registration failed for {binding} (Win32 error {win32_code})")]
@@ -51,9 +69,6 @@ pub enum AppError {
     #[error("application is already running")]
     AlreadyRunning,
 
-    #[error("capture was cancelled")]
-    CaptureCancelled,
-
     #[error("capture failed: {0}")]
     CaptureFailed(String),
 
@@ -62,9 +77,6 @@ pub enum AppError {
 
     #[error("clipboard write failed")]
     ClipboardWriteFailed,
-
-    #[error("clipboard restore failed")]
-    ClipboardRestoreFailed,
 
     #[error("invalid provider: {0}")]
     InvalidProvider(String),
@@ -120,11 +132,18 @@ pub enum AppError {
     #[error("target timed out")]
     TargetTimeout,
 
-    #[error("web composer not found")]
-    ComposerNotFound,
-
     #[error("page preparation is invalid: {0}")]
     InvalidPreparation(String),
+
+    #[error(
+        "page preparation failed at {stage:?}; recovery={recovery:?}; text_inserted={text_inserted}; attachment_prepared={attachment_prepared}"
+    )]
+    PreparationFailed {
+        stage: PreparationFailureStage,
+        recovery: PreparationRecovery,
+        text_inserted: bool,
+        attachment_prepared: bool,
+    },
 }
 
 impl AppError {

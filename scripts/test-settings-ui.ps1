@@ -312,13 +312,12 @@ $uiText = @{
     General = ConvertFrom-Utf8Base64 "5bi46KeE"
     DefaultProvider = ConvertFrom-Utf8Base64 "6buY6K6k5L6b5bqU5ZWG"
     Doubao = ConvertFrom-Utf8Base64 "6LGG5YyF"
-    ChatGptPwa = ConvertFrom-Utf8Base64 "Q2hhdEdQVCDkvb/nlKjmoYzpnaLnvZHpobXnq6/lubblpI3nlKjnjrDmnInnmbvlvZU="
+    ChatGptPwa = ConvertFrom-Utf8Base64 "5qGM6Z2i572R6aG156uv77ya5aSN55So546w5pyJ55m75b2V77yM5L2G5oiq5Zu+6ZyA6KaB5omL5Yqo5LiK5Lyg"
+    ChatGptDedicated = ConvertFrom-Utf8Base64 "QXNrQnJpZGdlIOS4k+eUqCBDaHJvbWXvvJrmlK/mjIHoh6rliqjkuIrkvKDlm77niYfvvIzpnIDopoHljZXni6znmbvlvZU="
     OpenBrowser = ConvertFrom-Utf8Base64 "5omT5byAIEFza0JyaWRnZSDmtY/op4jlmag="
     CheckConnection = ConvertFrom-Utf8Base64 "5qOA5p+l6L+e5o6l"
     OpenProviderLogin = ConvertFrom-Utf8Base64 "5omT5byA6buY6K6k5L6b5bqU5ZWG55m75b2V6aG16Z2i"
     StartOnLogin = ConvertFrom-Utf8Base64 "55m75b2VIFdpbmRvd3Mg5ZCO5ZCv5YqoIEFza0JyaWRnZe+8iOW9k+WJjeeUqOaIt++8jOS4jemcgOeuoeeQhuWRmOadg+mZkO+8iQ=="
-    ClipboardFallback = ConvertFrom-Utf8Base64 "6Ieq5Yqo5YyW5aSx6LSl5pe25ZCv55So5Ymq6LS05p2/5YWc5bqV77yM5bm25Zyo5YWz6Zet5ZCO5bC95Yqb5oGi5aSN"
-    HidePrompt = ConvertFrom-Utf8Base64 "5YaF5a655YeG5aSH5a6M5oiQ5ZCO6ZqQ6JeP6L6T5YWl5qGG"
     DebugLogging = ConvertFrom-Utf8Base64 "5ZCv55So6LCD6K+V5pel5b+X77yI56uL5Y2z55Sf5pWI77yb5pel5b+X5LuN5LiN6K6w5b2V6Zeu6aKY44CB5oiq5Zu+5oiW572R6aG15q2j5paH77yJ"
     Apply = ConvertFrom-Utf8Base64 "5bqU55So5pu05pS5"
 }
@@ -436,16 +435,14 @@ try {
     }
 
     Click-Element (Find-ElementByName $window $uiText.Browser)
-    foreach ($control in @($uiText.ChatGptPwa, $uiText.OpenBrowser, $uiText.CheckConnection, $uiText.OpenProviderLogin)) {
+    foreach ($control in @($uiText.ChatGptPwa, $uiText.ChatGptDedicated, $uiText.OpenBrowser, $uiText.CheckConnection, $uiText.OpenProviderLogin)) {
         Find-ElementByName $window $control | Out-Null
     }
 
     Click-Element (Find-ElementByName $window $uiText.General)
     $startOnLogin = Find-ElementByName $window $uiText.StartOnLogin
-    $clipboardFallback = Find-ElementByName $window $uiText.ClipboardFallback
-    $hidePrompt = Find-ElementByName $window $uiText.HidePrompt
     $debugLogging = Find-ElementByName $window $uiText.DebugLogging
-    foreach ($control in @($clipboardFallback, $hidePrompt, $debugLogging)) { if ($null -eq $control) { throw "General setting is missing." } }
+    if ($null -eq $debugLogging) { throw "General setting is missing." }
 
     Set-NativeControlText $window 2014 2401 "AskBridge Phase 7 UI acceptance prompt."
     Click-Element $startOnLogin

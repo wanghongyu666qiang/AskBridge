@@ -9,7 +9,7 @@ use std::{
 
 use askbridge_core::{
     AppError, DispatchRequest, PreparationFailureStage, PreparationOutcome, PreparationPolicy,
-    RecoveryHint, Result, matches_any_pattern,
+    PreparationRecovery, Result, matches_any_pattern,
 };
 use serde_json::Value;
 
@@ -86,19 +86,17 @@ impl GenericProviderAdapter {
             .as_ref()
             .is_some_and(|rule| rule.matches_login_url(&current.url))
         {
-            return Ok(manual_fallback(
-                &current.url,
+            return Err(preparation_failed(
                 PreparationFailureStage::PageReadiness,
-                RecoveryHint::LoginInBrowser,
+                PreparationRecovery::LoginInBrowser,
                 false,
                 false,
             ));
         }
         if !self.matches_url(&current.url) {
-            return Ok(manual_fallback(
-                &current.url,
+            return Err(preparation_failed(
                 PreparationFailureStage::NavigationChanged,
-                RecoveryHint::ReopenProviderPage,
+                PreparationRecovery::ReopenProviderPage,
                 false,
                 false,
             ));
@@ -124,19 +122,17 @@ impl GenericProviderAdapter {
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
             {
-                return Ok(manual_fallback(
-                    target_url,
+                return Err(preparation_failed(
                     PreparationFailureStage::PageReadiness,
-                    RecoveryHint::LoginInBrowser,
+                    PreparationRecovery::LoginInBrowser,
                     false,
                     false,
                 ));
             }
             if !self.matches_url(target_url) {
-                return Ok(manual_fallback(
-                    target_url,
+                return Err(preparation_failed(
                     PreparationFailureStage::NavigationChanged,
-                    RecoveryHint::ReopenProviderPage,
+                    PreparationRecovery::ReopenProviderPage,
                     false,
                     false,
                 ));
@@ -145,10 +141,9 @@ impl GenericProviderAdapter {
 
         let attachment_prepared = if let Some(image) = &request.image {
             if !client.target_url_matches(&current, &current.url, cancelled, timeout)? {
-                return Ok(manual_fallback(
-                    &current.url,
+                return Err(preparation_failed(
                     PreparationFailureStage::NavigationChanged,
-                    RecoveryHint::ReopenProviderPage,
+                    PreparationRecovery::ReopenProviderPage,
                     false,
                     false,
                 ));
@@ -178,19 +173,17 @@ impl GenericProviderAdapter {
                     .as_ref()
                     .is_some_and(|rule| rule.matches_login_url(&refreshed.url))
                 {
-                    return Ok(manual_fallback(
-                        &refreshed.url,
+                    return Err(preparation_failed(
                         PreparationFailureStage::PageReadiness,
-                        RecoveryHint::LoginInBrowser,
+                        PreparationRecovery::LoginInBrowser,
                         false,
                         false,
                     ));
                 }
                 if !self.matches_url(&refreshed.url) {
-                    return Ok(manual_fallback(
-                        &refreshed.url,
+                    return Err(preparation_failed(
                         PreparationFailureStage::NavigationChanged,
-                        RecoveryHint::ReopenProviderPage,
+                        PreparationRecovery::ReopenProviderPage,
                         false,
                         false,
                     ));
@@ -200,28 +193,25 @@ impl GenericProviderAdapter {
             match file_input_result {
                 FileInputResult::Prepared => true,
                 FileInputResult::NavigationChanged => {
-                    return Ok(manual_fallback(
-                        &current.url,
+                    return Err(preparation_failed(
                         PreparationFailureStage::NavigationChanged,
-                        RecoveryHint::ReopenProviderPage,
+                        PreparationRecovery::ReopenProviderPage,
                         false,
                         false,
                     ));
                 }
                 FileInputResult::NotFound | FileInputResult::Ambiguous => {
-                    return Ok(manual_fallback(
-                        &current.url,
+                    return Err(preparation_failed(
                         PreparationFailureStage::AttachmentPreparation,
-                        RecoveryHint::CopyImageThenText,
+                        PreparationRecovery::UseDedicatedChrome,
                         false,
                         false,
                     ));
                 }
                 FileInputResult::VerificationFailed => {
-                    return Ok(manual_fallback(
-                        &current.url,
+                    return Err(preparation_failed(
                         PreparationFailureStage::Verification,
-                        RecoveryHint::CopyImageThenText,
+                        PreparationRecovery::Retry,
                         false,
                         false,
                     ));
@@ -237,19 +227,17 @@ impl GenericProviderAdapter {
             .as_ref()
             .is_some_and(|rule| rule.matches_login_url(&composer_target.url))
         {
-            return Ok(manual_fallback(
-                &composer_target.url,
+            return Err(preparation_failed(
                 PreparationFailureStage::PageReadiness,
-                RecoveryHint::LoginInBrowser,
+                PreparationRecovery::LoginInBrowser,
                 false,
                 attachment_prepared,
             ));
         }
         if !self.matches_url(&composer_target.url) {
-            return Ok(manual_fallback(
-                &composer_target.url,
+            return Err(preparation_failed(
                 PreparationFailureStage::NavigationChanged,
-                RecoveryHint::ReopenProviderPage,
+                PreparationRecovery::ReopenProviderPage,
                 false,
                 attachment_prepared,
             ));
@@ -283,28 +271,25 @@ impl GenericProviderAdapter {
         if self.rule.as_ref().is_some_and(|rule| {
             rule.matches_login_url(target_url) || rule.matches_login_url(&verified_target.url)
         }) {
-            return Ok(manual_fallback(
-                target_url,
+            return Err(preparation_failed(
                 PreparationFailureStage::PageReadiness,
-                RecoveryHint::LoginInBrowser,
+                PreparationRecovery::LoginInBrowser,
                 false,
                 attachment_prepared,
             ));
         }
         if value.get("status").and_then(Value::as_str) == Some("navigation_changed") {
-            return Ok(manual_fallback(
-                target_url,
+            return Err(preparation_failed(
                 PreparationFailureStage::NavigationChanged,
-                RecoveryHint::ReopenProviderPage,
+                PreparationRecovery::ReopenProviderPage,
                 false,
                 attachment_prepared,
             ));
         }
         if !self.matches_url(target_url) || !self.matches_url(&verified_target.url) {
-            return Ok(manual_fallback(
-                target_url,
+            return Err(preparation_failed(
                 PreparationFailureStage::NavigationChanged,
-                RecoveryHint::ReopenProviderPage,
+                PreparationRecovery::ReopenProviderPage,
                 false,
                 attachment_prepared,
             ));
@@ -320,39 +305,35 @@ impl GenericProviderAdapter {
                 false,
                 attachment_prepared,
             )),
-            Some("login_detected") => Ok(manual_fallback(
-                target_url,
+            Some("login_detected") => Err(preparation_failed(
                 PreparationFailureStage::PageReadiness,
-                RecoveryHint::LoginInBrowser,
+                PreparationRecovery::LoginInBrowser,
                 false,
                 attachment_prepared,
             )),
-            Some("missing") => Ok(manual_fallback(
-                target_url,
+            Some("missing") => Err(preparation_failed(
                 PreparationFailureStage::ComposerDiscovery,
                 if value
                     .get("providerRuleMiss")
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
                 {
-                    RecoveryHint::ProviderPageChanged
+                    PreparationRecovery::ProviderPageChanged
                 } else {
-                    RecoveryHint::FocusComposerAndPaste
+                    PreparationRecovery::Retry
                 },
                 false,
                 attachment_prepared,
             )),
-            Some("ambiguous") => Ok(manual_fallback(
-                target_url,
+            Some("ambiguous") => Err(preparation_failed(
                 PreparationFailureStage::ComposerDiscovery,
-                RecoveryHint::FocusComposerAndPaste,
+                PreparationRecovery::Retry,
                 false,
                 attachment_prepared,
             )),
-            Some("verification_failed") => Ok(manual_fallback(
-                target_url,
+            Some("verification_failed") => Err(preparation_failed(
                 PreparationFailureStage::Verification,
-                RecoveryHint::FocusComposerAndPaste,
+                PreparationRecovery::Retry,
                 false,
                 attachment_prepared,
             )),
@@ -393,14 +374,9 @@ impl ProviderAdapter for GenericProviderAdapter {
             {
                 Ok(PreparationOutcome::prepared(*target_url, false, false))
             }
-            PageSession::DesktopPwa { target_url } => Ok(manual_fallback(
-                target_url,
+            PageSession::DesktopPwa { .. } => Err(preparation_failed(
                 PreparationFailureStage::ComposerDiscovery,
-                if request.image.is_some() {
-                    RecoveryHint::CopyImageThenText
-                } else {
-                    RecoveryHint::FocusComposerAndPaste
-                },
+                PreparationRecovery::UseDedicatedChrome,
                 false,
                 false,
             )),
@@ -457,14 +433,18 @@ fn current_target(client: &CdpClient, target_id: &str) -> Result<CdpTarget> {
         .ok_or(AppError::TargetNotFound)
 }
 
-fn manual_fallback(
-    target_url: &str,
+fn preparation_failed(
     stage: PreparationFailureStage,
-    hint: RecoveryHint,
+    recovery: PreparationRecovery,
     text_inserted: bool,
     attachment_prepared: bool,
-) -> PreparationOutcome {
-    PreparationOutcome::manual_fallback(target_url, stage, hint, text_inserted, attachment_prepared)
+) -> AppError {
+    AppError::PreparationFailed {
+        stage,
+        recovery,
+        text_inserted,
+        attachment_prepared,
+    }
 }
 
 fn login_detection_expression(selectors: &[String]) -> Result<String> {
@@ -998,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_surface_stops_at_safe_manual_fallback() {
+    fn desktop_surface_rejects_automatic_preparation() {
         let adapter = GenericProviderAdapter::for_provider(
             "chatgpt",
             None,
@@ -1019,29 +999,34 @@ mod tests {
             target_url: "desktop-pwa://chatgpt",
         };
 
-        let outcome = adapter
+        let error = adapter
             .prepare(&mut page, &request, &policy)
-            .expect("fallback");
-        assert!(outcome.manual_fallback_required);
-        assert_eq!(
-            outcome.recovery_hint,
-            Some(RecoveryHint::FocusComposerAndPaste)
-        );
+            .expect_err("desktop PWA preparation must stop");
+        assert!(matches!(
+            error,
+            AppError::PreparationFailed {
+                recovery: PreparationRecovery::UseDedicatedChrome,
+                ..
+            }
+        ));
     }
 
     #[test]
-    fn manual_fallback_preserves_navigation_recovery_hint() {
-        let outcome = manual_fallback(
-            "https://example.test/changed",
+    fn preparation_failure_preserves_navigation_recovery() {
+        let error = preparation_failed(
             PreparationFailureStage::NavigationChanged,
-            RecoveryHint::ReopenProviderPage,
+            PreparationRecovery::ReopenProviderPage,
             false,
             false,
         );
 
-        assert_eq!(
-            outcome.recovery_hint,
-            Some(RecoveryHint::ReopenProviderPage)
-        );
+        assert!(matches!(
+            error,
+            AppError::PreparationFailed {
+                stage: PreparationFailureStage::NavigationChanged,
+                recovery: PreparationRecovery::ReopenProviderPage,
+                ..
+            }
+        ));
     }
 }

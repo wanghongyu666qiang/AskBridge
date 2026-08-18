@@ -6,16 +6,13 @@ pub enum AppState {
     #[default]
     Idle,
     SelectingRegion,
-    Prompting,
     PreparingDispatch,
     StartingBrowser,
     ConnectingBrowser,
     ResolvingTarget,
     WaitingForPage,
     PreparingPage,
-    PreparingFallback,
     PreparedForUser,
-    FallbackReady,
     Cancelling,
     Error,
 }

@@ -1,4 +1,4 @@
-use crate::{AppCommand, AppError, AppState, DispatchOutcome, Result};
+use crate::{AppCommand, AppError, AppState, Result};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WorkflowController {
@@ -39,12 +39,6 @@ impl WorkflowController {
         Ok(self.state)
     }
 
-    pub fn prompt_submitted(&mut self) -> Result<AppState> {
-        self.require_state(AppState::Prompting, "prompt_submitted")?;
-        self.state = AppState::PreparingDispatch;
-        Ok(self.state)
-    }
-
     pub fn begin_browser(&mut self) -> Result<AppState> {
         self.require_state(AppState::PreparingDispatch, "begin_browser")?;
         self.state = AppState::StartingBrowser;
@@ -81,58 +75,17 @@ impl WorkflowController {
         Ok(self.state)
     }
 
-    pub fn defer_page_preparation(&mut self) -> Result<AppState> {
-        self.require_state(AppState::PreparingPage, "defer_page_preparation")?;
-        self.state = AppState::Idle;
-        Ok(self.state)
-    }
-
-    pub fn page_prepared(&mut self, outcome: &DispatchOutcome) -> Result<AppState> {
+    pub fn page_prepared(&mut self) -> Result<AppState> {
         self.require_state(AppState::PreparingPage, "page_prepared")?;
-        self.state = match outcome {
-            DispatchOutcome::PreparedForUser(_) => AppState::PreparedForUser,
-            DispatchOutcome::ManualFallbackReady(_) => AppState::PreparingFallback,
-            DispatchOutcome::Cancelled => AppState::Cancelling,
-        };
-        Ok(self.state)
-    }
-
-    pub fn fallback_prepared(&mut self) -> Result<AppState> {
-        self.require_state(AppState::PreparingFallback, "fallback_prepared")?;
-        self.state = AppState::FallbackReady;
-        Ok(self.state)
-    }
-
-    pub fn prepare_fallback_after_browser_failure(&mut self) -> Result<AppState> {
-        if !matches!(
-            self.state,
-            AppState::PreparingDispatch
-                | AppState::StartingBrowser
-                | AppState::ConnectingBrowser
-                | AppState::ResolvingTarget
-                | AppState::WaitingForPage
-                | AppState::PreparingPage
-        ) {
-            return Err(self.invalid_transition("prepare_fallback_after_browser_failure"));
-        }
-        self.state = AppState::PreparingFallback;
+        self.state = AppState::PreparedForUser;
         Ok(self.state)
     }
 
     pub fn finish_delivery(&mut self) -> Result<AppState> {
-        if !matches!(
-            self.state,
-            AppState::PreparedForUser | AppState::FallbackReady
-        ) {
+        if self.state != AppState::PreparedForUser {
             return Err(self.invalid_transition("finish_delivery"));
         }
         self.state = AppState::Idle;
-        Ok(self.state)
-    }
-
-    pub fn retry_fallback(&mut self) -> Result<AppState> {
-        self.require_state(AppState::FallbackReady, "retry_fallback")?;
-        self.state = AppState::PreparingDispatch;
         Ok(self.state)
     }
 
@@ -182,9 +135,6 @@ impl WorkflowController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        DispatchMode, DispatchRequest, PreparationFailureStage, PreparationOutcome, RecoveryHint,
-    };
 
     #[test]
     fn capture_with_prompt_skips_local_prompt_and_reaches_dispatch_preparation() {
@@ -236,7 +186,7 @@ mod tests {
             Err(AppError::WorkflowBusy(_))
         ));
         assert!(matches!(
-            workflow.prompt_submitted(),
+            workflow.browser_started(),
             Err(AppError::InvalidWorkflowTransition { .. })
         ));
     }
@@ -283,9 +233,10 @@ mod tests {
             AppState::PreparingPage
         );
         assert_eq!(
-            workflow.defer_page_preparation().expect("phase 5 boundary"),
-            AppState::Idle
+            workflow.page_prepared().expect("page prepared"),
+            AppState::PreparedForUser
         );
+        assert_eq!(workflow.finish_delivery().expect("finish"), AppState::Idle);
     }
 
     #[test]
@@ -315,60 +266,24 @@ mod tests {
             AppState::PreparingPage
         );
         assert_eq!(
-            workflow.defer_page_preparation().expect("phase 5 boundary"),
-            AppState::Idle
+            workflow.page_prepared().expect("page prepared"),
+            AppState::PreparedForUser
         );
+        assert_eq!(workflow.finish_delivery().expect("finish"), AppState::Idle);
     }
 
     #[test]
-    fn phase5_prepared_and_fallback_results_follow_distinct_paths() {
-        let request = DispatchRequest::new(
-            "text-1".to_owned(),
-            DispatchMode::TextOnlyPrompt,
-            "chatgpt".to_owned(),
-            "Explain".to_owned(),
-            None,
-            1,
-        )
-        .expect("request");
-
+    fn prepared_result_finishes_delivery() {
         let mut prepared = workflow_at_preparing_page();
-        let prepared_outcome = DispatchOutcome::from_preparation(
-            &request,
-            PreparationOutcome::prepared("https://example.test/chat", true, false),
-        )
-        .expect("prepared outcome");
         assert_eq!(
-            prepared.page_prepared(&prepared_outcome).expect("prepared"),
+            prepared.page_prepared().expect("prepared"),
             AppState::PreparedForUser
         );
         assert_eq!(prepared.finish_delivery().expect("finish"), AppState::Idle);
-
-        let mut fallback = workflow_at_preparing_page();
-        let fallback_outcome = DispatchOutcome::from_preparation(
-            &request,
-            PreparationOutcome::manual_fallback(
-                "https://example.test/chat",
-                PreparationFailureStage::ComposerDiscovery,
-                RecoveryHint::FocusComposerAndPaste,
-                false,
-                false,
-            ),
-        )
-        .expect("fallback outcome");
-        assert_eq!(
-            fallback.page_prepared(&fallback_outcome).expect("fallback"),
-            AppState::PreparingFallback
-        );
-        assert_eq!(
-            fallback.fallback_prepared().expect("clipboard ready"),
-            AppState::FallbackReady
-        );
-        assert_eq!(fallback.finish_delivery().expect("finish"), AppState::Idle);
     }
 
     #[test]
-    fn recoverable_browser_failures_can_enter_fallback_from_every_browser_stage() {
+    fn browser_failures_can_recover_from_every_active_stage() {
         let stages = [
             AppState::PreparingDispatch,
             AppState::StartingBrowser,
@@ -380,15 +295,10 @@ mod tests {
         for stage in stages {
             let mut workflow = WorkflowController { state: stage };
             assert_eq!(
-                workflow
-                    .prepare_fallback_after_browser_failure()
-                    .expect("fallback transition"),
-                AppState::PreparingFallback
+                workflow.fail().expect("failure transition"),
+                AppState::Error
             );
-            assert_eq!(
-                workflow.fallback_prepared().expect("fallback ready"),
-                AppState::FallbackReady
-            );
+            assert_eq!(workflow.recover().expect("recover"), AppState::Idle);
         }
     }
 
