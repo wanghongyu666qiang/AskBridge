@@ -440,7 +440,10 @@ mod integration_tests {
     }
 
     fn unique_integration_profile() -> PathBuf {
-        env::temp_dir().join(format!(
+        let root = env::var_os("ASKBRIDGE_TEST_PROFILE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(env::temp_dir);
+        root.join(format!(
             "askbridge-phase6-chrome-{}-{}",
             std::process::id(),
             SystemTime::now()

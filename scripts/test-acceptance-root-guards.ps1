@@ -41,7 +41,6 @@ try {
     $acceptanceRootScripts = @(
         "test-package.ps1",
         "test-package-artifact-validator.ps1",
-        "test-performance-report-validator.ps1",
         "test-install-metadata-validator.ps1",
         "test-installer.ps1",
         "test-setup.ps1",

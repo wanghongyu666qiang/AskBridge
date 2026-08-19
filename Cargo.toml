@@ -2,6 +2,7 @@
 members = [
     "crates/askbridge-core",
     "crates/askbridge-win",
+    "xtask",
 ]
 resolver = "2"
 

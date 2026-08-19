@@ -67,9 +67,18 @@ try {
             -AcceptanceRoot (Join-Path $root "package-artifact-validator")
     }
 
-    Invoke-Step "[3/10] Validate performance report validator failure paths" {
-        & (Join-Path $repoRoot "scripts\test-performance-report-validator.ps1") `
-            -AcceptanceRoot (Join-Path $root "performance-validator")
+    Invoke-Step "[3/10] Validate performance report xtask and CLI failure paths" {
+        Push-Location $repoRoot
+        try {
+            cargo xtask help
+            if ($LASTEXITCODE -ne 0) {
+                throw "cargo xtask alias check failed with exit code $LASTEXITCODE."
+            }
+            cargo test -p xtask --locked --offline
+        }
+        finally {
+            Pop-Location
+        }
     }
 
     Invoke-Step "[4/10] Validate acceptance root guards" {
