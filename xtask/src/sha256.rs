@@ -20,11 +20,14 @@ const K: [u32; 64] = [
 ];
 
 pub(crate) fn sha256_file(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
+    sha256_reader(File::open(path)?)
+}
+
+pub(crate) fn sha256_reader(mut reader: impl Read) -> io::Result<String> {
     let mut state = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
-        let read = file.read(&mut buffer)?;
+        let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
         }

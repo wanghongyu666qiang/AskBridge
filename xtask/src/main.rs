@@ -1,8 +1,10 @@
+mod package_artifacts;
 mod performance_report;
 mod sha256;
 
 use std::{env, process::ExitCode};
 
+use package_artifacts::{PackageArtifactOptions, validate_package_artifacts};
 use performance_report::{PerformanceReportOptions, validate_performance_report};
 
 fn main() -> ExitCode {
@@ -21,6 +23,12 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
         return Err(usage());
     };
     match command.as_str() {
+        "validate-package-artifacts" => {
+            let options = PackageArtifactOptions::parse(args)?;
+            validate_package_artifacts(&options)?;
+            println!("Package artifact validation passed.");
+            Ok(())
+        }
         "validate-performance-report" => {
             let options = PerformanceReportOptions::parse(args)?;
             validate_performance_report(&options)?;
@@ -36,7 +44,17 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask validate-performance-report \\
+    "usage:
+  cargo xtask validate-package-artifacts \\
+  --artifact-root <absolute-path> \\
+  --expected-version <version> \\
+  --expected-release-exe-path <absolute-path> \\
+  --expected-source-root <absolute-path> \\
+  [--max-release-exe-bytes <bytes>] \\
+  [--max-setup-bytes <bytes>] \\
+  [--max-static-resource-bytes <bytes>]
+
+  cargo xtask validate-performance-report \\
   --desktop-report-path <absolute-path> \\
   --chrome-report-path <absolute-path> \\
   --timings-report-path <absolute-path> \\

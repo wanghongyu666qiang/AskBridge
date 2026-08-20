@@ -60,13 +60,15 @@ ChatGPT 可以在“设置 > 浏览器”中选择两种打开方式：
 ```powershell
 cargo test --workspace
 cargo build --workspace --release
+cargo xtask help
 ```
 
 `scripts` 目录是项目维护自动化，不是用户操作步骤：
 
 - `build.ps1` 和 `test.ps1` 是日常构建与测试入口。
 - `package.ps1` 和 `test-release-local.ps1` 是打包与完整发布验收入口。
-- `test-*`、`validate-*` 和 `measure-*` 是被上述入口调用的独立检查器，用于验证安装、路径保护、真实 UI、性能报告和发布产物。
+- `test-*`、`validate-*` 和 `measure-*` 是被上述入口调用的独立检查器，用于验证安装、路径保护、真实 UI 和性能数据。
+- `cargo xtask` 承担可纯 Rust 测试的性能报告与发布产物验证逻辑。
 - `Install-AskBridge.ps1` 与 `Uninstall-AskBridge.ps1` 会被打包进发布产物。
 
 <details>

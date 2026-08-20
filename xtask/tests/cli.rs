@@ -10,7 +10,19 @@ fn help_command_exercises_binary_dispatch() {
         .expect("run xtask help");
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
+    assert!(stdout.contains("cargo xtask validate-package-artifacts"));
     assert!(stdout.contains("cargo xtask validate-performance-report"));
+}
+
+#[test]
+fn validate_package_artifacts_reports_missing_evidence_through_real_cli() {
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .arg("validate-package-artifacts")
+        .output()
+        .expect("run package validator failure");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+    assert!(stderr.contains("ExpectedVersion is required for final package artifact validation."));
 }
 
 #[test]

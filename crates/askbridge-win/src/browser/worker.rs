@@ -475,8 +475,16 @@ fn close_managed_browser(manager: &mut Option<ChromeManager>, client: &mut Optio
                 .and_then(|client| client.close_browser(&close_cancelled))
                 .is_ok()
         });
-    if closed {
-        let _ = manager.wait_for_managed_exit(Duration::from_secs(5));
+    let exited = closed
+        && manager
+            .wait_for_managed_exit(Duration::from_secs(5))
+            .unwrap_or(false);
+    if !exited && manager.terminate_managed().is_err() {
+        tracing::warn!(
+            stage = "managed_browser_shutdown",
+            completed = false,
+            "managed Chrome did not exit cleanly"
+        );
     }
 }
 

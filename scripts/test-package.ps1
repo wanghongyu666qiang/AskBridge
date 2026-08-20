@@ -43,11 +43,20 @@ try {
 
     Write-Host "[2/2] Validate package artifacts"
     $expectedVersion = Get-AskBridgePackageVersion
-    & (Join-Path $repoRoot "scripts\validate-package-artifacts.ps1") `
-        -ArtifactRoot $artifactRoot `
-        -ExpectedVersion $expectedVersion `
-        -ExpectedReleaseExePath (Join-Path $repoRoot "target\release\askbridge.exe") `
-        -ExpectedSourceRoot $repoRoot
+    Push-Location $repoRoot
+    try {
+        cargo xtask validate-package-artifacts `
+            --artifact-root $artifactRoot `
+            --expected-version $expectedVersion `
+            --expected-release-exe-path (Join-Path $repoRoot "target\release\askbridge.exe") `
+            --expected-source-root $repoRoot
+        if ($LASTEXITCODE -ne 0) {
+            throw "package artifact validator failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Pop-Location
+    }
     Write-Host "Package artifacts, version, hashes, metadata, Release EXE identity, and external-runtime exclusion acceptance passed."
 }
 finally {

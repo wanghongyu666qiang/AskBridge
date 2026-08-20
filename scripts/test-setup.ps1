@@ -49,11 +49,20 @@ try {
     & (Join-Path $repoRoot "scripts\package.ps1") -ArtifactRoot $artifactRoot
     if ($LASTEXITCODE -ne 0) { throw "package.ps1 failed with exit code $LASTEXITCODE." }
     $expectedVersion = Get-AskBridgePackageVersion
-    & (Join-Path $repoRoot "scripts\validate-package-artifacts.ps1") `
-        -ArtifactRoot $artifactRoot `
-        -ExpectedVersion $expectedVersion `
-        -ExpectedReleaseExePath (Join-Path $repoRoot "target\release\askbridge.exe") `
-        -ExpectedSourceRoot $repoRoot
+    Push-Location $repoRoot
+    try {
+        cargo xtask validate-package-artifacts `
+            --artifact-root $artifactRoot `
+            --expected-version $expectedVersion `
+            --expected-release-exe-path (Join-Path $repoRoot "target\release\askbridge.exe") `
+            --expected-source-root $repoRoot
+        if ($LASTEXITCODE -ne 0) {
+            throw "package artifact validator failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Pop-Location
+    }
 
     $setup = @(Get-ChildItem -LiteralPath $artifactRoot -File -Filter "*-Setup.exe")
     if ($setup.Count -ne 1) { throw "Packaging did not produce exactly one Setup.exe." }

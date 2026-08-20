@@ -155,6 +155,32 @@ impl ChromeManager {
         }
     }
 
+    pub(crate) fn terminate_managed(&mut self) -> Result<()> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(());
+        };
+        if child
+            .try_wait()
+            .map_err(|_| AppError::BrowserLaunchFailed)?
+            .is_some()
+        {
+            self.child = None;
+            return Ok(());
+        }
+        child.kill().map_err(|_| {
+            AppError::BrowserConnectionFailed(
+                "failed to terminate the managed Chrome process".to_owned(),
+            )
+        })?;
+        child.wait().map_err(|_| {
+            AppError::BrowserConnectionFailed(
+                "failed to reap the managed Chrome process".to_owned(),
+            )
+        })?;
+        self.child = None;
+        Ok(())
+    }
+
     fn wait_for_endpoint(
         &mut self,
         timeout: Duration,
@@ -354,6 +380,41 @@ mod tests {
     fn test_constructor_does_not_change_discovery_source() {
         let installation = ChromeInstallation::configured(PathBuf::from("chrome.exe"));
         assert_eq!(installation.source(), ChromeSource::Configured);
+    }
+
+    #[test]
+    fn terminate_managed_kills_and_reaps_only_the_owned_child() {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        let path = unique_test_profile("terminate-owned-child");
+        let profile = ManagedProfile::open(&path.to_string_lossy(), &path).expect("profile");
+        let installation = ChromeInstallation::configured(PathBuf::from("chrome.exe"));
+        let child = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("sleeping child");
+        let mut manager = ChromeManager {
+            installation,
+            profile,
+            child: Some(child),
+        };
+
+        let result = manager.terminate_managed();
+        if result.is_err()
+            && let Some(child) = manager.child.as_mut()
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        result.expect("terminate owned child");
+        assert!(manager.managed_process_id().is_none());
+        fs::remove_dir_all(path).expect("cleanup");
     }
 
     #[test]

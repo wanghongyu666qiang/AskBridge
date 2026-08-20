@@ -62,9 +62,14 @@ try {
         & (Join-Path $repoRoot "scripts\test-powershell-syntax.ps1")
     }
 
-    Invoke-Step "[2/10] Validate package artifact validator failure paths" {
-        & (Join-Path $repoRoot "scripts\test-package-artifact-validator.ps1") `
-            -AcceptanceRoot (Join-Path $root "package-artifact-validator")
+    Invoke-Step "[2/10] Validate package artifact validator success and failure paths" {
+        Push-Location $repoRoot
+        try {
+            cargo test -p xtask package_artifacts --locked --offline
+        }
+        finally {
+            Pop-Location
+        }
     }
 
     Invoke-Step "[3/10] Validate performance report xtask and CLI failure paths" {
@@ -74,7 +79,11 @@ try {
             if ($LASTEXITCODE -ne 0) {
                 throw "cargo xtask alias check failed with exit code $LASTEXITCODE."
             }
-            cargo test -p xtask --locked --offline
+            cargo test -p xtask performance_report --locked --offline
+            if ($LASTEXITCODE -ne 0) {
+                throw "performance report tests failed with exit code $LASTEXITCODE."
+            }
+            cargo test -p xtask --test cli --locked --offline
         }
         finally {
             Pop-Location
