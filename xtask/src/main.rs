@@ -1,9 +1,11 @@
+mod package;
 mod package_artifacts;
 mod performance_report;
 mod sha256;
 
 use std::{env, process::ExitCode};
 
+use package::{PackageOptions, package};
 use package_artifacts::{PackageArtifactOptions, validate_package_artifacts};
 use performance_report::{PerformanceReportOptions, validate_performance_report};
 
@@ -23,6 +25,10 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
         return Err(usage());
     };
     match command.as_str() {
+        "package" => {
+            let options = PackageOptions::parse(args)?;
+            package(&options)
+        }
         "validate-package-artifacts" => {
             let options = PackageArtifactOptions::parse(args)?;
             validate_package_artifacts(&options)?;
@@ -45,6 +51,9 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
 
 fn usage() -> String {
     "usage:
+  cargo xtask package \\
+  --artifact-root <absolute-path>
+
   cargo xtask validate-package-artifacts \\
   --artifact-root <absolute-path> \\
   --expected-version <version> \\

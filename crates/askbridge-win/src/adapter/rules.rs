@@ -3,9 +3,9 @@ use std::collections::HashSet;
 use askbridge_core::{AppError, BUILT_IN_ADAPTER_IDS, Result, matches_any_pattern};
 use serde::Deserialize;
 
-const RULE_SCHEMA_VERSION: u32 = 2;
-const BUILTIN_RULES: &str = include_str!("builtin_rules.json");
-const MAX_RULE_SOURCE_BYTES: usize = 64 * 1024;
+pub(super) const RULE_SCHEMA_VERSION: u32 = 2;
+pub(super) const BUILTIN_RULES: &str = include_str!("builtin_rules.json");
+pub(super) const MAX_RULE_SOURCE_BYTES: usize = 64 * 1024;
 const MAX_PROVIDER_ID_BYTES: usize = 64;
 const MAX_LOGIN_PATTERNS: usize = 8;
 const MAX_SELECTORS_PER_FIELD: usize = 16;
@@ -22,6 +22,10 @@ pub(super) struct ProviderRule {
 }
 
 impl ProviderRule {
+    pub(super) fn id(&self) -> &str {
+        &self.id
+    }
+
     pub(super) fn matches_login_url(&self, url: &str) -> bool {
         matches_any_pattern(url, &self.login_url_patterns)
     }
@@ -39,16 +43,19 @@ impl ProviderRule {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct ProviderRuleSet {
-    schema_version: u32,
-    providers: Vec<ProviderRule>,
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct ProviderRuleSet {
+    pub(super) schema_version: u32,
+    pub(super) providers: Vec<ProviderRule>,
 }
 
 pub(super) fn load_rule(adapter_override: Option<&str>) -> Result<Option<ProviderRule>> {
     let Some(adapter_id) = adapter_override else {
         return Ok(None);
     };
+    if let Some(rule) = super::rules_update::active_rule(adapter_id)? {
+        return Ok(Some(rule));
+    }
     let rules = parse_and_validate(BUILTIN_RULES)?;
     rules
         .providers
@@ -66,7 +73,7 @@ pub(super) fn validate_builtin_rules() -> Result<()> {
     parse_and_validate(BUILTIN_RULES).map(|_| ())
 }
 
-fn parse_and_validate(source: &str) -> Result<ProviderRuleSet> {
+pub(super) fn parse_and_validate(source: &str) -> Result<ProviderRuleSet> {
     if source.len() > MAX_RULE_SOURCE_BYTES {
         return Err(AppError::InvalidPreparation(
             "built-in provider rules exceed the size limit".to_owned(),

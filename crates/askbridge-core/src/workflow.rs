@@ -302,6 +302,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn provider_failure_recovery_accepts_the_next_request() {
+        let mut workflow = workflow_at_preparing_page();
+        assert_eq!(workflow.fail().expect("provider failure"), AppState::Error);
+        assert_eq!(workflow.recover().expect("recover"), AppState::Idle);
+        assert_eq!(
+            workflow
+                .start(AppCommand::TextOnlyPrompt)
+                .expect("next request"),
+            AppState::PreparingDispatch
+        );
+    }
+
     fn workflow_at_preparing_page() -> WorkflowController {
         let mut workflow = WorkflowController::default();
         workflow.start(AppCommand::TextOnlyPrompt).expect("start");

@@ -140,13 +140,17 @@ mod tests {
     #[test]
     fn privacy_forbidden_fields_are_absent_from_runtime_tracing_calls() {
         let sources = [
-            ("app", include_str!("app.rs")),
-            ("adapter", include_str!("adapter/mod.rs")),
+            ("app controller", include_str!("app/controller.rs")),
+            ("app capture", include_str!("app/capture_flow.rs")),
+            ("app dispatch", include_str!("app/dispatch_flow.rs")),
+            ("app errors", include_str!("app/error_handler.rs")),
+            ("adapter generic", include_str!("adapter/generic.rs")),
+            ("adapter JavaScript", include_str!("adapter/javascript.rs")),
             ("browser worker", include_str!("browser/worker.rs")),
             ("CDP", include_str!("browser/cdp.rs")),
             ("Chrome", include_str!("browser/chrome.rs")),
             ("clipboard image", include_str!("clipboard_image.rs")),
-            ("settings", include_str!("settings_v2.rs")),
+            ("settings", include_str!("settings_v2/mod.rs")),
             ("startup", include_str!("startup.rs")),
             ("tray", include_str!("tray.rs")),
         ];

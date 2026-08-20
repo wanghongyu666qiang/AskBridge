@@ -35,9 +35,23 @@ use windows_sys::Win32::{
 };
 
 use crate::{
+    adapter::{ProviderHealth, ProviderHealthReport},
     single_instance::{MAIN_WINDOW_CLASS, MAIN_WINDOW_TITLE},
     util::{last_error, wide},
 };
+
+mod controls;
+mod pages;
+mod provider_config;
+
+use controls::{
+    combo_add, combo_reset, combo_select, combo_selection, create_button, create_control, get_text,
+    is_checked, set_checked, set_font, set_text,
+};
+use pages::{
+    create_browser_page, create_general_page, create_hotkey_page, create_page, create_provider_page,
+};
+use provider_config::{origin_pattern, parse_custom_providers};
 
 pub const SETTINGS_CLASS: &str = "AskBridgeSettingsWindow";
 
@@ -58,6 +72,7 @@ pub const CONTROL_CLOSE: u16 = 2053;
 pub const CONTROL_OPEN_BROWSER: u16 = 2054;
 pub const CONTROL_CHECK_BROWSER: u16 = 2055;
 pub const CONTROL_OPEN_LOGIN: u16 = 2056;
+pub const CONTROL_CHECK_PROVIDERS: u16 = 2057;
 
 const STATUS_LABEL: u16 = 2060;
 const EDIT_CAPTURE: u16 = 2101;
@@ -71,6 +86,7 @@ const COMBO_DEFAULT_PROVIDER: u16 = 2201;
 const CHECK_PROVIDER_BASE: u16 = 2210;
 const EDIT_PROVIDER_URL_BASE: u16 = 2220;
 const EDIT_CUSTOM_PROVIDERS: u16 = 2230;
+const PROVIDER_HEALTH_BASE: u16 = 2240;
 
 const RADIO_CHATGPT_DESKTOP_PWA: u16 = 2301;
 const RADIO_CHATGPT_DEDICATED_CHROME: u16 = 2305;
@@ -203,6 +219,7 @@ struct ProviderRow {
     id: String,
     enabled: HWND,
     start_url: HWND,
+    health: HWND,
 }
 
 pub struct SettingsWindow {
@@ -450,6 +467,7 @@ impl SettingsWindow {
                 .ok_or_else(|| AppError::InvalidProvider(row.id.clone()))?;
             set_checked(row.enabled, provider.enabled);
             set_text(row.start_url, &provider.start_url)?;
+            set_text(row.health, "○ 未检测")?;
         }
         let custom_text = config
             .custom_providers
@@ -524,6 +542,23 @@ impl SettingsWindow {
 
     pub fn set_status(&self, message: &str) {
         let _ = set_text(self.status, message);
+    }
+
+    /// Updates the provider rows with the latest no-send capability results.
+    pub fn set_provider_health(&self, reports: &[ProviderHealthReport]) {
+        for row in &self.provider_rows {
+            let Some(report) = reports.iter().find(|report| report.provider_id == row.id) else {
+                continue;
+            };
+            let message = match report.health {
+                ProviderHealth::Healthy => "✓ 页面/输入框/图片",
+                ProviderHealth::LoginRequired => "⚠ 需要登录",
+                ProviderHealth::ComposerMissing => "⚠ 输入框检测失败",
+                ProviderHealth::AttachmentUnsupported => "⚠ 输入框正常；无图片",
+                ProviderHealth::NetworkError => "✕ 页面访问失败",
+            };
+            let _ = set_text(row.health, message);
+        }
     }
 
     fn read_hotkeys(&self) -> Result<HotkeyConfig> {
@@ -622,775 +657,6 @@ impl Drop for SettingsWindow {
             self.window = ptr::null_mut();
         }
     }
-}
-
-fn create_page(parent: HWND, instance: HINSTANCE, scale: UiScale, id: u16) -> Result<HWND> {
-    create_control(
-        parent,
-        instance,
-        scale,
-        SETTINGS_CLASS,
-        "",
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
-        24,
-        100,
-        794,
-        482,
-        0,
-        id,
-    )
-}
-
-fn create_hotkey_page(
-    page: HWND,
-    instance: HINSTANCE,
-    scale: UiScale,
-    _fonts: &UiFonts,
-) -> Result<Vec<HotkeyRow>> {
-    create_label(page, instance, scale, "全局快捷键", 12, 8, 720, 28, 0)?;
-    create_label(
-        page,
-        instance,
-        scale,
-        "修改后立即生效；注册或保存失败时会保留原绑定。",
-        12,
-        38,
-        720,
-        24,
-        0,
-    )?;
-    let definitions = [
-        (
-            AppCommand::CaptureWithPrompt,
-            "截图并提问",
-            "截取区域后输入问题",
-            EDIT_CAPTURE,
-            CHECK_CAPTURE,
-        ),
-        (
-            AppCommand::CaptureQuickDispatch,
-            "截图快速投递",
-            "使用默认供应商和快速提示词",
-            EDIT_QUICK,
-            CHECK_QUICK,
-        ),
-        (
-            AppCommand::TextOnlyPrompt,
-            "直接文字提问",
-            "不截图，直接打开输入框",
-            EDIT_TEXT,
-            CHECK_TEXT,
-        ),
-    ];
-    let mut rows = Vec::new();
-    for (index, (command, label, description, edit_id, check_id)) in
-        definitions.into_iter().enumerate()
-    {
-        let y = 82 + index as i32 * 104;
-        create_label(page, instance, scale, label, 12, y, 190, 26, 0)?;
-        create_label(page, instance, scale, description, 12, y + 28, 280, 24, 0)?;
-        let edit = create_control(
-            page,
-            instance,
-            scale,
-            "EDIT",
-            "",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
-            310,
-            y,
-            252,
-            34,
-            WS_EX_CLIENTEDGE,
-            edit_id,
-        )?;
-        set_limit(edit, MAX_SINGLE_LINE);
-        let enabled = create_control(
-            page,
-            instance,
-            scale,
-            "BUTTON",
-            "启用",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32,
-            590,
-            y + 2,
-            92,
-            30,
-            0,
-            check_id,
-        )?;
-        rows.push(HotkeyRow {
-            command,
-            edit,
-            enabled,
-        });
-    }
-    Ok(rows)
-}
-
-fn create_provider_page(
-    page: HWND,
-    instance: HINSTANCE,
-    scale: UiScale,
-    _fonts: &UiFonts,
-) -> Result<(HWND, Vec<ProviderRow>, HWND)> {
-    create_label(page, instance, scale, "默认供应商", 12, 8, 132, 26, 0)?;
-    let default_provider = create_control(
-        page,
-        instance,
-        scale,
-        "COMBOBOX",
-        "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST as u32,
-        154,
-        4,
-        260,
-        220,
-        0,
-        COMBO_DEFAULT_PROVIDER,
-    )?;
-    create_label(
-        page,
-        instance,
-        scale,
-        "内置供应商（修改入口时会把匹配边界收敛到同一 HTTPS 域名）",
-        12,
-        48,
-        710,
-        24,
-        0,
-    )?;
-    let defaults = built_in_providers();
-    let mut rows = Vec::new();
-    for (index, provider) in defaults.into_iter().enumerate() {
-        let y = 78 + index as i32 * 48;
-        let enabled = create_control(
-            page,
-            instance,
-            scale,
-            "BUTTON",
-            &provider.display_name,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32,
-            12,
-            y + 3,
-            128,
-            30,
-            0,
-            CHECK_PROVIDER_BASE + index as u16,
-        )?;
-        let start_url = create_control(
-            page,
-            instance,
-            scale,
-            "EDIT",
-            "",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
-            154,
-            y,
-            568,
-            34,
-            WS_EX_CLIENTEDGE,
-            EDIT_PROVIDER_URL_BASE + index as u16,
-        )?;
-        set_limit(start_url, MAX_SINGLE_LINE);
-        rows.push(ProviderRow {
-            id: provider.id,
-            enabled,
-            start_url,
-        });
-    }
-    create_label(
-        page,
-        instance,
-        scale,
-        "自定义供应商（每行：id | 名称 | 起始网址 | 匹配前缀；多个前缀用逗号分隔）",
-        12,
-        278,
-        720,
-        24,
-        0,
-    )?;
-    let custom = create_control(
-        page,
-        instance,
-        scale,
-        "EDIT",
-        "",
-        WS_CHILD
-            | WS_VISIBLE
-            | WS_TABSTOP
-            | WS_BORDER
-            | WS_VSCROLL
-            | ES_MULTILINE as u32
-            | ES_AUTOVSCROLL as u32
-            | ES_WANTRETURN as u32,
-        12,
-        308,
-        710,
-        132,
-        WS_EX_CLIENTEDGE,
-        EDIT_CUSTOM_PROVIDERS,
-    )?;
-    set_limit(custom, MAX_MULTI_LINE);
-    Ok((default_provider, rows, custom))
-}
-
-fn create_browser_page(
-    page: HWND,
-    instance: HINSTANCE,
-    scale: UiScale,
-    data_root: &Path,
-    fonts: &UiFonts,
-) -> Result<(HWND, HWND, HWND, HWND)> {
-    create_label(page, instance, scale, "ChatGPT 打开方式", 12, 8, 210, 24, 0)?;
-    let pwa = create_control(
-        page,
-        instance,
-        scale,
-        "BUTTON",
-        "桌面网页端：复用现有登录，但截图需要手动上传",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON as u32,
-        12,
-        38,
-        620,
-        30,
-        0,
-        RADIO_CHATGPT_DESKTOP_PWA,
-    )?;
-    set_font(pwa, fonts.body.handle());
-    let dedicated = create_control(
-        page,
-        instance,
-        scale,
-        "BUTTON",
-        "AskBridge 专用 Chrome：支持自动上传图片，需要单独登录",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON as u32,
-        12,
-        72,
-        680,
-        30,
-        0,
-        RADIO_CHATGPT_DEDICATED_CHROME,
-    )?;
-    set_font(dedicated, fonts.body.handle());
-    create_label(
-        page,
-        instance,
-        scale,
-        "这个选择会同时影响纯文字和截图提问。",
-        12,
-        106,
-        710,
-        24,
-        0,
-    )?;
-    create_label(
-        page,
-        instance,
-        scale,
-        "Chrome 可执行文件",
-        12,
-        142,
-        210,
-        24,
-        0,
-    )?;
-    create_label(
-        page,
-        instance,
-        scale,
-        "留空自动检测；填写时必须是现有 chrome.exe 的绝对路径。",
-        230,
-        142,
-        492,
-        24,
-        0,
-    )?;
-    let chrome = create_control(
-        page,
-        instance,
-        scale,
-        "EDIT",
-        "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
-        12,
-        170,
-        710,
-        34,
-        WS_EX_CLIENTEDGE,
-        EDIT_CHROME_PATH,
-    )?;
-    set_limit(chrome, MAX_SINGLE_LINE);
-    create_label(
-        page,
-        instance,
-        scale,
-        "专用 Chrome 生命周期",
-        12,
-        226,
-        210,
-        24,
-        0,
-    )?;
-    let lifecycle = create_control(
-        page,
-        instance,
-        scale,
-        "COMBOBOX",
-        "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST as u32,
-        230,
-        220,
-        350,
-        220,
-        0,
-        COMBO_LIFECYCLE,
-    )?;
-    create_label(
-        page,
-        instance,
-        scale,
-        "AskBridge 数据目录",
-        12,
-        280,
-        210,
-        24,
-        0,
-    )?;
-    let data_path = create_control(
-        page,
-        instance,
-        scale,
-        "EDIT",
-        &data_root.to_string_lossy(),
-        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL as u32 | ES_READONLY as u32,
-        12,
-        308,
-        710,
-        34,
-        WS_EX_CLIENTEDGE,
-        EDIT_DATA_PATH,
-    )?;
-    set_limit(data_path, MAX_SINGLE_LINE);
-    create_label(
-        page,
-        instance,
-        scale,
-        "浏览器工具只控制 AskBridge 专用配置，不连接日常 Chrome。",
-        12,
-        362,
-        710,
-        24,
-        0,
-    )?;
-    create_button(
-        page,
-        instance,
-        scale,
-        fonts,
-        "打开 AskBridge 浏览器",
-        12,
-        400,
-        190,
-        CONTROL_OPEN_BROWSER,
-    )?;
-    create_button(
-        page,
-        instance,
-        scale,
-        fonts,
-        "检查连接",
-        216,
-        400,
-        130,
-        CONTROL_CHECK_BROWSER,
-    )?;
-    create_button(
-        page,
-        instance,
-        scale,
-        fonts,
-        "打开默认供应商登录页面",
-        360,
-        400,
-        226,
-        CONTROL_OPEN_LOGIN,
-    )?;
-    Ok((pwa, dedicated, chrome, lifecycle))
-}
-
-fn create_general_page(
-    page: HWND,
-    instance: HINSTANCE,
-    scale: UiScale,
-    fonts: &UiFonts,
-) -> Result<(HWND, HWND, HWND)> {
-    create_label(
-        page,
-        instance,
-        scale,
-        "截图快速投递提示词",
-        12,
-        8,
-        250,
-        24,
-        0,
-    )?;
-    let quick_prompt = create_control(
-        page,
-        instance,
-        scale,
-        "EDIT",
-        "",
-        WS_CHILD
-            | WS_VISIBLE
-            | WS_TABSTOP
-            | WS_BORDER
-            | WS_VSCROLL
-            | ES_MULTILINE as u32
-            | ES_AUTOVSCROLL as u32
-            | ES_WANTRETURN as u32,
-        12,
-        38,
-        710,
-        112,
-        WS_EX_CLIENTEDGE,
-        EDIT_QUICK_PROMPT,
-    )?;
-    set_limit(quick_prompt, MAX_MULTI_LINE);
-    let start_on_login = create_check(
-        page,
-        instance,
-        scale,
-        fonts,
-        "登录 Windows 后启动 AskBridge（当前用户，不需管理员权限）",
-        12,
-        176,
-        CHECK_START_ON_LOGIN,
-    )?;
-    let debug = create_check(
-        page,
-        instance,
-        scale,
-        fonts,
-        "启用调试日志（立即生效；日志仍不记录问题、截图或网页正文）",
-        12,
-        220,
-        CHECK_DEBUG_LOGGING,
-    )?;
-    create_label(
-        page,
-        instance,
-        scale,
-        "AskBridge 1.0 没有自动发送开关；所有请求始终由用户在网页中确认发送。",
-        12,
-        276,
-        710,
-        44,
-        0,
-    )?;
-    Ok((quick_prompt, start_on_login, debug))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn create_label(
-    parent: HWND,
-    instance: HINSTANCE,
-    scale: UiScale,
-    text: &str,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    id: u16,
-) -> Result<HWND> {
-    create_control(
-        parent,
-        instance,
-        scale,
-        "STATIC",
-        text,
-        WS_CHILD | WS_VISIBLE,
-        x,
-        y,
-        width,
-        height,
-        0,
-        id,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn create_check(
-    parent: HWND,
-    instance: HINSTANCE,
-    scale: UiScale,
-    fonts: &UiFonts,
-    text: &str,
-    x: i32,
-    y: i32,
-    id: u16,
-) -> Result<HWND> {
-    let check = create_control(
-        parent,
-        instance,
-        scale,
-        "BUTTON",
-        text,
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32,
-        x,
-        y,
-        710,
-        32,
-        0,
-        id,
-    )?;
-    set_font(check, fonts.body.handle());
-    Ok(check)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn create_button(
-    parent: HWND,
-    instance: HINSTANCE,
-    scale: UiScale,
-    fonts: &UiFonts,
-    text: &str,
-    x: i32,
-    y: i32,
-    width: i32,
-    id: u16,
-) -> Result<HWND> {
-    let button = create_control(
-        parent,
-        instance,
-        scale,
-        "BUTTON",
-        text,
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
-        x,
-        y,
-        width,
-        36,
-        0,
-        id,
-    )?;
-    set_font(button, fonts.label.handle());
-    Ok(button)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn create_control(
-    parent: HWND,
-    instance: HINSTANCE,
-    scale: UiScale,
-    class: &str,
-    text: &str,
-    style: u32,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    extended_style: u32,
-    id: u16,
-) -> Result<HWND> {
-    let is_edit = class == "EDIT";
-    let class = wide(class);
-    let text = wide(text);
-    // SAFETY: Class/text buffers are valid for the call, and parent/instance are live.
-    let control = unsafe {
-        CreateWindowExW(
-            extended_style,
-            class.as_ptr(),
-            text.as_ptr(),
-            style,
-            scale.px(x),
-            scale.px(y),
-            scale.px(width),
-            scale.px(height),
-            parent,
-            id as usize as _,
-            instance,
-            ptr::null(),
-        )
-    };
-    if control.is_null() {
-        return Err(AppError::Windows {
-            operation: "CreateWindowExW(settings control)",
-            win32_code: last_error(),
-        });
-    }
-    // SAFETY: DEFAULT_GUI_FONT is a process-lifetime stock object and control is live.
-    unsafe {
-        SendMessageW(
-            control,
-            WM_SETFONT,
-            GetStockObject(DEFAULT_GUI_FONT) as WPARAM,
-            1,
-        );
-        if is_edit {
-            SendMessageW(
-                control,
-                EM_SETMARGINS,
-                (EC_LEFTMARGIN | EC_RIGHTMARGIN) as WPARAM,
-                make_lparam(10, 10),
-            );
-        }
-    }
-    Ok(control)
-}
-
-fn set_font(window: HWND, font: *mut c_void) {
-    // SAFETY: font is owned by SettingsWindow and outlives the child window.
-    unsafe {
-        SendMessageW(window, WM_SETFONT, font as WPARAM, 1);
-    }
-}
-
-fn set_limit(edit: HWND, limit: WPARAM) {
-    // SAFETY: edit is a live EDIT control.
-    unsafe {
-        SendMessageW(edit, EM_SETLIMITTEXT, limit, 0);
-    }
-}
-
-fn set_text(window: HWND, value: &str) -> Result<()> {
-    let value = wide(value);
-    // SAFETY: window is live and value is a nul-terminated UTF-16 string.
-    if unsafe { SetWindowTextW(window, value.as_ptr()) } == 0 {
-        return Err(AppError::Windows {
-            operation: "SetWindowTextW(settings)",
-            win32_code: last_error(),
-        });
-    }
-    Ok(())
-}
-
-fn get_text(window: HWND) -> Result<String> {
-    // SAFETY: window is a live control and the query is read-only.
-    let length = unsafe { GetWindowTextLengthW(window) };
-    if length < 0 {
-        return Err(AppError::Windows {
-            operation: "GetWindowTextLengthW(settings)",
-            win32_code: last_error(),
-        });
-    }
-    let mut buffer = vec![0u16; length as usize + 1];
-    // SAFETY: buffer has room for the reported text and terminating nul.
-    let copied = unsafe { GetWindowTextW(window, buffer.as_mut_ptr(), buffer.len() as i32) };
-    if copied < 0 {
-        return Err(AppError::Windows {
-            operation: "GetWindowTextW(settings)",
-            win32_code: last_error(),
-        });
-    }
-    buffer.truncate(copied as usize);
-    Ok(String::from_utf16_lossy(&buffer))
-}
-
-fn set_checked(control: HWND, checked: bool) {
-    // SAFETY: control is a live checkbox or radio button.
-    unsafe {
-        SendMessageW(
-            control,
-            BM_SETCHECK,
-            if checked {
-                BST_CHECKED as WPARAM
-            } else {
-                BST_UNCHECKED as WPARAM
-            },
-            0,
-        );
-    }
-}
-
-fn is_checked(control: HWND) -> bool {
-    // SAFETY: control is a live checkbox.
-    unsafe { SendMessageW(control, BM_GETCHECK, 0, 0) == BST_CHECKED as isize }
-}
-
-fn combo_reset(combo: HWND) {
-    // SAFETY: combo is a live COMBOBOX.
-    unsafe {
-        SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-    }
-}
-
-fn combo_add(combo: HWND, value: &str) -> Result<usize> {
-    let value = wide(value);
-    // SAFETY: combo is live and value remains valid for the synchronous call.
-    let index = unsafe { SendMessageW(combo, CB_ADDSTRING, 0, value.as_ptr() as LPARAM) };
-    if index < 0 {
-        return Err(AppError::Windows {
-            operation: "CB_ADDSTRING(settings)",
-            win32_code: last_error(),
-        });
-    }
-    Ok(index as usize)
-}
-
-fn combo_select(combo: HWND, index: usize) {
-    // SAFETY: combo is live; invalid indices are detected later by read_config.
-    unsafe {
-        SendMessageW(combo, CB_SETCURSEL, index, 0);
-    }
-}
-
-fn combo_selection(combo: HWND) -> Result<usize> {
-    // SAFETY: combo is a live COMBOBOX.
-    let selected = unsafe { SendMessageW(combo, CB_GETCURSEL, 0, 0) };
-    if selected < 0 {
-        Err(AppError::ConfigurationInvalid(
-            "a required setting has no selection".to_owned(),
-        ))
-    } else {
-        Ok(selected as usize)
-    }
-}
-
-fn parse_custom_providers(text: &str) -> Result<Vec<ProviderConfig>> {
-    let mut providers = Vec::new();
-    for (index, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let fields = line.split('|').map(str::trim).collect::<Vec<_>>();
-        if fields.len() != 4 {
-            return Err(AppError::InvalidProvider(format!(
-                "custom provider line {} must contain id | name | start URL | match prefixes",
-                index + 1
-            )));
-        }
-        let url_patterns = fields[3]
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        let provider = ProviderConfig {
-            id: fields[0].to_owned(),
-            display_name: fields[1].to_owned(),
-            enabled: true,
-            start_url: fields[2].to_owned(),
-            url_patterns,
-            is_custom: true,
-            adapter_override: None,
-        };
-        provider.validate()?;
-        providers.push(provider);
-    }
-    Ok(providers)
-}
-
-fn origin_pattern(url: &str) -> Result<String> {
-    let Some(remainder) = url.strip_prefix("https://") else {
-        return Err(AppError::InvalidProviderUrl(url.to_owned()));
-    };
-    let authority = remainder.split(['/', '?', '#']).next().unwrap_or_default();
-    if authority.is_empty() {
-        return Err(AppError::InvalidProviderUrl(url.to_owned()));
-    }
-    Ok(format!("https://{authority}/"))
 }
 
 fn switch_page(window: HWND, page: u16) {
@@ -1524,15 +790,25 @@ pub unsafe extern "system" fn settings_window_proc(
             };
             if let Some(page) = page {
                 switch_page(window, page);
-                return 0;
+                if command != TAB_PROVIDERS {
+                    return 0;
+                }
             }
+            let forwarded_wparam = if command == TAB_PROVIDERS {
+                CONTROL_CHECK_PROVIDERS as WPARAM
+            } else {
+                wparam
+            };
+            let forwarded_lparam = if command == TAB_PROVIDERS { 0 } else { lparam };
             let class = wide(MAIN_WINDOW_CLASS);
             let title = wide(MAIN_WINDOW_TITLE);
             // SAFETY: Both search strings are valid nul-terminated UTF-16 buffers.
             let main_window = unsafe { FindWindowW(class.as_ptr(), title.as_ptr()) };
             if !main_window.is_null() {
                 // SAFETY: WM_COMMAND targets our own UI thread and carries only control data.
-                if unsafe { PostMessageW(main_window, message, wparam, lparam) } == 0 {
+                if unsafe { PostMessageW(main_window, message, forwarded_wparam, forwarded_lparam) }
+                    == 0
+                {
                     error!(
                         stage = "settings_command_dispatch",
                         completed = false,
@@ -1596,14 +872,14 @@ mod tests {
 
     #[test]
     fn settings_page_exposes_no_auto_submit_control() {
-        let source = include_str!("settings_v2.rs");
+        let source = concat!(include_str!("mod.rs"), include_str!("pages.rs"));
         let forbidden_control = ["CHECK_", "AUTO_", "SUBMIT"].concat();
         assert!(!source.contains(&forbidden_control));
     }
 
     #[test]
     fn browser_page_exposes_explicit_chatgpt_target_choices() {
-        let source = include_str!("settings_v2.rs");
+        let source = concat!(include_str!("mod.rs"), include_str!("pages.rs"));
         assert!(source.contains("桌面网页端：复用现有登录，但截图需要手动上传"));
         assert!(source.contains("AskBridge 专用 Chrome：支持自动上传图片，需要单独登录"));
         let forbidden = ["截图提问会", "自动使用 AskBridge 专用 Chrome"].concat();

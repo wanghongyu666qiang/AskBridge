@@ -60,6 +60,21 @@ function Wait-StableFile {
     throw "File did not become stable within $TimeoutSeconds seconds: $Path"
 }
 
+function Get-Sha256Hex {
+    param([string]$Path)
+
+    $stream = [IO.File]::OpenRead($Path)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $hasher.ComputeHash($stream)
+        return (($bytes | ForEach-Object { $_.ToString("X2") }) -join "")
+    }
+    finally {
+        $hasher.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Write-And-VerifyHashes {
     param(
         [string[]]$Paths,
@@ -67,8 +82,8 @@ function Write-And-VerifyHashes {
     )
 
     $hashLines = foreach ($path in $Paths) {
-        $hash = Get-FileHash -LiteralPath $path -Algorithm SHA256
-        "{0}  {1}" -f $hash.Hash, (Split-Path -Leaf $path)
+        $hash = Get-Sha256Hex -Path $path
+        "{0}  {1}" -f $hash, (Split-Path -Leaf $path)
     }
     $hashLines | Set-Content -LiteralPath $HashPath -Encoding ASCII
 
@@ -82,7 +97,7 @@ function Write-And-VerifyHashes {
         if ($matches.Count -ne 1) {
             throw "Hash target '$leafName' is missing or ambiguous."
         }
-        $actualHash = (Get-FileHash -LiteralPath $matches[0] -Algorithm SHA256).Hash
+        $actualHash = Get-Sha256Hex -Path $matches[0]
         if ($actualHash -ne $expectedHash) {
             throw "Hash verification failed for '$leafName'."
         }
@@ -143,7 +158,7 @@ try {
     Assert-Command "cargo"
     Assert-Command "iexpress.exe"
     Write-Host "[1/6] Resolving package version"
-    $metadata = cargo metadata --offline --no-deps --format-version 1 | ConvertFrom-Json
+    $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed with exit code $LASTEXITCODE." }
     $package = $metadata.packages | Where-Object { $_.name -eq "askbridge-win" } | Select-Object -First 1
     if ($null -eq $package) { throw "askbridge-win metadata was not found." }
@@ -161,9 +176,9 @@ try {
     }
 
     Write-Host "[2/6] Building release binary"
-    cargo build --workspace --release --offline
+    cargo build --workspace --release --locked
     if ($LASTEXITCODE -ne 0) { throw "Release build failed with exit code $LASTEXITCODE." }
-    cargo build --package askbridge-win --bin askbridge-setup --release --offline
+    cargo build --package askbridge-win --bin askbridge-setup --release --locked
     if ($LASTEXITCODE -ne 0) { throw "Setup build failed with exit code $LASTEXITCODE." }
 
     Write-Host "[3/6] Preparing deterministic package directory"

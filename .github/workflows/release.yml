@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  windows-release:
+    name: Windows release
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Cache Cargo dependencies and target artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-release-cargo-
+
+      - name: Verify tag and package version
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed." }
+          $version = [string](
+            $metadata.packages |
+              Where-Object { $_.name -eq "askbridge-win" } |
+              Select-Object -First 1
+          ).version
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+            throw "Tag $env:GITHUB_REF_NAME does not match workspace version $version."
+          }
+          $artifactRoot = Join-Path $env:RUNNER_TEMP "askbridge-release-$env:GITHUB_RUN_ID"
+          "ASKBRIDGE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ASKBRIDGE_ARTIFACT_ROOT=$artifactRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      - name: Build release workspace
+        run: cargo build --workspace --release --locked
+
+      - name: Build release packages
+        shell: pwsh
+        run: cargo xtask package --artifact-root "$env:ASKBRIDGE_ARTIFACT_ROOT"
+
+      - name: Validate release packages
+        shell: pwsh
+        run: |
+          $sourceRoot = (Resolve-Path .).Path
+          $releaseExe = (Resolve-Path "target/release/askbridge.exe").Path
+          cargo xtask validate-package-artifacts `
+            --artifact-root "$env:ASKBRIDGE_ARTIFACT_ROOT" `
+            --expected-version "$env:ASKBRIDGE_VERSION" `
+            --expected-release-exe-path "$releaseExe" `
+            --expected-source-root "$sourceRoot"
+
+      - name: Preserve workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AskBridge-${{ env.ASKBRIDGE_VERSION }}-windows-x64
+          path: |
+            ${{ env.ASKBRIDGE_ARTIFACT_ROOT }}/AskBridge-${{ env.ASKBRIDGE_VERSION }}-Setup.exe
+            ${{ env.ASKBRIDGE_ARTIFACT_ROOT }}/AskBridge-${{ env.ASKBRIDGE_VERSION }}-windows-x64.zip
+            ${{ env.ASKBRIDGE_ARTIFACT_ROOT }}/AskBridge-${{ env.ASKBRIDGE_VERSION }}-SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$env:GITHUB_REF_NAME" `
+            "$env:ASKBRIDGE_ARTIFACT_ROOT/AskBridge-$env:ASKBRIDGE_VERSION-Setup.exe" `
+            "$env:ASKBRIDGE_ARTIFACT_ROOT/AskBridge-$env:ASKBRIDGE_VERSION-windows-x64.zip" `
+            "$env:ASKBRIDGE_ARTIFACT_ROOT/AskBridge-$env:ASKBRIDGE_VERSION-SHA256SUMS.txt" `
+            --verify-tag `
+            --generate-notes `
+            --title "AskBridge $env:GITHUB_REF_NAME"

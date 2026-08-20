@@ -23,7 +23,9 @@ use super::{
     CdpClient, CdpTarget, ChromeInstallation, ChromeManager, DesktopPwaLauncher, ManagedProfile,
 };
 use crate::adapter::{
-    GenericProviderAdapter, PageSession, ProviderAdapter, cleanup_stale_temp_images,
+    GenericProviderAdapter, PageSession, ProviderAdapter, ProviderHealthCheck,
+    ProviderHealthReport, check_provider_health, cleanup_stale_temp_images,
+    refresh_rules_from_environment,
 };
 use crate::util::last_error;
 
@@ -71,6 +73,21 @@ pub struct BrowserWarmupJob {
     pub open_url: Option<String>,
 }
 
+/// Managed-Chrome inputs for a batch of no-send provider capability checks.
+#[derive(Debug, Clone)]
+pub struct ProviderHealthJob {
+    /// Optional configured Chrome executable path.
+    pub configured_chrome_path: Option<String>,
+    /// Managed Chrome profile directory name.
+    pub profile_dir: String,
+    /// Maximum time allowed to connect to Chrome DevTools.
+    pub connect_timeout: Duration,
+    /// Maximum time allowed for each provider page inspection.
+    pub page_timeout: Duration,
+    /// Providers to inspect without mutating their pages.
+    pub providers: Vec<ProviderHealthCheck>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserStage {
     Started,
@@ -99,6 +116,9 @@ pub enum BrowserEvent {
     WarmupFailed {
         error: AppError,
     },
+    ProviderHealthCompleted {
+        reports: Vec<ProviderHealthReport>,
+    },
     Failed {
         request_id: String,
         error: AppError,
@@ -108,6 +128,7 @@ pub enum BrowserEvent {
 enum BrowserCommand {
     Prepare(Box<BrowserJob>, Arc<AtomicBool>),
     Warmup(BrowserWarmupJob, Arc<AtomicBool>),
+    ProviderHealth(ProviderHealthJob, Arc<AtomicBool>),
     Reconfigure,
     CloseManaged,
     Shutdown,
@@ -184,6 +205,16 @@ impl BrowserService {
             })
     }
 
+    /// Queues provider capability checks that never insert or submit user text.
+    pub fn check_providers(&self, job: ProviderHealthJob) -> Result<()> {
+        let cancelled = self.cancellation.begin()?;
+        self.commands
+            .send(BrowserCommand::ProviderHealth(job, cancelled))
+            .map_err(|_| {
+                AppError::BrowserConnectionFailed("browser worker is unavailable".to_owned())
+            })
+    }
+
     pub fn cancel(&self) {
         self.cancellation.cancel_current();
     }
@@ -233,6 +264,19 @@ fn worker_loop(
     events: Arc<Mutex<VecDeque<BrowserEvent>>>,
     data_root: PathBuf,
 ) {
+    match refresh_rules_from_environment(&data_root) {
+        Ok(source) => tracing::info!(
+            stage = "provider_rules",
+            completed = true,
+            source = ?source,
+            "provider rules initialized"
+        ),
+        Err(_error) => tracing::warn!(
+            stage = "provider_rules",
+            completed = false,
+            "provider rules fell back to built-in defaults"
+        ),
+    }
     if let Err(_error) = cleanup_stale_temp_images(&data_root) {
         tracing::warn!(
             stage = "temporary_image_cleanup",
@@ -286,6 +330,29 @@ fn worker_loop(
                     }
                 }
             }
+            Ok(BrowserCommand::ProviderHealth(job, cancelled)) => {
+                let provider_ids = job
+                    .providers
+                    .iter()
+                    .map(|provider| provider.provider_id.clone())
+                    .collect::<Vec<_>>();
+                let reports = match check_provider_batch(&cancelled, &mut manager, &data_root, &job)
+                {
+                    Ok((client, reports)) => {
+                        connected_client = Some(client);
+                        reports
+                    }
+                    Err(_error) => provider_ids
+                        .into_iter()
+                        .map(ProviderHealthReport::network_error)
+                        .collect(),
+                };
+                send_event(
+                    owner,
+                    &events,
+                    BrowserEvent::ProviderHealthCompleted { reports },
+                );
+            }
             Ok(BrowserCommand::Reconfigure | BrowserCommand::CloseManaged) => {
                 close_managed_browser(&mut manager, &mut connected_client);
                 idle_close_deadline = None;
@@ -329,6 +396,53 @@ fn warmup_browser(
         client.wait_until_ready(&target, job.page_timeout, cancelled)?;
     }
     Ok(client)
+}
+
+fn check_provider_batch(
+    cancelled: &AtomicBool,
+    manager: &mut Option<ChromeManager>,
+    data_root: &Path,
+    job: &ProviderHealthJob,
+) -> Result<(CdpClient, Vec<ProviderHealthReport>)> {
+    let warmup = BrowserWarmupJob {
+        configured_chrome_path: job.configured_chrome_path.clone(),
+        profile_dir: job.profile_dir.clone(),
+        connect_timeout: job.connect_timeout,
+        page_timeout: job.page_timeout,
+        open_url: None,
+    };
+    let client = warmup_browser(cancelled, manager, data_root, &warmup)?;
+    let mut reports = Vec::with_capacity(job.providers.len());
+    for check in &job.providers {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(AppError::BrowserCancelled);
+        }
+        let report = (|| -> Result<ProviderHealthReport> {
+            let target = client
+                .list_targets()?
+                .into_iter()
+                .find(|target| {
+                    target.kind == "page"
+                        && askbridge_core::matches_any_pattern(&target.url, &check.url_patterns)
+                })
+                .map_or_else(|| client.create_target(&check.start_url), Ok)?;
+            client.activate_target(&target.id)?;
+            client.wait_until_ready(&target, job.page_timeout, cancelled)?;
+            let target = client
+                .list_targets()?
+                .into_iter()
+                .find(|candidate| candidate.id == target.id)
+                .ok_or_else(|| {
+                    AppError::BrowserProtocol(
+                        "provider page disappeared during the health check".to_owned(),
+                    )
+                })?;
+            check_provider_health(&client, &target, check, cancelled, job.page_timeout)
+        })()
+        .unwrap_or_else(|_| ProviderHealthReport::network_error(&check.provider_id));
+        reports.push(report);
+    }
+    Ok((client, reports))
 }
 
 fn prepare_browser_job(

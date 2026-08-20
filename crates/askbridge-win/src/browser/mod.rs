@@ -13,7 +13,7 @@ pub use endpoint::DevToolsEndpoint;
 pub use profile::ManagedProfile;
 pub use worker::{
     BrowserEvent, BrowserJob, BrowserLaunch, BrowserService, BrowserStage, BrowserSurface,
-    BrowserWarmupJob, DedicatedChromeJob, DesktopPwaJob, WM_BROWSER_EVENT,
+    BrowserWarmupJob, DedicatedChromeJob, DesktopPwaJob, ProviderHealthJob, WM_BROWSER_EVENT,
 };
 
 #[cfg(test)]
@@ -32,7 +32,10 @@ mod integration_tests {
     };
 
     use super::*;
-    use crate::adapter::{GenericProviderAdapter, PageSession, ProviderAdapter};
+    use crate::adapter::{
+        GenericProviderAdapter, PageSession, ProviderAdapter, ProviderHealth, ProviderHealthCheck,
+        check_provider_health,
+    };
     use askbridge_core::{
         AppConfig, CapturedImage, DispatchMode, DispatchRequest, PreparationPolicy,
         PreparationRecovery, ScreenRect,
@@ -281,6 +284,24 @@ mod integration_tests {
             .any(|candidate| candidate.id == target.id && candidate.url == page_url)
         {
             return Err(askbridge_core::AppError::TargetNotFound);
+        }
+        let health = check_provider_health(
+            &client,
+            &target,
+            &ProviderHealthCheck {
+                provider_id: "loopback-test".to_owned(),
+                start_url: page_url.clone(),
+                url_patterns: vec![page_url.clone()],
+                adapter_override: None,
+            },
+            cancelled,
+            Duration::from_secs(5),
+        )?;
+        if health.health != ProviderHealth::Healthy {
+            return Err(askbridge_core::AppError::InvalidPreparation(format!(
+                "loopback provider health check returned {:?}",
+                health.health
+            )));
         }
         let request = DispatchRequest::new(
             "phase5-integration".to_owned(),

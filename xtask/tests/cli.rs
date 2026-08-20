@@ -10,6 +10,7 @@ fn help_command_exercises_binary_dispatch() {
         .expect("run xtask help");
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
+    assert!(stdout.contains("cargo xtask package"));
     assert!(stdout.contains("cargo xtask validate-package-artifacts"));
     assert!(stdout.contains("cargo xtask validate-performance-report"));
 }
@@ -34,6 +35,42 @@ fn unknown_command_returns_failure() {
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
     assert!(stderr.contains("unknown xtask command 'not-a-command'"));
+}
+
+#[test]
+fn package_requires_an_explicit_artifact_root() {
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .arg("package")
+        .output()
+        .expect("run package failure");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+    assert!(stderr.contains("--artifact-root is required for packaging"));
+}
+
+#[test]
+fn package_rejects_relative_artifact_root() {
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args(["package", "--artifact-root", "relative-package-root"])
+        .output()
+        .expect("run relative package failure");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+    assert!(stderr.contains("ArtifactRoot must be an explicit absolute path."));
+}
+
+#[test]
+fn package_reports_a_command_failure_for_a_non_empty_root() {
+    let root = tempfile::tempdir().expect("tempdir");
+    fs::write(root.path().join("stale.txt"), b"stale").expect("stale file");
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args(["package", "--artifact-root"])
+        .arg(path(root.path()))
+        .output()
+        .expect("run package guard failure");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+    assert!(stderr.contains("ArtifactRoot already exists and is not empty"));
 }
 
 #[test]
