@@ -1,5 +1,7 @@
 # AskBridge
 
+[简体中文](README.md) | [English](README_EN.md)
+
 AskBridge 是一个 Windows 截图问答工具。框选屏幕内容后，可以复制截图、切换 AI 模型，或将截图和预设文字准备到 AI 网页的输入区。最终是否发送始终由用户决定。
 
 ## 下载与打开
@@ -45,7 +47,7 @@ ChatGPT 可以在“设置 > 浏览器”中选择两种打开方式：
 
 ## 数据位置
 
-- 源码开发环境：`D:/AskBridge/data`
+- 源码开发环境：仓库根目录下的 `data`（从 `target` 中的调试程序运行时自动识别）
 - 安装版或便携版：`askbridge.exe` 同目录下的 `data`
 - 自定义位置：设置绝对路径环境变量 `ASKBRIDGE_DATA_DIR`
 
@@ -89,3 +91,7 @@ cargo xtask help
 脚本不会默认把发布产物写入 C 盘。
 
 </details>
+
+## 许可证
+
+本项目基于 [Apache License 2.0](LICENSE) 开源。

@@ -1,0 +1,97 @@
+# AskBridge
+
+[简体中文](README.md) | [English](README_EN.md)
+
+AskBridge is a Windows screenshot-to-AI tool. After selecting an area of the screen, you can copy the capture, switch AI models, or stage the screenshot together with preset text into an AI website's input box. Whether to actually send is always decided by the user.
+
+## Download and Setup
+
+1. Go to [GitHub Releases](https://github.com/wanghongyu666qiang/AskBridge/releases) and download the latest `AskBridge-<version>-Setup.exe`.
+2. Double-click the installer and choose an install location.
+3. After installation, run `askbridge.exe`. The program lives in the Windows tray; right-click the tray icon to open settings or exit.
+
+Regular users do not need to open PowerShell or run any command from the repository's `scripts` directory.
+
+When developing in this repository, the debug build is located at `target/debug/askbridge.exe` and the release build at `target/release/askbridge.exe`.
+
+## Hotkeys
+
+| Hotkey | Action |
+| --- | --- |
+| `Alt+Q` | Select a screen region and show the toolbar |
+| `Alt+Shift+Q` | Select a region, then stage web content using the default model and quick prompt without showing the toolbar |
+| `Alt+W` | Open the default model's website and type directly on the page |
+| `Esc` | Cancel in the capture overlay |
+| `Enter` | In the capture toolbar, confirm the currently selected model |
+
+After switching models in the capture toolbar, the new choice is saved as the default model for next time. The screenshot is only written to the clipboard when you click "Copy".
+
+## Browser Selection
+
+AskBridge supports ChatGPT, Gemini, Claude, Doubao, and custom HTTPS providers.
+
+ChatGPT offers two opening modes under "Settings > Browser":
+
+- **Desktop web**: reuses your existing login; screenshots must be uploaded manually.
+- **AskBridge-managed Chrome**: supports automatic screenshot upload after a one-time sign-in inside the isolated browser.
+
+The managed Chrome uses a dedicated `BrowserProfile` and never connects to or modifies your daily Chrome profile.
+
+## Usage Boundaries
+
+- AskBridge does not call model APIs and does not run local models.
+- AskBridge does not read passwords, verification codes, cookies, page content, or chat history.
+- AskBridge does not log question text, screenshot content, clipboard content, or full chat URLs.
+- AskBridge never clicks a website's send button automatically; `auto_submit` is fixed to `false` for all requests.
+- If a login expires, the page structure changes, or attachment preparation fails, the operation stops and shows the reason.
+
+## Data Locations
+
+- Source development environment: the `data` directory at the repository root (detected automatically when running debug builds from `target`)
+- Installed or portable builds: the `data` directory next to `askbridge.exe`
+- Custom location: set the `ASKBRIDGE_DATA_DIR` environment variable to an absolute path
+
+Configuration, logs, and the managed browser profile live at `data/config.json`, `data/logs`, and `data/BrowserProfile` respectively. Temporary screenshots used for web upload are deleted once the operation completes, fails, or is cancelled.
+
+See [Privacy Notes](docs/PRIVACY.md) and [Troubleshooting](docs/TROUBLESHOOTING.md) for more information.
+
+## Development
+
+Requires stable Rust with a Windows GNU or MSVC toolchain, plus the Microsoft Edge WebView2 Runtime.
+
+```powershell
+cargo test --workspace
+cargo build --workspace --release
+cargo xtask help
+```
+
+The `scripts` directory contains project maintenance automation, not user-facing steps:
+
+- `build.ps1` and `test.ps1` are the daily build and test entry points.
+- `package.ps1` and `test-release-local.ps1` are the packaging and full release acceptance entry points.
+- `test-*`, `validate-*`, and `measure-*` are standalone checkers invoked by the entry points above, validating installation, path guards, real UI behavior, and performance data.
+- `cargo xtask` holds performance-report and release-artifact validation logic that can be tested as pure Rust.
+- `Install-AskBridge.ps1` and `Uninstall-AskBridge.ps1` are packaged into release artifacts.
+
+<details>
+<summary>Release maintenance commands</summary>
+
+Full local release acceptance:
+
+```powershell
+./scripts/test-release-local.ps1 -AcceptanceRoot D:/AskBridge/target/release-local-acceptance
+```
+
+An explicit empty directory must be provided when generating installer and portable packages:
+
+```powershell
+./scripts/package.ps1 -ArtifactRoot D:/your-chosen-release-directory
+```
+
+Scripts never write release artifacts to the C drive by default.
+
+</details>
+
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).
