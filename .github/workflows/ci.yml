@@ -57,3 +57,17 @@ jobs:
 
       - name: Build release workspace
         run: cargo build --workspace --release --locked
+
+  # License compliance, advisory, and source checks. Runs on Linux because
+  # these checks resolve the same locked graph regardless of host platform.
+  cargo-deny:
+    name: Dependency check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2

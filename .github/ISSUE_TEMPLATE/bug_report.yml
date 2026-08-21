@@ -1,0 +1,69 @@
+name: Bug 报告
+description: AskBridge 运行异常、功能失效或行为与预期不符时使用
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先查看 [TROUBLESHOOTING](../blob/main/docs/TROUBLESHOOTING.md)，确认不是已知的常见问题。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么
+      description: 请描述问题的具体表现，包括期望行为和实际行为。
+    validations:
+      required: true
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: 复现步骤
+      description: 例如：Alt+Q 框选 → 工具条选择 ChatGPT → Enter 确认，然后……
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: AI 供应商
+      options:
+        - ChatGPT（桌面网页端）
+        - ChatGPT（AskBridge 专用 Chrome）
+        - Gemini
+        - Claude
+        - 豆包
+        - 自定义 HTTPS 供应商
+        - 不涉及具体供应商
+    validations:
+      required: true
+  - type: input
+    id: askbridge-version
+    attributes:
+      label: AskBridge 版本
+      description: 托盘菜单或安装目录中可见，例如 1.0.0。
+    validations:
+      required: true
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows 版本
+      description: 例如 Windows 11 24H2（winver 可查）。
+    validations:
+      required: true
+  - type: input
+    id: browser-version
+    attributes:
+      label: 浏览器及版本
+      description: 涉及网页准备问题时填写，例如 Chrome 138。
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志片段
+      description: 位于 `data/logs`。AskBridge 不记录问题原文和截图内容，但粘贴前请自行确认无敏感信息。
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 截图、录屏或其他有助于定位的信息。
