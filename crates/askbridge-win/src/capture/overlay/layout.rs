@@ -1,0 +1,202 @@
+// Pure layout math for the fallback toolbar and selection handles.
+// No Win32 calls; everything here is unit-testable as plain data.
+
+use windows_sys::Win32::Foundation::RECT;
+
+use crate::capture::toolbar_webview;
+
+const TOOLBAR_GAP: i32 = 12;
+const DROPDOWN_ROW_HEIGHT: i32 = 34;
+const MORE_WIDTH: i32 = 82;
+const PROVIDER_WIDTH: i32 = 202;
+const COPY_WIDTH: i32 = 86;
+const CANCEL_WIDTH: i32 = 86;
+const ASK_WIDTH: i32 = 188;
+const BUTTON_GAP: i32 = 4;
+const TOOLBAR_PADDING: i32 = 10;
+
+pub(super) struct ToolbarLayout {
+    pub(super) outer: RECT,
+    pub(super) more: RECT,
+    pub(super) provider: RECT,
+    pub(super) copy: RECT,
+    pub(super) cancel: RECT,
+    pub(super) ask: RECT,
+    pub(super) dropdown_bounds: RECT,
+    pub(super) dropdown_rects: Vec<RECT>,
+}
+
+pub(super) fn toolbar_layout(
+    client: &RECT,
+    selection_rect: &RECT,
+    provider_count: usize,
+    toolbar_size: (i32, i32),
+) -> ToolbarLayout {
+    let (total_width, toolbar_height) = toolbar_size;
+    let right = selection_rect
+        .right
+        .clamp(client.left + total_width + 8, client.right - 8);
+    let left = right - total_width;
+    let below = selection_rect.bottom + TOOLBAR_GAP;
+    let above = selection_rect.top - toolbar_height - TOOLBAR_GAP;
+    let dropdown_clearance = if provider_count > 1 {
+        (provider_count as i32 * DROPDOWN_ROW_HEIGHT + 12).min(180)
+    } else {
+        0
+    };
+    let preferred_top = if below + toolbar_height + dropdown_clearance <= client.bottom - 8 {
+        below
+    } else {
+        above.max(client.top + 8)
+    };
+    let min_top = client.top + 8;
+    let max_top = (client.bottom - toolbar_height - 8).max(min_top);
+    let top = preferred_top.clamp(min_top, max_top);
+    let outer = RECT {
+        left,
+        top,
+        right: left + total_width,
+        bottom: top + toolbar_height,
+    };
+    let button_top = top + 7;
+    let button_height = 32;
+    let more = RECT {
+        left: left + TOOLBAR_PADDING,
+        top: button_top,
+        right: left + TOOLBAR_PADDING + MORE_WIDTH,
+        bottom: button_top + button_height,
+    };
+    let provider = offset_rect(&more, MORE_WIDTH + BUTTON_GAP, PROVIDER_WIDTH);
+    let copy = offset_rect(&provider, PROVIDER_WIDTH + BUTTON_GAP, COPY_WIDTH);
+    let cancel = offset_rect(&copy, COPY_WIDTH + BUTTON_GAP, CANCEL_WIDTH);
+    let ask = offset_rect(&cancel, CANCEL_WIDTH + BUTTON_GAP, ASK_WIDTH);
+    let dropdown_top =
+        if outer.bottom + DROPDOWN_ROW_HEIGHT * provider_count as i32 <= client.bottom - 8 {
+            outer.bottom + 4
+        } else {
+            outer.top - DROPDOWN_ROW_HEIGHT * provider_count as i32 - 4
+        };
+    let dropdown_bounds = RECT {
+        left: provider.left,
+        top: dropdown_top,
+        right: provider.right,
+        bottom: dropdown_top + DROPDOWN_ROW_HEIGHT * provider_count as i32,
+    };
+    let dropdown_rects = (0..provider_count)
+        .map(|index| RECT {
+            left: dropdown_bounds.left,
+            top: dropdown_bounds.top + DROPDOWN_ROW_HEIGHT * index as i32,
+            right: dropdown_bounds.right,
+            bottom: dropdown_bounds.top + DROPDOWN_ROW_HEIGHT * (index as i32 + 1),
+        })
+        .collect::<Vec<_>>();
+    ToolbarLayout {
+        outer,
+        more,
+        provider,
+        copy,
+        cancel,
+        ask,
+        dropdown_bounds,
+        dropdown_rects,
+    }
+}
+
+fn offset_rect(previous: &RECT, delta_x: i32, width: i32) -> RECT {
+    RECT {
+        left: previous.left + delta_x,
+        top: previous.top,
+        right: previous.left + delta_x + width,
+        bottom: previous.bottom,
+    }
+}
+
+pub(super) fn inset_rect(rect: &RECT, value: i32) -> RECT {
+    RECT {
+        left: rect.left + value,
+        top: rect.top + value,
+        right: rect.right - value,
+        bottom: rect.bottom - value,
+    }
+}
+
+pub(super) fn hit_dropdown(rects: &[RECT], point: (i32, i32)) -> Option<usize> {
+    rects.iter().position(|rect| point_in_rect(point, rect))
+}
+
+pub(super) fn point_in_rect(point: (i32, i32), rect: &RECT) -> bool {
+    point.0 >= rect.left && point.0 < rect.right && point.1 >= rect.top && point.1 < rect.bottom
+}
+
+pub(super) fn fallback_toolbar_size() -> (i32, i32) {
+    (
+        TOOLBAR_PADDING * 2
+            + MORE_WIDTH
+            + PROVIDER_WIDTH
+            + COPY_WIDTH
+            + CANCEL_WIDTH
+            + ASK_WIDTH
+            + BUTTON_GAP * 4,
+        toolbar_webview::preferred_size().1,
+    )
+}
+
+pub(super) fn selection_handle_points(rect: &RECT) -> [(i32, i32); 8] {
+    let mid_x = rect.left + (rect.right - rect.left) / 2;
+    let mid_y = rect.top + (rect.bottom - rect.top) / 2;
+    [
+        (rect.left, rect.top),
+        (mid_x, rect.top),
+        (rect.right, rect.top),
+        (rect.right, mid_y),
+        (rect.right, rect.bottom),
+        (mid_x, rect.bottom),
+        (rect.left, rect.bottom),
+        (rect.left, mid_y),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toolbar_flips_above_when_provider_menu_would_be_clipped() {
+        let client = RECT {
+            left: 0,
+            top: 0,
+            right: 1280,
+            bottom: 720,
+        };
+        let selection = RECT {
+            left: 120,
+            top: 100,
+            right: 1120,
+            bottom: 650,
+        };
+
+        let layout = toolbar_layout(&client, &selection, 4, toolbar_webview::preferred_size());
+
+        assert_eq!(layout.outer.bottom, selection.top - TOOLBAR_GAP);
+    }
+
+    #[test]
+    fn toolbar_right_edge_tracks_selection_right_edge() {
+        let client = RECT {
+            left: 0,
+            top: 0,
+            right: 1440,
+            bottom: 900,
+        };
+        let selection = RECT {
+            left: 180,
+            top: 120,
+            right: 1180,
+            bottom: 640,
+        };
+
+        let layout = toolbar_layout(&client, &selection, 4, toolbar_webview::preferred_size());
+
+        assert_eq!(layout.outer.right, selection.right);
+    }
+}
