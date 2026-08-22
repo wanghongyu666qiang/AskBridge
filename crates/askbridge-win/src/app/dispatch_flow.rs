@@ -9,7 +9,7 @@ use tracing::{error, info};
 use crate::adapter::ProviderHealthCheck;
 use crate::browser::{
     BrowserEvent, BrowserJob, BrowserLaunch, BrowserStage, BrowserSurface, BrowserWarmupJob,
-    DedicatedChromeJob, DesktopPwaJob, ProviderHealthJob,
+    ClipboardPasteJob, DedicatedChromeJob, DesktopPwaJob, ProviderHealthJob,
 };
 
 use super::{controller::Runtime, error_handler::user_facing_error};
@@ -102,8 +102,22 @@ impl Runtime {
                     url_patterns: provider.url_patterns,
                 })
             }
+            BrowserTargetPreference::ClipboardPaste => {
+                BrowserLaunch::ClipboardPaste(ClipboardPasteJob {
+                    start_url: provider.start_url.clone(),
+                    title_keywords: crate::paste_mode::provider_title_keywords(
+                        &provider.id,
+                        &provider.display_name,
+                        &provider.start_url,
+                    ),
+                    locate_timeout: Duration::from_millis(
+                        self.config.browser.page_timeout_ms.max(5_000),
+                    ),
+                })
+            }
         };
         let opens_desktop_pwa = matches!(&launch, BrowserLaunch::DesktopPwa(_));
+        let pastes_clipboard = matches!(&launch, BrowserLaunch::ClipboardPaste(_));
         let job = BrowserJob {
             request: request.clone(),
             policy: match PreparationPolicy::new(self.config.browser.page_timeout_ms) {
@@ -124,6 +138,11 @@ impl Runtime {
             self.tray.notify(
                 "AskBridge 正在打开桌面网页端",
                 "将复用现有桌面快捷方式和其中的登录状态。",
+            );
+        } else if pastes_clipboard {
+            self.tray.notify(
+                "AskBridge 正在通过剪贴板粘贴",
+                "将聚焦目标网页并模拟一次 Ctrl+V；请保持目标窗口可见。",
             );
         } else {
             self.tray.notify(
@@ -171,6 +190,7 @@ impl Runtime {
                     let ready = match surface {
                         BrowserSurface::DedicatedChrome => self.workflow.page_ready(),
                         BrowserSurface::DesktopPwa => self.workflow.desktop_surface_ready(),
+                        BrowserSurface::ClipboardPaste => self.workflow.clipboard_surface_ready(),
                     };
                     if let Err(error) = ready {
                         self.browser_workflow_failed(error);
@@ -192,20 +212,24 @@ impl Runtime {
                         attachment_prepared = outcome.attachment_prepared,
                         "page preparation completed"
                     );
-                    let prepared_message = self.pending_dispatch.as_ref().map_or(
-                        "网页已打开；请在输入框中输入问题并手动发送。",
-                        |request| {
-                            if request.expects_text() && request.image.is_some() {
-                                "文字和附件已验证就绪；请在网页中确认后手动发送。"
-                            } else if request.image.is_some() {
-                                "截图已放入网页输入区；请继续输入问题并手动发送。"
-                            } else if request.expects_text() {
-                                "文字已放入网页输入区；请确认后手动发送。"
-                            } else {
-                                "网页已打开；请在输入框中输入问题并手动发送。"
-                            }
-                        },
-                    );
+                    let prepared_message = if surface == BrowserSurface::ClipboardPaste {
+                        "已向目标窗口发送 Ctrl+V；请确认截图已出现，再手动输入问题并发送。"
+                    } else {
+                        self.pending_dispatch.as_ref().map_or(
+                            "网页已打开；请在输入框中输入问题并手动发送。",
+                            |request| {
+                                if request.expects_text() && request.image.is_some() {
+                                    "文字和附件已验证就绪；请在网页中确认后手动发送。"
+                                } else if request.image.is_some() {
+                                    "截图已放入网页输入区；请继续输入问题并手动发送。"
+                                } else if request.expects_text() {
+                                    "文字已放入网页输入区；请确认后手动发送。"
+                                } else {
+                                    "网页已打开；请在输入框中输入问题并手动发送。"
+                                }
+                            },
+                        )
+                    };
                     self.pending_dispatch = None;
                     if let Err(error) = self.workflow.finish_delivery() {
                         self.browser_workflow_failed(error);

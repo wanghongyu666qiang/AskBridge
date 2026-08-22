@@ -43,6 +43,7 @@ pub struct BrowserJob {
 pub enum BrowserLaunch {
     DedicatedChrome(DedicatedChromeJob),
     DesktopPwa(DesktopPwaJob),
+    ClipboardPaste(ClipboardPasteJob),
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +63,17 @@ pub struct DesktopPwaJob {
     pub configured_shortcut: Option<String>,
     pub start_url: String,
     pub url_patterns: Vec<String>,
+}
+
+/// Inputs for the clipboard-paste target: screenshot to clipboard, focus the
+/// provider website window (opening it if needed), synthesize one Ctrl+V.
+#[derive(Debug, Clone)]
+pub struct ClipboardPasteJob {
+    pub start_url: String,
+    pub title_keywords: Vec<String>,
+    /// Total budget for locating the target window, including the one-time
+    /// cold-open wait when no matching window exists yet.
+    pub locate_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +111,7 @@ pub enum BrowserStage {
 pub enum BrowserSurface {
     DedicatedChrome,
     DesktopPwa,
+    ClipboardPaste,
 }
 
 #[derive(Debug)]
@@ -489,7 +502,66 @@ fn prepare_browser_job(
             );
             Ok(None)
         }
+        BrowserLaunch::ClipboardPaste(paste) => {
+            prepare_clipboard_paste_job(owner, events, cancelled, job, paste)?;
+            Ok(None)
+        }
     }
+}
+
+/// Clipboard-paste target: no CDP at all. Writes the screenshot to the
+/// clipboard, then locates (or opens) the provider website window and
+/// synthesizes a single Ctrl+V into it.
+fn prepare_clipboard_paste_job(
+    owner: usize,
+    events: &Arc<Mutex<VecDeque<BrowserEvent>>>,
+    cancelled: &AtomicBool,
+    dispatch: &BrowserJob,
+    job: &ClipboardPasteJob,
+) -> Result<()> {
+    let request = &dispatch.request;
+    send_stage(owner, events, &request.id, BrowserStage::Started);
+    let Some(image) = request.image.as_ref() else {
+        return Err(AppError::InvalidDispatchRequest(
+            "clipboard paste mode requires a captured screenshot".to_owned(),
+        ));
+    };
+    crate::clipboard_image::copy_image_to_clipboard(owner as HWND, image)?;
+
+    let deadline = Instant::now() + job.locate_timeout;
+    let mut page_opened = false;
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(AppError::BrowserCancelled);
+        }
+        if let Some(window) = crate::paste_mode::find_provider_window(&job.title_keywords) {
+            crate::paste_mode::activate(window)?;
+            crate::paste_mode::send_paste()?;
+            break;
+        }
+        if !page_opened {
+            page_opened = true;
+            crate::paste_mode::open_default_browser(&job.start_url)?;
+        }
+        if Instant::now() >= deadline {
+            return Err(AppError::PasteTargetUnavailable);
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+
+    // validate_for is intentionally skipped: paste mode delivers only the
+    // screenshot, so quick-dispatch prompts are deliberately not filled in.
+    let outcome = PreparationOutcome::prepared(&job.start_url, false, false);
+    send_event(
+        owner,
+        events,
+        BrowserEvent::Prepared {
+            request_id: request.id.clone(),
+            surface: BrowserSurface::ClipboardPaste,
+            outcome,
+        },
+    );
+    Ok(())
 }
 
 fn prepare_dedicated_browser_job(

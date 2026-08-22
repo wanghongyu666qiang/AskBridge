@@ -126,6 +126,9 @@ pub enum AppError {
     #[error("browser operation was cancelled")]
     BrowserCancelled,
 
+    #[error("clipboard paste target window was not found")]
+    PasteTargetUnavailable,
+
     #[error("target not found")]
     TargetNotFound,
 

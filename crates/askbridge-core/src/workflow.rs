@@ -75,6 +75,12 @@ impl WorkflowController {
         Ok(self.state)
     }
 
+    pub fn clipboard_surface_ready(&mut self) -> Result<AppState> {
+        self.require_state(AppState::StartingBrowser, "clipboard_surface_ready")?;
+        self.state = AppState::PreparingPage;
+        Ok(self.state)
+    }
+
     pub fn page_prepared(&mut self) -> Result<AppState> {
         self.require_state(AppState::PreparingPage, "page_prepared")?;
         self.state = AppState::PreparedForUser;

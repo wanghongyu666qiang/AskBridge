@@ -13,7 +13,8 @@ pub use endpoint::DevToolsEndpoint;
 pub use profile::ManagedProfile;
 pub use worker::{
     BrowserEvent, BrowserJob, BrowserLaunch, BrowserService, BrowserStage, BrowserSurface,
-    BrowserWarmupJob, DedicatedChromeJob, DesktopPwaJob, ProviderHealthJob, WM_BROWSER_EVENT,
+    BrowserWarmupJob, ClipboardPasteJob, DedicatedChromeJob, DesktopPwaJob, ProviderHealthJob,
+    WM_BROWSER_EVENT,
 };
 
 #[cfg(test)]

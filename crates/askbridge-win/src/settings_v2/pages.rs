@@ -237,7 +237,7 @@ pub(super) fn create_browser_page(
     scale: UiScale,
     data_root: &Path,
     fonts: &UiFonts,
-) -> Result<(HWND, HWND, HWND, HWND)> {
+) -> Result<(HWND, HWND, HWND, HWND, HWND)> {
     create_label(page, instance, scale, "ChatGPT 打开方式", 12, 8, 210, 24, 0)?;
     let pwa = create_control(
         page,
@@ -269,13 +269,28 @@ pub(super) fn create_browser_page(
         RADIO_CHATGPT_DEDICATED_CHROME,
     )?;
     set_font(dedicated, fonts.body.handle());
+    let clipboard_paste = create_control(
+        page,
+        instance,
+        scale,
+        "BUTTON",
+        "通用粘贴：使用日常浏览器登录状态，聚焦页面后模拟 Ctrl+V（不验证结果）",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON as u32,
+        12,
+        106,
+        680,
+        30,
+        0,
+        RADIO_CHATGPT_CLIPBOARD_PASTE,
+    )?;
+    set_font(clipboard_paste, fonts.body.handle());
     create_label(
         page,
         instance,
         scale,
         "这个选择会同时影响纯文字和截图提问。",
         12,
-        106,
+        140,
         710,
         24,
         0,
@@ -286,7 +301,7 @@ pub(super) fn create_browser_page(
         scale,
         "Chrome 可执行文件",
         12,
-        142,
+        176,
         210,
         24,
         0,
@@ -297,7 +312,7 @@ pub(super) fn create_browser_page(
         scale,
         "留空自动检测；填写时必须是现有 chrome.exe 的绝对路径。",
         230,
-        142,
+        176,
         492,
         24,
         0,
@@ -310,7 +325,7 @@ pub(super) fn create_browser_page(
         "",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
         12,
-        170,
+        204,
         710,
         34,
         WS_EX_CLIENTEDGE,
@@ -323,7 +338,7 @@ pub(super) fn create_browser_page(
         scale,
         "专用 Chrome 生命周期",
         12,
-        226,
+        260,
         210,
         24,
         0,
@@ -336,7 +351,7 @@ pub(super) fn create_browser_page(
         "",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST as u32,
         230,
-        220,
+        254,
         350,
         220,
         0,
@@ -348,7 +363,7 @@ pub(super) fn create_browser_page(
         scale,
         "AskBridge 数据目录",
         12,
-        280,
+        314,
         210,
         24,
         0,
@@ -361,7 +376,7 @@ pub(super) fn create_browser_page(
         &data_root.to_string_lossy(),
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL as u32 | ES_READONLY as u32,
         12,
-        308,
+        342,
         710,
         34,
         WS_EX_CLIENTEDGE,
@@ -374,7 +389,7 @@ pub(super) fn create_browser_page(
         scale,
         "浏览器工具只控制 AskBridge 专用配置，不连接日常 Chrome。",
         12,
-        362,
+        396,
         710,
         24,
         0,
@@ -386,7 +401,7 @@ pub(super) fn create_browser_page(
         fonts,
         "打开 AskBridge 浏览器",
         12,
-        400,
+        434,
         190,
         CONTROL_OPEN_BROWSER,
     )?;
@@ -397,7 +412,7 @@ pub(super) fn create_browser_page(
         fonts,
         "检查连接",
         216,
-        400,
+        434,
         130,
         CONTROL_CHECK_BROWSER,
     )?;
@@ -408,11 +423,11 @@ pub(super) fn create_browser_page(
         fonts,
         "打开默认供应商登录页面",
         360,
-        400,
+        434,
         226,
         CONTROL_OPEN_LOGIN,
     )?;
-    Ok((pwa, dedicated, chrome, lifecycle))
+    Ok((pwa, dedicated, clipboard_paste, chrome, lifecycle))
 }
 
 pub(super) fn create_general_page(

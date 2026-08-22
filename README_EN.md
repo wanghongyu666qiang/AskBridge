@@ -30,10 +30,11 @@ After switching models in the capture toolbar, the new choice is saved as the de
 
 AskBridge supports ChatGPT, Gemini, Claude, Doubao, and custom HTTPS providers.
 
-ChatGPT offers two opening modes under "Settings > Browser":
+ChatGPT offers three opening modes under "Settings > Browser":
 
 - **Desktop web**: reuses your existing login; screenshots must be uploaded manually.
 - **AskBridge-managed Chrome**: supports automatic screenshot upload after a one-time sign-in inside the isolated browser.
+- **Universal paste**: writes the screenshot to the clipboard, focuses the provider website window, and synthesizes one Ctrl+V; you confirm and send manually. This mode uses your daily browser's login state and does not verify the paste result. When no matching page is open, it opens one and waits briefly before pasting.
 
 The managed Chrome uses a dedicated `BrowserProfile` and never connects to or modifies your daily Chrome profile.
 

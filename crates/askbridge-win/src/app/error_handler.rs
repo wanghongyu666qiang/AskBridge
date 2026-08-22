@@ -34,6 +34,9 @@ pub(super) fn user_facing_error(error: &AppError) -> String {
             "无法连接 AskBridge 专用 Chrome，请重试。".to_owned()
         }
         AppError::BrowserCancelled => "浏览器操作已取消。".to_owned(),
+        AppError::PasteTargetUnavailable => {
+            "未能定位目标网页窗口。请先打开对应网站，或在设置中改用其他打开方式。".to_owned()
+        }
         AppError::TargetNotFound => "未找到可用的目标页面。".to_owned(),
         AppError::TargetTimeout => "目标页面加载超时，请检查浏览器后重试。".to_owned(),
         AppError::PreparationFailed { recovery, .. } => match recovery {

@@ -11,6 +11,7 @@ mod clipboard_image;
 mod data_dir;
 mod hotkey_manager;
 mod logging;
+mod paste_mode;
 mod settings_v2;
 mod single_instance;
 mod startup;

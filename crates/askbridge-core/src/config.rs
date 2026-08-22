@@ -374,6 +374,9 @@ pub enum BrowserTargetPreference {
     #[default]
     DedicatedChrome,
     DesktopPwa,
+    /// Screenshot to clipboard, focus the provider website window, and
+    /// synthesize one Ctrl+V. Sending stays manual; the result is unverified.
+    ClipboardPaste,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -508,6 +511,35 @@ mod tests {
         assert!(
             serde_json::from_str::<AppConfig>(
                 r#"{"schema_version":3,"browser":{"lifecycle":"unknown"}}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn browser_target_preference_supports_clipboard_paste() {
+        let mut config: AppConfig = serde_json::from_str(
+            r#"{"schema_version":3,"browser":{"target_preferences":{"chatgpt":"clipboard_paste"}}}"#,
+        )
+        .expect("known target preference");
+        config.migrate().expect("current config");
+        assert_eq!(
+            config.browser.target_preference("chatgpt"),
+            BrowserTargetPreference::ClipboardPaste
+        );
+        assert!(
+            serde_json::to_string(&config)
+                .expect("serialize config")
+                .contains(r#""target_preferences":{"chatgpt":"clipboard_paste"}"#)
+        );
+        // Providers without an entry keep the dedicated-Chrome default.
+        assert_eq!(
+            config.browser.target_preference("gemini"),
+            BrowserTargetPreference::DedicatedChrome
+        );
+        assert!(
+            serde_json::from_str::<AppConfig>(
+                r#"{"schema_version":3,"browser":{"target_preferences":{"chatgpt":"paste"}}}"#
             )
             .is_err()
         );

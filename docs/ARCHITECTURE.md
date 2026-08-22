@@ -21,6 +21,10 @@ Screenshot
 
 截图完成后，应用构造 `DispatchRequest` 并交给单一浏览器工作线程。浏览器服务只使用已选择供应商的 Adapter 来准备网页输入；目标、页面或附件状态不明确时流程停止，不猜测点击或输入。
 
+### 剪贴板粘贴目标
+
+`BrowserTargetPreference::ClipboardPaste` 是一条完全不经过 CDP 的旁路：截图写入系统剪贴板后，`paste_mode` 模块按标题关键词（内置产品名或自定义显示名/URL 主机）枚举浏览器窗口，激活后只合成一次 Ctrl+V。找不到窗口时用默认浏览器打开 `start_url`，在可取消的预算内轮询重试；激活必须确认前台归属，否则 fail-closed 终止并提示用户。该路径无法验证结果，因此完成通知明确要求用户确认；提示词不会自动填入。
+
 ## 专用 Chrome Profile
 
 受管理的 Chrome 使用 AskBridge 独立 `BrowserProfile`，remote debugging endpoint 必须是 loopback。这样可以隔离日常 Chrome 配置，并避免读取或控制用户日常浏览器的 Cookie、密码、验证码和会话。
