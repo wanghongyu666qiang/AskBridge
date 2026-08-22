@@ -12,6 +12,7 @@ use windows_sys::Win32::{
     UI::{
         Input::KeyboardAndMouse::{
             INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_CONTROL,
+            VK_MENU,
         },
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
@@ -131,21 +132,54 @@ unsafe extern "system" fn enum_windows_callback(window: HWND, lparam: LPARAM) ->
 
 /// Restores and focuses the window, refusing to continue unless it really
 /// owns the foreground so Ctrl+V can never land somewhere unexpected.
+///
+/// Windows denies foreground access to background processes. When the plain
+/// call is rejected, a bare Alt tap makes the process satisfy the foreground
+/// permission check (the classic workaround); the verification below still
+/// refuses to continue unless the target really took the foreground.
 pub(crate) fn activate(window: HWND) -> Result<()> {
     // SAFETY: window is a live top-level window on the calling thread's desktop.
     unsafe {
         if IsIconic(window) != 0 {
             ShowWindow(window, SW_RESTORE);
         }
-        SetForegroundWindow(window);
+        if try_focus(window) {
+            return focus_verified(window);
+        }
     }
+    let alt_tap = [
+        keyboard_input(VK_MENU, 0),
+        keyboard_input(VK_MENU, KEYEVENTF_KEYUP),
+    ];
+    // SAFETY: alt_tap is a plain array valid for this synchronous call.
+    unsafe {
+        SendInput(
+            alt_tap.len() as u32,
+            alt_tap.as_ptr(),
+            size_of::<INPUT>() as i32,
+        );
+    }
+    thread::sleep(Duration::from_millis(60));
+    try_focus(window);
+    focus_verified(window)
+}
+
+/// Returns true only when `window` currently owns the foreground.
+fn focus_verified(window: HWND) -> Result<()> {
     thread::sleep(FOCUS_SETTLE);
     // SAFETY: Reading the foreground window is side-effect free.
     let foreground = unsafe { GetForegroundWindow() };
-    if foreground != window {
-        return Err(AppError::PasteTargetUnavailable);
+    if foreground == window {
+        Ok(())
+    } else {
+        Err(AppError::PasteTargetUnavailable)
     }
-    Ok(())
+}
+
+fn try_focus(window: HWND) -> bool {
+    // SAFETY: window is a live top-level window; SetForegroundWindow may be
+    // rejected by the foreground lock, which callers handle by retrying.
+    unsafe { SetForegroundWindow(window) != 0 || GetForegroundWindow() == window }
 }
 
 /// Synthesizes one Ctrl+V keystroke sequence.
