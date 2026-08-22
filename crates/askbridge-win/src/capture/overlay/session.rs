@@ -35,7 +35,7 @@ use crate::{
 
 use super::{
     OVERLAY_CLASS, OverlayProviderChoice, SelectionAction, SelectionResult,
-    draw::{COLOR_KEY, OVERLAY_ALPHA, paint_overlay},
+    draw::{COLOR_KEY, OVERLAY_ALPHA, PaintCache, paint_overlay},
     guards::{DesktopSnapshot, OverlayWindow},
     layout::{fallback_toolbar_size, hit_dropdown, point_in_rect, toolbar_layout},
 };
@@ -234,6 +234,10 @@ enum CancelReason {
 
 #[derive(Default)]
 pub(super) struct OverlayState {
+    /// Declared before `desktop_snapshot` on purpose: struct fields drop in
+    /// declaration order, and the cached snapshot DC inside the paint cache
+    /// must release the snapshot bitmap before its owner deletes it.
+    pub(super) paint_cache: PaintCache,
     instance: HINSTANCE,
     pub(super) desktop_snapshot: Option<DesktopSnapshot>,
     anchor: Option<(i32, i32)>,

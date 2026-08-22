@@ -1,5 +1,10 @@
 // Overlay painting: double-buffered frame composition, toolbar drawing
 // (GDI+ with a plain GDI fallback), and the shared color palette.
+//
+// GDI objects are expensive to create, and WM_PAINT fires on every mouse
+// move during a drag. `PaintCache` keeps the per-window resources (double
+// buffer, snapshot DC, font, brushes, pens, alpha-blend source) alive for
+// the whole overlay session instead of rebuilding them per paint.
 
 use std::{mem::zeroed, ptr};
 
@@ -10,8 +15,8 @@ use windows_sys::Win32::{
         AC_SRC_OVER, AlphaBlend, BLENDFUNCTION, BeginPaint, BitBlt, CreateCompatibleBitmap,
         CreateCompatibleDC, CreateFontW, CreatePen, CreateSolidBrush, DT_CENTER, DT_LEFT,
         DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect,
-        FrameRect, LineTo, MoveToEx, PAINTSTRUCT, PS_SOLID, Rectangle, RoundRect, SRCCOPY,
-        SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
+        FrameRect, HBITMAP, HBRUSH, HFONT, HPEN, LineTo, MoveToEx, PAINTSTRUCT, PS_SOLID,
+        Rectangle, RoundRect, SRCCOPY, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
     },
     UI::WindowsAndMessaging::GetClientRect,
 };
@@ -22,7 +27,7 @@ use super::{
     gdiplus::GdiPlusSession,
     guards::DesktopSnapshot,
     layout::{fallback_toolbar_size, inset_rect, selection_handle_points, toolbar_layout},
-    session::{OverlayState, ToolbarState},
+    session::ToolbarState,
 };
 
 pub(super) const COLOR_KEY: COLORREF = rgb(255, 0, 255);
@@ -45,7 +50,266 @@ pub(super) const OVERLAY_ALPHA: u8 = 145;
 const TOOLBAR_RADIUS: i32 = 18;
 const HANDLE_RADIUS: i32 = 5;
 
-pub(super) fn paint_overlay(window: HWND, state: &OverlayState) {
+/// Everything the frame needs from the session, resolved once per paint so
+/// painting never has to reach back into [`OverlayState`](super::session::OverlayState).
+struct FrameInputs<'a> {
+    snapshot: Option<&'a DesktopSnapshot>,
+    selection: Option<ScreenRect>,
+    locked: bool,
+    fallback_toolbar: Option<&'a ToolbarState>,
+}
+
+/// GDI resources reused across paints for one overlay window.
+///
+/// All handles are created and used on the UI thread only. The struct must
+/// be dropped before the session's [`DesktopSnapshot`]: the cached snapshot
+/// DC keeps that bitmap selected, and a bitmap must not be deleted while a
+/// DC holds it. `OverlayState` therefore declares this field first.
+pub(super) struct PaintCache {
+    buffer_dc: *mut core::ffi::c_void,
+    buffer_bitmap: HBITMAP,
+    buffer_old_bitmap: *mut core::ffi::c_void,
+    buffer_width: i32,
+    buffer_height: i32,
+    snapshot_dc: *mut core::ffi::c_void,
+    snapshot_old_bitmap: *mut core::ffi::c_void,
+    snapshot_failed: bool,
+    alpha_dc: *mut core::ffi::c_void,
+    alpha_bitmap: HBITMAP,
+    alpha_old_bitmap: *mut core::ffi::c_void,
+    alpha_failed: bool,
+    font: HFONT,
+    brushes: Vec<(COLORREF, HBRUSH)>,
+    pens: Vec<(COLORREF, i32, HPEN)>,
+}
+
+impl Default for PaintCache {
+    fn default() -> Self {
+        Self {
+            buffer_dc: ptr::null_mut(),
+            buffer_bitmap: ptr::null_mut(),
+            buffer_old_bitmap: ptr::null_mut(),
+            buffer_width: 0,
+            buffer_height: 0,
+            snapshot_dc: ptr::null_mut(),
+            snapshot_old_bitmap: ptr::null_mut(),
+            snapshot_failed: false,
+            alpha_dc: ptr::null_mut(),
+            alpha_bitmap: ptr::null_mut(),
+            alpha_old_bitmap: ptr::null_mut(),
+            alpha_failed: false,
+            font: ptr::null_mut(),
+            brushes: Vec::new(),
+            pens: Vec::new(),
+        }
+    }
+}
+
+impl PaintCache {
+    /// Returns the double-buffer memory DC with a client-size bitmap
+    /// selected, recreating the bitmap when the client size changes.
+    /// Returns null when double buffering is unavailable for this paint.
+    unsafe fn ensure_buffer(
+        &mut self,
+        device_context: *mut core::ffi::c_void,
+        width: i32,
+        height: i32,
+    ) -> *mut core::ffi::c_void {
+        // SAFETY: device_context is a live paint DC; handles stay on the UI thread.
+        unsafe {
+            if width <= 0 || height <= 0 {
+                return ptr::null_mut();
+            }
+            if self.buffer_dc.is_null() {
+                let dc = CreateCompatibleDC(device_context);
+                if dc.is_null() {
+                    return ptr::null_mut();
+                }
+                self.buffer_dc = dc;
+            }
+            if self.buffer_width != width || self.buffer_height != height {
+                if !self.buffer_bitmap.is_null() {
+                    if !self.buffer_old_bitmap.is_null() {
+                        SelectObject(self.buffer_dc, self.buffer_old_bitmap);
+                    }
+                    DeleteObject(self.buffer_bitmap);
+                    self.buffer_bitmap = ptr::null_mut();
+                    self.buffer_old_bitmap = ptr::null_mut();
+                }
+                let bitmap = CreateCompatibleBitmap(device_context, width, height);
+                if bitmap.is_null() {
+                    self.buffer_width = 0;
+                    self.buffer_height = 0;
+                    return ptr::null_mut();
+                }
+                let old_bitmap = SelectObject(self.buffer_dc, bitmap);
+                if old_bitmap.is_null() {
+                    DeleteObject(bitmap);
+                    return ptr::null_mut();
+                }
+                self.buffer_bitmap = bitmap;
+                self.buffer_old_bitmap = old_bitmap;
+                self.buffer_width = width;
+                self.buffer_height = height;
+            }
+            self.buffer_dc
+        }
+    }
+
+    /// Returns a memory DC with the desktop snapshot bitmap kept selected
+    /// for the lifetime of the cache. Returns null when unavailable.
+    unsafe fn ensure_snapshot_dc(
+        &mut self,
+        device_context: *mut core::ffi::c_void,
+        snapshot: &DesktopSnapshot,
+    ) -> *mut core::ffi::c_void {
+        if self.snapshot_failed {
+            return ptr::null_mut();
+        }
+        if !self.snapshot_dc.is_null() {
+            return self.snapshot_dc;
+        }
+        // SAFETY: device_context is live and snapshot.bitmap outlives the cache.
+        unsafe {
+            let dc = CreateCompatibleDC(device_context);
+            if dc.is_null() {
+                self.snapshot_failed = true;
+                return ptr::null_mut();
+            }
+            let old_bitmap = SelectObject(dc, snapshot.bitmap);
+            if old_bitmap.is_null() {
+                DeleteDC(dc);
+                self.snapshot_failed = true;
+                return ptr::null_mut();
+            }
+            self.snapshot_dc = dc;
+            self.snapshot_old_bitmap = old_bitmap;
+            dc
+        }
+    }
+
+    /// Returns the shared label font, creating it on first use.
+    unsafe fn ensure_font(&mut self) -> HFONT {
+        if self.font.is_null() {
+            let face = wide("Microsoft YaHei UI");
+            // SAFETY: face is nul-terminated and valid for this synchronous call.
+            self.font =
+                unsafe { CreateFontW(-16, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr()) };
+        }
+        self.font
+    }
+
+    fn brush(&mut self, color: COLORREF) -> HBRUSH {
+        if let Some((_, brush)) = self.brushes.iter().find(|(cached, _)| *cached == color) {
+            return *brush;
+        }
+        // SAFETY: color is a plain value; the handle joins the cache.
+        let brush = unsafe { CreateSolidBrush(color) };
+        if !brush.is_null() {
+            self.brushes.push((color, brush));
+        }
+        brush
+    }
+
+    fn pen(&mut self, color: COLORREF, width: i32) -> HPEN {
+        if let Some((_, _, pen)) = self.pens.iter().find(|(cached_color, cached_width, _)| {
+            *cached_color == color && *cached_width == width
+        }) {
+            return *pen;
+        }
+        // SAFETY: arguments are plain values; the handle joins the cache.
+        let pen = unsafe { CreatePen(PS_SOLID, width, color) };
+        if !pen.is_null() {
+            self.pens.push((color, width, pen));
+        }
+        pen
+    }
+
+    /// Returns the 1×1 source DC used for alpha-blended dim rectangles.
+    unsafe fn ensure_alpha_source(
+        &mut self,
+        device_context: *mut core::ffi::c_void,
+    ) -> *mut core::ffi::c_void {
+        if self.alpha_failed {
+            return ptr::null_mut();
+        }
+        if !self.alpha_dc.is_null() {
+            return self.alpha_dc;
+        }
+        // SAFETY: device_context is a live paint DC; handles stay on the UI thread.
+        unsafe {
+            let dc = CreateCompatibleDC(device_context);
+            if dc.is_null() {
+                self.alpha_failed = true;
+                return ptr::null_mut();
+            }
+            let bitmap = CreateCompatibleBitmap(device_context, 1, 1);
+            if bitmap.is_null() {
+                DeleteDC(dc);
+                self.alpha_failed = true;
+                return ptr::null_mut();
+            }
+            let old_bitmap = SelectObject(dc, bitmap);
+            if old_bitmap.is_null() {
+                DeleteObject(bitmap);
+                DeleteDC(dc);
+                self.alpha_failed = true;
+                return ptr::null_mut();
+            }
+            self.alpha_dc = dc;
+            self.alpha_bitmap = bitmap;
+            self.alpha_old_bitmap = old_bitmap;
+            dc
+        }
+    }
+}
+
+impl Drop for PaintCache {
+    fn drop(&mut self) {
+        // SAFETY: Every handle here was created by this cache on the UI thread.
+        unsafe {
+            if !self.buffer_dc.is_null() {
+                if !self.buffer_bitmap.is_null() && !self.buffer_old_bitmap.is_null() {
+                    SelectObject(self.buffer_dc, self.buffer_old_bitmap);
+                }
+                DeleteDC(self.buffer_dc);
+            }
+            if !self.buffer_bitmap.is_null() {
+                DeleteObject(self.buffer_bitmap);
+            }
+            if !self.snapshot_dc.is_null() {
+                if !self.snapshot_old_bitmap.is_null() {
+                    SelectObject(self.snapshot_dc, self.snapshot_old_bitmap);
+                }
+                DeleteDC(self.snapshot_dc);
+            }
+            if !self.alpha_dc.is_null() {
+                if !self.alpha_old_bitmap.is_null() {
+                    SelectObject(self.alpha_dc, self.alpha_old_bitmap);
+                }
+                DeleteDC(self.alpha_dc);
+            }
+            if !self.alpha_bitmap.is_null() {
+                DeleteObject(self.alpha_bitmap);
+            }
+            if !self.font.is_null() {
+                DeleteObject(self.font);
+            }
+            for (_, brush) in self.brushes.drain(..) {
+                if !brush.is_null() {
+                    DeleteObject(brush);
+                }
+            }
+            for (_, _, pen) in self.pens.drain(..) {
+                if !pen.is_null() {
+                    DeleteObject(pen);
+                }
+            }
+        }
+    }
+}
+
+pub(super) fn paint_overlay(window: HWND, state: &mut super::session::OverlayState) {
     // SAFETY: window is handling WM_PAINT and paint remains valid through EndPaint.
     unsafe {
         let mut paint: PAINTSTRUCT = zeroed();
@@ -57,45 +321,56 @@ pub(super) fn paint_overlay(window: HWND, state: &OverlayState) {
         GetClientRect(window, &mut client);
         let width = client.right - client.left;
         let height = client.bottom - client.top;
-        let memory_context = CreateCompatibleDC(device_context);
-        let bitmap = if memory_context.is_null() || width <= 0 || height <= 0 {
-            ptr::null_mut()
-        } else {
-            CreateCompatibleBitmap(device_context, width, height)
+
+        let inputs = FrameInputs {
+            snapshot: state.desktop_snapshot.as_ref(),
+            selection: state.selection(),
+            locked: state.locked_selection.is_some(),
+            fallback_toolbar: if state.locked_selection.is_some()
+                && state.web_toolbar.is_none()
+                && state.web_toolbar_failed
+            {
+                state.toolbar.as_ref()
+            } else {
+                None
+            },
         };
-        if memory_context.is_null() || bitmap.is_null() {
-            if !memory_context.is_null() {
-                DeleteDC(memory_context);
-            }
-            draw_overlay_frame(device_context, &client, state);
-            EndPaint(window, &paint);
-            return;
-        }
 
-        let previous_bitmap = SelectObject(memory_context, bitmap);
-        if previous_bitmap.is_null() {
-            DeleteObject(bitmap);
-            DeleteDC(memory_context);
-            draw_overlay_frame(device_context, &client, state);
-            EndPaint(window, &paint);
-            return;
-        }
+        let buffer_dc = state
+            .paint_cache
+            .ensure_buffer(device_context, width, height);
+        let (target_context, direct_draw) = if !buffer_dc.is_null() {
+            (buffer_dc, false)
+        } else {
+            (device_context, true)
+        };
+        // One GDI+ session per paint, shared by every antialiased path. It must
+        // be bound to the context actually drawn into, matching where the
+        // per-call sessions used to start.
+        let gdi_session = GdiPlusSession::start(target_context);
 
-        draw_overlay_frame(memory_context, &client, state);
-        BitBlt(
-            device_context,
-            client.left,
-            client.top,
-            width,
-            height,
-            memory_context,
-            0,
-            0,
-            SRCCOPY,
+        draw_overlay_frame(
+            target_context,
+            &client,
+            &inputs,
+            &mut state.paint_cache,
+            gdi_session.as_ref(),
         );
-        SelectObject(memory_context, previous_bitmap);
-        DeleteObject(bitmap);
-        DeleteDC(memory_context);
+
+        if !direct_draw {
+            BitBlt(
+                device_context,
+                client.left,
+                client.top,
+                width,
+                height,
+                target_context,
+                0,
+                0,
+                SRCCOPY,
+            );
+        }
+        drop(gdi_session);
         EndPaint(window, &paint);
     }
 }
@@ -103,18 +378,20 @@ pub(super) fn paint_overlay(window: HWND, state: &OverlayState) {
 unsafe fn draw_overlay_frame(
     device_context: *mut core::ffi::c_void,
     client: &RECT,
-    state: &OverlayState,
+    inputs: &FrameInputs<'_>,
+    cache: &mut PaintCache,
+    gdi: Option<&GdiPlusSession>,
 ) {
     // SAFETY: device_context is a live paint or compatible memory DC.
     unsafe {
-        let has_snapshot = draw_desktop_snapshot(device_context, state.desktop_snapshot.as_ref());
+        let has_snapshot = draw_desktop_snapshot(device_context, inputs.snapshot, cache);
         if has_snapshot {
-            dim_selection_backdrop(device_context, client, state.selection());
+            dim_selection_backdrop(device_context, client, inputs.selection, cache);
         } else {
-            fill(device_context, client, COLOR_OVERLAY);
+            fill(device_context, client, COLOR_OVERLAY, cache);
         }
 
-        if let Some(selection) = state.selection() {
+        if let Some(selection) = inputs.selection {
             let selection_rect = RECT {
                 left: selection.left,
                 top: selection.top,
@@ -122,31 +399,34 @@ unsafe fn draw_overlay_frame(
                 bottom: selection.bottom() as i32,
             };
             if !has_snapshot {
-                fill(device_context, &selection_rect, COLOR_KEY);
+                fill(device_context, &selection_rect, COLOR_KEY, cache);
             }
             if has_snapshot {
-                if let Some(gdi) = GdiPlusSession::start(device_context) {
-                    draw_selection_frame_antialiased(&gdi, &selection_rect);
-                    draw_selection_handles_antialiased(&gdi, &selection_rect);
+                if let Some(gdi) = gdi {
+                    draw_selection_frame_antialiased(gdi, &selection_rect);
+                    draw_selection_handles_antialiased(gdi, &selection_rect);
                 } else {
-                    frame(device_context, &selection_rect, COLOR_BORDER);
-                    draw_selection_handles(device_context, &selection_rect);
+                    frame(device_context, &selection_rect, COLOR_BORDER, cache);
+                    draw_selection_handles(device_context, &selection_rect, gdi, cache);
                 }
             } else {
-                frame(device_context, &selection_rect, COLOR_BORDER);
-                draw_selection_handles(device_context, &selection_rect);
+                frame(device_context, &selection_rect, COLOR_BORDER, cache);
+                draw_selection_handles(device_context, &selection_rect, gdi, cache);
             }
-            draw_size_label(device_context, client, &selection_rect, selection);
-            if state.locked_selection.is_some()
-                && let Some(toolbar) = &state.toolbar
-                && state.web_toolbar.is_none()
-                && state.web_toolbar_failed
-            {
-                draw_toolbar(device_context, client, &selection_rect, toolbar);
+            draw_size_label(
+                device_context,
+                client,
+                &selection_rect,
+                selection,
+                cache,
+                gdi,
+            );
+            if let Some(toolbar) = inputs.fallback_toolbar {
+                draw_toolbar(device_context, client, &selection_rect, toolbar, cache, gdi);
             }
         }
-        if state.locked_selection.is_none() {
-            draw_instructions(device_context, client);
+        if !inputs.locked {
+            draw_instructions(device_context, client, cache);
         }
     }
 }
@@ -156,6 +436,8 @@ unsafe fn draw_toolbar(
     client: &RECT,
     selection_rect: &RECT,
     toolbar: &ToolbarState,
+    cache: &mut PaintCache,
+    gdi: Option<&GdiPlusSession>,
 ) {
     let layout = toolbar_layout(
         client,
@@ -164,10 +446,9 @@ unsafe fn draw_toolbar(
         fallback_toolbar_size(),
     );
     unsafe {
-        if let Some(gdi) = GdiPlusSession::start(device_context) {
-            draw_toolbar_antialiased(&gdi, &layout, toolbar);
-            drop(gdi);
-            draw_toolbar_labels(device_context, &layout, toolbar);
+        if let Some(gdi) = gdi {
+            draw_toolbar_antialiased(gdi, &layout, toolbar);
+            draw_toolbar_labels(device_context, &layout, toolbar, cache);
             return;
         }
         rounded_rect(
@@ -176,6 +457,7 @@ unsafe fn draw_toolbar(
             COLOR_TOOLBAR,
             COLOR_TOOLBAR_BORDER,
             TOOLBAR_RADIUS,
+            cache,
         );
         draw_toolbar_item(
             device_context,
@@ -183,6 +465,7 @@ unsafe fn draw_toolbar(
             "更多",
             ToolbarIcon::More,
             false,
+            cache,
         );
         draw_toolbar_item(
             device_context,
@@ -190,6 +473,7 @@ unsafe fn draw_toolbar(
             &toolbar.providers[toolbar.selected_index].display_name,
             ToolbarIcon::Provider,
             true,
+            cache,
         );
         draw_toolbar_item(
             device_context,
@@ -197,6 +481,7 @@ unsafe fn draw_toolbar(
             "复制",
             ToolbarIcon::Copy,
             false,
+            cache,
         );
         draw_toolbar_item(
             device_context,
@@ -204,6 +489,7 @@ unsafe fn draw_toolbar(
             "取消",
             ToolbarIcon::Cancel,
             false,
+            cache,
         );
         draw_toolbar_item(
             device_context,
@@ -214,6 +500,7 @@ unsafe fn draw_toolbar(
             ),
             ToolbarIcon::Ask,
             false,
+            cache,
         );
         if toolbar.dropdown_open {
             rounded_rect(
@@ -222,6 +509,7 @@ unsafe fn draw_toolbar(
                 COLOR_TOOLBAR,
                 COLOR_TOOLBAR_BORDER,
                 12,
+                cache,
             );
             for (index, rect) in layout.dropdown_rects.iter().enumerate() {
                 if index == toolbar.selected_index {
@@ -231,6 +519,7 @@ unsafe fn draw_toolbar(
                         COLOR_DROPDOWN_SELECTED,
                         COLOR_DROPDOWN_SELECTED,
                         8,
+                        cache,
                     );
                 }
                 draw_text_in_rect(
@@ -239,6 +528,7 @@ unsafe fn draw_toolbar(
                     &toolbar.providers[index].display_name,
                     COLOR_TOOLBAR_TEXT,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+                    cache,
                 );
             }
         }
@@ -289,16 +579,18 @@ unsafe fn draw_toolbar_labels(
     device_context: *mut core::ffi::c_void,
     layout: &super::layout::ToolbarLayout,
     toolbar: &ToolbarState,
+    cache: &mut PaintCache,
 ) {
     unsafe {
-        draw_toolbar_label(device_context, &layout.more, "更多");
+        draw_toolbar_label(device_context, &layout.more, "更多", cache);
         draw_toolbar_label(
             device_context,
             &layout.provider,
             &toolbar.providers[toolbar.selected_index].display_name,
+            cache,
         );
-        draw_toolbar_label(device_context, &layout.copy, "复制");
-        draw_toolbar_label(device_context, &layout.cancel, "取消");
+        draw_toolbar_label(device_context, &layout.copy, "复制", cache);
+        draw_toolbar_label(device_context, &layout.cancel, "取消", cache);
         draw_toolbar_label(
             device_context,
             &layout.ask,
@@ -306,6 +598,7 @@ unsafe fn draw_toolbar_labels(
                 "问问 {}",
                 toolbar.providers[toolbar.selected_index].display_name
             ),
+            cache,
         );
         if toolbar.dropdown_open {
             for (index, rect) in layout.dropdown_rects.iter().enumerate() {
@@ -315,13 +608,19 @@ unsafe fn draw_toolbar_labels(
                     &toolbar.providers[index].display_name,
                     COLOR_TOOLBAR_TEXT,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+                    cache,
                 );
             }
         }
     }
 }
 
-unsafe fn draw_toolbar_label(device_context: *mut core::ffi::c_void, rect: &RECT, label: &str) {
+unsafe fn draw_toolbar_label(
+    device_context: *mut core::ffi::c_void,
+    rect: &RECT,
+    label: &str,
+    cache: &mut PaintCache,
+) {
     let text_rect = RECT {
         left: rect.left + 34,
         top: rect.top,
@@ -335,6 +634,7 @@ unsafe fn draw_toolbar_label(device_context: *mut core::ffi::c_void, rect: &RECT
             label,
             COLOR_TOOLBAR_TEXT,
             DT_LEFT,
+            cache,
         );
     }
 }
@@ -342,6 +642,7 @@ unsafe fn draw_toolbar_label(device_context: *mut core::ffi::c_void, rect: &RECT
 unsafe fn draw_desktop_snapshot(
     device_context: *mut core::ffi::c_void,
     snapshot: Option<&DesktopSnapshot>,
+    cache: &mut PaintCache,
 ) -> bool {
     let Some(snapshot) = snapshot else {
         return false;
@@ -350,17 +651,14 @@ unsafe fn draw_desktop_snapshot(
         return false;
     }
 
+    // SAFETY: device_context is live and the cached DC keeps only the snapshot selected.
+    let snapshot_context = unsafe { cache.ensure_snapshot_dc(device_context, snapshot) };
+    if snapshot_context.is_null() {
+        return false;
+    }
+    // SAFETY: Source and destination DCs are valid with matching dimensions.
     unsafe {
-        let snapshot_context = CreateCompatibleDC(device_context);
-        if snapshot_context.is_null() {
-            return false;
-        }
-        let old_bitmap = SelectObject(snapshot_context, snapshot.bitmap);
-        if old_bitmap.is_null() {
-            DeleteDC(snapshot_context);
-            return false;
-        }
-        let copied = BitBlt(
+        BitBlt(
             device_context,
             0,
             0,
@@ -370,10 +668,7 @@ unsafe fn draw_desktop_snapshot(
             0,
             0,
             SRCCOPY,
-        ) != 0;
-        SelectObject(snapshot_context, old_bitmap);
-        DeleteDC(snapshot_context);
-        copied
+        ) != 0
     }
 }
 
@@ -381,10 +676,11 @@ unsafe fn dim_selection_backdrop(
     device_context: *mut core::ffi::c_void,
     client: &RECT,
     selection: Option<ScreenRect>,
+    cache: &mut PaintCache,
 ) {
     let Some(selection) = selection else {
         unsafe {
-            alpha_fill(device_context, client, COLOR_OVERLAY, OVERLAY_ALPHA);
+            alpha_fill(device_context, client, COLOR_OVERLAY, OVERLAY_ALPHA, cache);
         }
         return;
     };
@@ -421,7 +717,7 @@ unsafe fn dim_selection_backdrop(
         },
     ] {
         unsafe {
-            alpha_fill(device_context, &rect, COLOR_OVERLAY, OVERLAY_ALPHA);
+            alpha_fill(device_context, &rect, COLOR_OVERLAY, OVERLAY_ALPHA, cache);
         }
     }
 }
@@ -431,39 +727,41 @@ unsafe fn alpha_fill(
     rect: &RECT,
     color: COLORREF,
     alpha: u8,
+    cache: &mut PaintCache,
 ) {
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     if width <= 0 || height <= 0 {
         return;
     }
+    // SAFETY: device_context is a live paint or compatible memory DC.
+    let source_context = unsafe { cache.ensure_alpha_source(device_context) };
+    if source_context.is_null() {
+        // SAFETY: device_context and rect are valid for the current paint.
+        unsafe {
+            fill(device_context, rect, color, cache);
+        }
+        return;
+    }
+    let source_rect = RECT {
+        left: 0,
+        top: 0,
+        right: 1,
+        bottom: 1,
+    };
+    // SAFETY: source_context owns the cached 1×1 bitmap for this paint.
     unsafe {
-        let source_context = CreateCompatibleDC(device_context);
-        if source_context.is_null() {
-            fill(device_context, rect, color);
-            return;
-        }
-        let source_bitmap = CreateCompatibleBitmap(device_context, 1, 1);
-        if source_bitmap.is_null() {
-            DeleteDC(source_context);
-            fill(device_context, rect, color);
-            return;
-        }
-        let old_bitmap = SelectObject(source_context, source_bitmap);
-        let source_rect = RECT {
-            left: 0,
-            top: 0,
-            right: 1,
-            bottom: 1,
-        };
-        fill(source_context, &source_rect, color);
-        let blend = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER as u8,
-            BlendFlags: 0,
-            SourceConstantAlpha: alpha,
-            AlphaFormat: 0,
-        };
-        let blended = AlphaBlend(
+        fill(source_context, &source_rect, color, cache);
+    }
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: alpha,
+        AlphaFormat: 0,
+    };
+    // SAFETY: Source and destination DCs are valid for this synchronous blend.
+    let blended = unsafe {
+        AlphaBlend(
             device_context,
             rect.left,
             rect.top,
@@ -475,15 +773,13 @@ unsafe fn alpha_fill(
             1,
             1,
             blend,
-        );
-        if blended == 0 {
-            fill(device_context, rect, color);
+        )
+    };
+    if blended == 0 {
+        // SAFETY: device_context and rect are valid for the current paint.
+        unsafe {
+            fill(device_context, rect, color, cache);
         }
-        if !old_bitmap.is_null() {
-            SelectObject(source_context, old_bitmap);
-        }
-        DeleteObject(source_bitmap);
-        DeleteDC(source_context);
     }
 }
 
@@ -502,6 +798,7 @@ unsafe fn draw_toolbar_item(
     label: &str,
     icon: ToolbarIcon,
     highlighted: bool,
+    cache: &mut PaintCache,
 ) {
     unsafe {
         if highlighted {
@@ -511,9 +808,10 @@ unsafe fn draw_toolbar_item(
                 COLOR_TOOLBAR_HOVER,
                 COLOR_TOOLBAR_HOVER,
                 10,
+                cache,
             );
         }
-        draw_toolbar_icon(device_context, rect, icon, COLOR_TOOLBAR_TEXT);
+        draw_toolbar_icon(device_context, rect, icon, COLOR_TOOLBAR_TEXT, cache);
         let text_rect = RECT {
             left: rect.left + 34,
             top: rect.top,
@@ -526,6 +824,7 @@ unsafe fn draw_toolbar_item(
             label,
             COLOR_TOOLBAR_TEXT,
             DT_LEFT,
+            cache,
         );
     }
 }
@@ -536,6 +835,7 @@ unsafe fn draw_text_in_rect(
     text: &str,
     color: COLORREF,
     format: u32,
+    cache: &mut PaintCache,
 ) {
     let mut text_rect = RECT {
         left: rect.left,
@@ -544,9 +844,9 @@ unsafe fn draw_text_in_rect(
         bottom: rect.bottom,
     };
     let text = wide(text);
-    let face = wide("Microsoft YaHei UI");
+    // SAFETY: device_context is live; the cached font outlives this call.
     unsafe {
-        let font = CreateFontW(-16, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr());
+        let font = cache.ensure_font();
         let previous_font = if font.is_null() {
             ptr::null_mut()
         } else {
@@ -564,9 +864,6 @@ unsafe fn draw_text_in_rect(
         if !previous_font.is_null() {
             SelectObject(device_context, previous_font);
         }
-        if !font.is_null() {
-            DeleteObject(font);
-        }
     }
 }
 
@@ -575,11 +872,13 @@ unsafe fn draw_toolbar_icon(
     rect: &RECT,
     icon: ToolbarIcon,
     color: COLORREF,
+    cache: &mut PaintCache,
 ) {
     let cx = rect.left + 18;
     let cy = rect.top + (rect.bottom - rect.top) / 2;
+    // SAFETY: device_context is live; the cached pen stays selected only here.
     unsafe {
-        let pen = CreatePen(PS_SOLID, 2, color);
+        let pen = cache.pen(color, 2);
         let previous_pen = if pen.is_null() {
             ptr::null_mut()
         } else {
@@ -622,9 +921,6 @@ unsafe fn draw_toolbar_icon(
         }
         if !previous_pen.is_null() {
             SelectObject(device_context, previous_pen);
-        }
-        if !pen.is_null() {
-            DeleteObject(pen);
         }
     }
 }
@@ -757,26 +1053,34 @@ fn draw_toolbar_icon_antialiased(gdi: &GdiPlusSession, rect: &RECT, icon: Toolba
     }
 }
 
-unsafe fn fill(device_context: *mut core::ffi::c_void, rect: &RECT, color: COLORREF) {
-    // SAFETY: device_context and rect are valid for the current paint.
-    let brush = unsafe { CreateSolidBrush(color) };
-    if !brush.is_null() {
-        // SAFETY: brush is live for the synchronous FillRect call.
-        unsafe {
+unsafe fn fill(
+    device_context: *mut core::ffi::c_void,
+    rect: &RECT,
+    color: COLORREF,
+    cache: &mut PaintCache,
+) {
+    // SAFETY: device_context and rect are valid for the current paint, and
+    // the cached brush is live for the synchronous FillRect call.
+    unsafe {
+        let brush = cache.brush(color);
+        if !brush.is_null() {
             FillRect(device_context, rect, brush);
-            DeleteObject(brush);
         }
     }
 }
 
-unsafe fn frame(device_context: *mut core::ffi::c_void, rect: &RECT, color: COLORREF) {
-    // SAFETY: device_context and rect are valid for the current paint.
-    let brush = unsafe { CreateSolidBrush(color) };
-    if !brush.is_null() {
-        // SAFETY: brush is live for the synchronous FrameRect call.
-        unsafe {
+unsafe fn frame(
+    device_context: *mut core::ffi::c_void,
+    rect: &RECT,
+    color: COLORREF,
+    cache: &mut PaintCache,
+) {
+    // SAFETY: device_context and rect are valid for the current paint, and
+    // the cached brush is live for the synchronous FrameRect call.
+    unsafe {
+        let brush = cache.brush(color);
+        if !brush.is_null() {
             FrameRect(device_context, rect, brush);
-            DeleteObject(brush);
         }
     }
 }
@@ -787,10 +1091,11 @@ unsafe fn rounded_rect(
     fill_color: COLORREF,
     border_color: COLORREF,
     radius: i32,
+    cache: &mut PaintCache,
 ) {
     unsafe {
-        let brush = CreateSolidBrush(fill_color);
-        let pen = CreatePen(PS_SOLID, 1, border_color);
+        let brush = cache.brush(fill_color);
+        let pen = cache.pen(border_color, 1);
         let previous_brush = if brush.is_null() {
             ptr::null_mut()
         } else {
@@ -816,19 +1121,18 @@ unsafe fn rounded_rect(
         if !previous_pen.is_null() {
             SelectObject(device_context, previous_pen);
         }
-        if !brush.is_null() {
-            DeleteObject(brush);
-        }
-        if !pen.is_null() {
-            DeleteObject(pen);
-        }
     }
 }
 
-unsafe fn draw_selection_handles(device_context: *mut core::ffi::c_void, rect: &RECT) {
+unsafe fn draw_selection_handles(
+    device_context: *mut core::ffi::c_void,
+    rect: &RECT,
+    gdi: Option<&GdiPlusSession>,
+    cache: &mut PaintCache,
+) {
     let points = selection_handle_points(rect);
-    if let Some(gdi) = unsafe { GdiPlusSession::start(device_context) } {
-        draw_selection_handles_antialiased(&gdi, rect);
+    if let Some(gdi) = gdi {
+        draw_selection_handles_antialiased(gdi, rect);
         return;
     }
     for (x, y) in points {
@@ -841,6 +1145,7 @@ unsafe fn draw_selection_handles(device_context: *mut core::ffi::c_void, rect: &
                 y + HANDLE_RADIUS,
                 COLOR_BORDER,
                 COLOR_TOOLBAR_BORDER,
+                cache,
             );
         }
     }
@@ -871,6 +1176,7 @@ fn draw_selection_handles_antialiased(gdi: &GdiPlusSession, rect: &RECT) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 unsafe fn filled_ellipse(
     device_context: *mut core::ffi::c_void,
     left: i32,
@@ -879,10 +1185,11 @@ unsafe fn filled_ellipse(
     bottom: i32,
     fill_color: COLORREF,
     border_color: COLORREF,
+    cache: &mut PaintCache,
 ) {
     unsafe {
-        let brush = CreateSolidBrush(fill_color);
-        let pen = CreatePen(PS_SOLID, 1, border_color);
+        let brush = cache.brush(fill_color);
+        let pen = cache.pen(border_color, 1);
         let previous_brush = if brush.is_null() {
             ptr::null_mut()
         } else {
@@ -900,12 +1207,6 @@ unsafe fn filled_ellipse(
         if !previous_pen.is_null() {
             SelectObject(device_context, previous_pen);
         }
-        if !brush.is_null() {
-            DeleteObject(brush);
-        }
-        if !pen.is_null() {
-            DeleteObject(pen);
-        }
     }
 }
 
@@ -914,6 +1215,8 @@ unsafe fn draw_size_label(
     client: &RECT,
     selection_rect: &RECT,
     selection: ScreenRect,
+    cache: &mut PaintCache,
+    gdi: Option<&GdiPlusSession>,
 ) {
     let label_width = 132;
     let label_height = 30;
@@ -933,10 +1236,10 @@ unsafe fn draw_size_label(
     };
     // SAFETY: device_context and label_rect are valid for the current paint.
     unsafe {
-        if let Some(gdi) = GdiPlusSession::start(device_context) {
+        if let Some(gdi) = gdi {
             gdi.rounded_rect_rect(&label_rect, 5.0, ARGB_LABEL, ARGB_LABEL, 1.0);
         } else {
-            fill(device_context, &label_rect, COLOR_LABEL);
+            fill(device_context, &label_rect, COLOR_LABEL, cache);
         }
         SetBkMode(device_context, TRANSPARENT as i32);
         SetTextColor(device_context, COLOR_BORDER);
@@ -954,7 +1257,11 @@ unsafe fn draw_size_label(
     }
 }
 
-unsafe fn draw_instructions(device_context: *mut core::ffi::c_void, client: &RECT) {
+unsafe fn draw_instructions(
+    device_context: *mut core::ffi::c_void,
+    client: &RECT,
+    cache: &mut PaintCache,
+) {
     let width = 300.min(client.right - client.left);
     let mut rect = RECT {
         left: client.left + (client.right - client.left - width) / 2,
@@ -964,7 +1271,7 @@ unsafe fn draw_instructions(device_context: *mut core::ffi::c_void, client: &REC
     };
     // SAFETY: device_context and rect are valid for the current paint.
     unsafe {
-        fill(device_context, &rect, COLOR_LABEL);
+        fill(device_context, &rect, COLOR_LABEL, cache);
         SetBkMode(device_context, TRANSPARENT as i32);
         SetTextColor(device_context, COLOR_BORDER);
     }
