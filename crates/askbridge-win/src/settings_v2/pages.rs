@@ -274,7 +274,7 @@ pub(super) fn create_browser_page(
         instance,
         scale,
         "BUTTON",
-        "通用粘贴：使用日常浏览器登录状态，聚焦页面后模拟 Ctrl+V（不验证结果）",
+        "通用粘贴：支持浏览器或 AI 桌面端，仅模拟 Ctrl+V（不验证结果）",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON as u32,
         12,
         106,

@@ -65,8 +65,9 @@ pub struct DesktopPwaJob {
     pub url_patterns: Vec<String>,
 }
 
-/// Inputs for the clipboard-paste target: screenshot to clipboard, focus the
-/// provider website window (opening it if needed), synthesize one Ctrl+V.
+/// Inputs for the clipboard-paste target: screenshot to clipboard, focus a
+/// matching provider page or supported desktop client (opening a page if
+/// needed), and synthesize one Ctrl+V.
 #[derive(Debug, Clone)]
 pub struct ClipboardPasteJob {
     pub start_url: String,
@@ -510,8 +511,8 @@ fn prepare_browser_job(
 }
 
 /// Clipboard-paste target: no CDP at all. Writes the screenshot to the
-/// clipboard, then locates (or opens) the provider website window and
-/// synthesizes a single Ctrl+V into it.
+/// clipboard, then locates a matching provider page or supported desktop
+/// client (opening a page if needed) and synthesizes a single Ctrl+V into it.
 fn prepare_clipboard_paste_job(
     owner: usize,
     events: &Arc<Mutex<VecDeque<BrowserEvent>>>,
@@ -520,7 +521,6 @@ fn prepare_clipboard_paste_job(
     job: &ClipboardPasteJob,
 ) -> Result<()> {
     let request = &dispatch.request;
-    send_stage(owner, events, &request.id, BrowserStage::Started);
     let Some(image) = request.image.as_ref() else {
         return Err(AppError::InvalidDispatchRequest(
             "clipboard paste mode requires a captured screenshot".to_owned(),
@@ -530,21 +530,53 @@ fn prepare_clipboard_paste_job(
 
     let deadline = Instant::now() + job.locate_timeout;
     let mut page_opened = false;
-    loop {
+    let mut activation_error = None;
+    'locate: loop {
         if cancelled.load(Ordering::Acquire) {
             return Err(AppError::BrowserCancelled);
         }
-        if let Some(window) = crate::paste_mode::find_provider_window(&job.title_keywords) {
-            crate::paste_mode::activate(window)?;
-            crate::paste_mode::send_paste()?;
-            break;
+        for window in crate::paste_mode::find_provider_windows(&job.title_keywords) {
+            tracing::info!(
+                stage = "paste_window_found",
+                completed = true,
+                window_class = %window.class,
+                process = %window.process,
+                keyword_index = window.keyword_index,
+                "provider window located for clipboard paste"
+            );
+            match crate::paste_mode::activate(window.hwnd) {
+                Ok(()) => {
+                    // Do not retry a partial SendInput on another target: the
+                    // first target may already have received part of Ctrl+V.
+                    crate::paste_mode::send_paste()?;
+                    break 'locate;
+                }
+                // The located window may be on another virtual desktop or
+                // otherwise unactivatable. Try every matching candidate
+                // before falling through to a fresh page on this desktop.
+                Err(error) => {
+                    tracing::warn!(
+                        stage = "paste_activation_denied",
+                        completed = false,
+                        window_class = %window.class,
+                        process = %window.process,
+                        "located window refused activation; trying another candidate"
+                    );
+                    activation_error = Some(error);
+                }
+            }
         }
         if !page_opened {
             page_opened = true;
+            tracing::info!(
+                stage = "paste_window_not_found",
+                completed = false,
+                "no activatable provider window yet; opening the default browser"
+            );
             crate::paste_mode::open_default_browser(&job.start_url)?;
         }
         if Instant::now() >= deadline {
-            return Err(AppError::PasteTargetUnavailable);
+            return Err(activation_error.unwrap_or(AppError::PasteTargetUnavailable));
         }
         thread::sleep(Duration::from_millis(250));
     }

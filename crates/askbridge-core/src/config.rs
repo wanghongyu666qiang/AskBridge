@@ -374,8 +374,9 @@ pub enum BrowserTargetPreference {
     #[default]
     DedicatedChrome,
     DesktopPwa,
-    /// Screenshot to clipboard, focus the provider website window, and
-    /// synthesize one Ctrl+V. Sending stays manual; the result is unverified.
+    /// Screenshot to clipboard, focus a matching provider page or supported
+    /// AI desktop client, and synthesize one Ctrl+V. Sending stays manual;
+    /// the result is unverified.
     ClipboardPaste,
 }
 

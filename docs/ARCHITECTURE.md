@@ -23,7 +23,7 @@ Screenshot
 
 ### 剪贴板粘贴目标
 
-`BrowserTargetPreference::ClipboardPaste` 是一条完全不经过 CDP 的旁路：截图写入系统剪贴板后，`paste_mode` 模块按标题关键词（内置产品名或自定义显示名/URL 主机）枚举浏览器窗口，激活后只合成一次 Ctrl+V。找不到窗口时用默认浏览器打开 `start_url`，在可取消的预算内轮询重试；激活必须确认前台归属，否则 fail-closed 终止并提示用户。该路径无法验证结果，因此完成通知明确要求用户确认；提示词不会自动填入。
+`BrowserTargetPreference::ClipboardPaste` 是一条完全不经过 CDP 的旁路：截图写入系统剪贴板后，`paste_mode` 模块按标题关键词（内置产品名或自定义显示名/URL 主机）枚举窗口，并用所属进程的可执行文件名将候选限制为受支持的浏览器或 ChatGPT、Claude、豆包桌面客户端。对于 Windows 打包应用还会检查应用包标识，避免把同样使用 `chatgpt.exe` 的 Codex 客户端误判为 ChatGPT。多个候选会按窗口枚举顺序逐个尝试；找不到可激活窗口时用默认浏览器打开 `start_url`，在可取消的预算内继续轮询。每次激活都必须确认前台归属，只有确认成功才合成一次 Ctrl+V；按键注入失败不会换目标重试，避免重复粘贴。该路径无法验证结果，因此完成通知明确要求用户确认；提示词不会自动填入。
 
 ## 专用 Chrome Profile
 

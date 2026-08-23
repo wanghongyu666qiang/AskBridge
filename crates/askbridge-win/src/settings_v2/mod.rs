@@ -896,10 +896,7 @@ mod tests {
         let source = concat!(include_str!("mod.rs"), include_str!("pages.rs"));
         assert!(source.contains("桌面网页端：复用现有登录，但截图需要手动上传"));
         assert!(source.contains("AskBridge 专用 Chrome：支持自动上传图片，需要单独登录"));
-        assert!(
-            source
-                .contains("通用粘贴：使用日常浏览器登录状态，聚焦页面后模拟 Ctrl+V（不验证结果）")
-        );
+        assert!(source.contains("通用粘贴：支持浏览器或 AI 桌面端，仅模拟 Ctrl+V（不验证结果）"));
         let forbidden = ["截图提问会", "自动使用 AskBridge 专用 Chrome"].concat();
         assert!(!source.contains(&forbidden));
     }

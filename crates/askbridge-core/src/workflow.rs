@@ -279,6 +279,30 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_paste_surface_skips_browser_connection_states() {
+        let mut workflow = WorkflowController::default();
+        workflow
+            .start(AppCommand::CaptureWithPrompt)
+            .expect("start");
+        workflow
+            .capture_completed(AppCommand::CaptureWithPrompt)
+            .expect("capture");
+        workflow.begin_browser().expect("begin target");
+
+        assert_eq!(
+            workflow
+                .clipboard_surface_ready()
+                .expect("clipboard target ready"),
+            AppState::PreparingPage
+        );
+        assert_eq!(
+            workflow.page_prepared().expect("page prepared"),
+            AppState::PreparedForUser
+        );
+        assert_eq!(workflow.finish_delivery().expect("finish"), AppState::Idle);
+    }
+
+    #[test]
     fn prepared_result_finishes_delivery() {
         let mut prepared = workflow_at_preparing_page();
         assert_eq!(

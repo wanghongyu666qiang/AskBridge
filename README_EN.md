@@ -34,7 +34,7 @@ ChatGPT offers three opening modes under "Settings > Browser":
 
 - **Desktop web**: reuses your existing login; screenshots must be uploaded manually.
 - **AskBridge-managed Chrome**: supports automatic screenshot upload after a one-time sign-in inside the isolated browser.
-- **Universal paste**: writes the screenshot to the clipboard, focuses the provider website window, and synthesizes one Ctrl+V; you confirm and send manually. This mode uses your daily browser's login state and does not verify the paste result. When no matching page is open, it opens one and waits briefly before pasting.
+- **Universal paste**: writes the screenshot to the clipboard, focuses a matching provider page or supported AI desktop-client window, and synthesizes one Ctrl+V; you confirm and send manually. This mode can use the login state in your daily browser or the ChatGPT, Claude, and Doubao desktop clients, and it does not verify the paste result. When no matching window is open, it opens a new page in the default browser and waits briefly before pasting.
 
 The managed Chrome uses a dedicated `BrowserProfile` and never connects to or modifies your daily Chrome profile.
 
