@@ -75,6 +75,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable-x86_64-pc-windows-gnu
+          components: clippy
 
       - name: Cache Cargo dependencies and target artifacts
         uses: actions/cache@v4
