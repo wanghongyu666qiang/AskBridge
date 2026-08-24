@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "askbridge-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "askbridge-win"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "askbridge-core",
  "png",
@@ -1962,7 +1962,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "flate2",
  "serde_json",
