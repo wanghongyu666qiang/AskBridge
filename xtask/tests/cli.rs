@@ -69,7 +69,10 @@ fn package_reports_a_command_failure_for_a_non_empty_root() {
         .output()
         .expect("run package guard failure");
     assert!(!output.status.success());
-    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+    // package.ps1 runs through an inherited console whose error text follows
+    // the system ANSI codepage (for example GBK on zh-CN Windows), so decode
+    // lossily; the guard marker asserted below is pure ASCII.
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("ArtifactRoot already exists and is not empty"));
 }
 
