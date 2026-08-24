@@ -373,6 +373,10 @@ impl Default for BrowserConfig {
 pub enum BrowserTargetPreference {
     #[default]
     DedicatedChrome,
+    /// Prepare through the managed Chrome first. Screenshot requests may
+    /// fall back to one verified Ctrl+V only when the managed-Chrome failure
+    /// proves that no text or attachment was inserted.
+    DedicatedChromeThenClipboardPaste,
     DesktopPwa,
     /// Screenshot to clipboard, focus a matching provider page or supported
     /// AI desktop client, and synthesize one Ctrl+V. Sending stays manual;
@@ -543,6 +547,26 @@ mod tests {
                 r#"{"schema_version":3,"browser":{"target_preferences":{"chatgpt":"paste"}}}"#
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn browser_target_preference_supports_safe_clipboard_fallback() {
+        let mut config: AppConfig = serde_json::from_str(
+            r#"{"schema_version":3,"browser":{"target_preferences":{"chatgpt":"dedicated_chrome_then_clipboard_paste"}}}"#,
+        )
+        .expect("known target preference");
+        config.migrate().expect("current config");
+        assert_eq!(
+            config.browser.target_preference("chatgpt"),
+            BrowserTargetPreference::DedicatedChromeThenClipboardPaste
+        );
+        assert!(
+            serde_json::to_string(&config)
+                .expect("serialize config")
+                .contains(
+                    r#""target_preferences":{"chatgpt":"dedicated_chrome_then_clipboard_paste"}"#
+                )
         );
     }
 

@@ -12,9 +12,9 @@ pub use desktop_pwa::DesktopPwaLauncher;
 pub use endpoint::DevToolsEndpoint;
 pub use profile::ManagedProfile;
 pub use worker::{
-    BrowserEvent, BrowserJob, BrowserLaunch, BrowserService, BrowserStage, BrowserSurface,
-    BrowserWarmupJob, ClipboardPasteJob, DedicatedChromeJob, DesktopPwaJob, ProviderHealthJob,
-    WM_BROWSER_EVENT,
+    BrowserEvent, BrowserJob, BrowserLaunch, BrowserLaunchPlan, BrowserService, BrowserStage,
+    BrowserSurface, BrowserWarmupJob, ClipboardPasteJob, DedicatedChromeJob, DesktopPwaJob,
+    ProviderHealthJob, WM_BROWSER_EVENT,
 };
 
 #[cfg(test)]

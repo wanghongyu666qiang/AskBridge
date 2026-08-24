@@ -36,7 +36,7 @@ pub struct BrowserJob {
     pub request: DispatchRequest,
     pub policy: PreparationPolicy,
     pub adapter_override: Option<String>,
-    pub launch: BrowserLaunch,
+    pub plan: BrowserLaunchPlan,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +44,68 @@ pub enum BrowserLaunch {
     DedicatedChrome(DedicatedChromeJob),
     DesktopPwa(DesktopPwaJob),
     ClipboardPaste(ClipboardPasteJob),
+}
+
+/// A deliberately small launch policy. The only automatic fallback we expose
+/// is managed Chrome to clipboard paste; arbitrary chains would make it
+/// impossible to reason about duplicate insertion safely.
+#[derive(Debug, Clone)]
+pub struct BrowserLaunchPlan {
+    primary: BrowserLaunch,
+    fallback: Option<BrowserLaunch>,
+}
+
+impl BrowserLaunchPlan {
+    pub const fn single(primary: BrowserLaunch) -> Self {
+        Self {
+            primary,
+            fallback: None,
+        }
+    }
+
+    pub const fn dedicated_then_clipboard(
+        dedicated: DedicatedChromeJob,
+        clipboard: ClipboardPasteJob,
+    ) -> Self {
+        Self {
+            primary: BrowserLaunch::DedicatedChrome(dedicated),
+            fallback: Some(BrowserLaunch::ClipboardPaste(clipboard)),
+        }
+    }
+
+    const fn primary(&self) -> &BrowserLaunch {
+        &self.primary
+    }
+
+    const fn fallback(&self) -> Option<&BrowserLaunch> {
+        self.fallback.as_ref()
+    }
+
+    pub const fn primary_surface(&self) -> BrowserSurface {
+        launch_surface(&self.primary)
+    }
+
+    pub const fn fallback_surface(&self) -> Option<BrowserSurface> {
+        match self.fallback.as_ref() {
+            Some(launch) => Some(launch_surface(launch)),
+            None => None,
+        }
+    }
+
+    const fn dedicated_lifecycle(&self) -> Option<BrowserLifecycle> {
+        match &self.primary {
+            BrowserLaunch::DedicatedChrome(job) => Some(job.lifecycle),
+            BrowserLaunch::DesktopPwa(_) | BrowserLaunch::ClipboardPaste(_) => None,
+        }
+    }
+}
+
+const fn launch_surface(launch: &BrowserLaunch) -> BrowserSurface {
+    match launch {
+        BrowserLaunch::DedicatedChrome(_) => BrowserSurface::DedicatedChrome,
+        BrowserLaunch::DesktopPwa(_) => BrowserSurface::DesktopPwa,
+        BrowserLaunch::ClipboardPaste(_) => BrowserSurface::ClipboardPaste,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +187,11 @@ pub enum BrowserEvent {
         request_id: String,
         surface: BrowserSurface,
         outcome: PreparationOutcome,
+    },
+    FallbackStarted {
+        request_id: String,
+        from: BrowserSurface,
+        to: BrowserSurface,
     },
     WarmupReady,
     WarmupFailed {
@@ -305,7 +372,7 @@ fn worker_loop(
         match commands.recv_timeout(Duration::from_secs(1)) {
             Ok(BrowserCommand::Prepare(job, cancelled)) => {
                 let request_id = job.request.id.clone();
-                if matches!(&job.launch, BrowserLaunch::DedicatedChrome(_)) {
+                if job.plan.dedicated_lifecycle().is_some() {
                     idle_close_deadline = None;
                 }
                 match prepare_browser_job(
@@ -319,15 +386,25 @@ fn worker_loop(
                     Ok(Some(client)) => {
                         connected_client = Some(client);
                         if matches!(
-                            &job.launch,
-                            BrowserLaunch::DedicatedChrome(job)
-                                if job.lifecycle == BrowserLifecycle::OnDemandIdleClose
+                            job.plan.dedicated_lifecycle(),
+                            Some(BrowserLifecycle::OnDemandIdleClose)
                         ) {
                             idle_close_deadline =
                                 Some(Instant::now() + Duration::from_secs(10 * 60));
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        if matches!(
+                            job.plan.dedicated_lifecycle(),
+                            Some(BrowserLifecycle::OnDemandIdleClose)
+                        ) && manager
+                            .as_ref()
+                            .is_some_and(|manager| manager.managed_process_id().is_some())
+                        {
+                            idle_close_deadline =
+                                Some(Instant::now() + Duration::from_secs(10 * 60));
+                        }
+                    }
                     Err(error) => {
                         send_event(owner, &events, BrowserEvent::Failed { request_id, error });
                     }
@@ -467,46 +544,142 @@ fn prepare_browser_job(
     data_root: &Path,
     job: &BrowserJob,
 ) -> Result<Option<CdpClient>> {
-    match &job.launch {
-        BrowserLaunch::DedicatedChrome(dedicated) => prepare_dedicated_browser_job(
-            owner, events, cancelled, manager, data_root, job, dedicated,
-        )
-        .map(Some),
-        BrowserLaunch::DesktopPwa(desktop) => {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(AppError::BrowserCancelled);
-            }
-            DesktopPwaLauncher::open(&desktop.provider_id, desktop.configured_shortcut.as_deref())?;
-            let adapter = GenericProviderAdapter::for_provider(
-                &desktop.provider_id,
-                job.adapter_override.as_deref(),
-                desktop.url_patterns.clone(),
-            )?;
-            if adapter.id() != job.request.provider_id {
-                return Err(AppError::InvalidPreparation(
-                    "adapter provider did not match dispatch request".to_owned(),
-                ));
-            }
-            let mut page = PageSession::DesktopPwa {
-                target_url: &desktop.start_url,
+    match prepare_browser_attempt(
+        owner,
+        events,
+        cancelled,
+        manager,
+        data_root,
+        job,
+        job.plan.primary(),
+    ) {
+        Ok(client) => Ok(client),
+        Err(primary_failure) => {
+            let Some(fallback) = job.plan.fallback() else {
+                return Err(primary_failure.error);
             };
-            let outcome = adapter.prepare(&mut page, &job.request, &job.policy)?;
-            outcome.validate_for(&job.request)?;
+            if !automatic_clipboard_fallback_allowed(&primary_failure) {
+                tracing::warn!(
+                    stage = "browser_fallback_suppressed",
+                    completed = false,
+                    error = %primary_failure.error,
+                    provider_preparation_started = primary_failure.provider_preparation_started,
+                    "automatic clipboard fallback was suppressed to avoid duplicate insertion"
+                );
+                return Err(primary_failure.error);
+            }
+            tracing::warn!(
+                stage = "browser_fallback_started",
+                completed = false,
+                error = %primary_failure.error,
+                "managed browser preparation failed safely; starting clipboard fallback"
+            );
             send_event(
                 owner,
                 events,
-                BrowserEvent::Prepared {
+                BrowserEvent::FallbackStarted {
                     request_id: job.request.id.clone(),
-                    surface: BrowserSurface::DesktopPwa,
-                    outcome,
+                    from: BrowserSurface::DedicatedChrome,
+                    to: BrowserSurface::ClipboardPaste,
                 },
             );
-            Ok(None)
+            prepare_browser_attempt(owner, events, cancelled, manager, data_root, job, fallback)
+                .map_err(|failure| failure.error)
         }
-        BrowserLaunch::ClipboardPaste(paste) => {
-            prepare_clipboard_paste_job(owner, events, cancelled, job, paste)?;
-            Ok(None)
+    }
+}
+
+struct BrowserAttemptFailure {
+    error: AppError,
+    provider_preparation_started: bool,
+}
+
+fn prepare_browser_attempt(
+    owner: usize,
+    events: &Arc<Mutex<VecDeque<BrowserEvent>>>,
+    cancelled: &AtomicBool,
+    manager: &mut Option<ChromeManager>,
+    data_root: &Path,
+    job: &BrowserJob,
+    launch: &BrowserLaunch,
+) -> std::result::Result<Option<CdpClient>, BrowserAttemptFailure> {
+    if let BrowserLaunch::DedicatedChrome(dedicated) = launch {
+        return prepare_dedicated_browser_job(
+            owner, events, cancelled, manager, data_root, job, dedicated,
+        )
+        .map(Some);
+    }
+
+    let mut provider_preparation_started = false;
+    let result = (|| -> Result<Option<CdpClient>> {
+        match launch {
+            BrowserLaunch::DedicatedChrome(_) => unreachable!("handled above"),
+            BrowserLaunch::DesktopPwa(desktop) => {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(AppError::BrowserCancelled);
+                }
+                DesktopPwaLauncher::open(
+                    &desktop.provider_id,
+                    desktop.configured_shortcut.as_deref(),
+                )?;
+                let adapter = GenericProviderAdapter::for_provider(
+                    &desktop.provider_id,
+                    job.adapter_override.as_deref(),
+                    desktop.url_patterns.clone(),
+                )?;
+                if adapter.id() != job.request.provider_id {
+                    return Err(AppError::InvalidPreparation(
+                        "adapter provider did not match dispatch request".to_owned(),
+                    ));
+                }
+                let mut page = PageSession::DesktopPwa {
+                    target_url: &desktop.start_url,
+                };
+                provider_preparation_started = true;
+                let outcome = adapter.prepare(&mut page, &job.request, &job.policy)?;
+                outcome.validate_for(&job.request)?;
+                send_event(
+                    owner,
+                    events,
+                    BrowserEvent::Prepared {
+                        request_id: job.request.id.clone(),
+                        surface: BrowserSurface::DesktopPwa,
+                        outcome,
+                    },
+                );
+                Ok(None)
+            }
+            BrowserLaunch::ClipboardPaste(paste) => {
+                provider_preparation_started = true;
+                prepare_clipboard_paste_job(owner, events, cancelled, job, paste)?;
+                Ok(None)
+            }
         }
+    })();
+    result.map_err(|error| BrowserAttemptFailure {
+        error,
+        provider_preparation_started,
+    })
+}
+
+fn automatic_clipboard_fallback_allowed(failure: &BrowserAttemptFailure) -> bool {
+    match &failure.error {
+        AppError::BrowserCancelled => false,
+        AppError::PreparationFailed {
+            text_inserted: false,
+            attachment_prepared: false,
+            ..
+        } => true,
+        AppError::BrowserLaunchFailed
+        | AppError::ChromeNotFound
+        | AppError::BrowserProfileRejected(_)
+        | AppError::BrowserProfileInUse
+        | AppError::BrowserEndpointUnavailable
+        | AppError::BrowserConnectionFailed(_)
+        | AppError::BrowserProtocol(_)
+        | AppError::TargetNotFound
+        | AppError::TargetTimeout => !failure.provider_preparation_started,
+        _ => false,
     }
 }
 
@@ -604,73 +777,91 @@ fn prepare_dedicated_browser_job(
     data_root: &Path,
     dispatch: &BrowserJob,
     job: &DedicatedChromeJob,
-) -> Result<CdpClient> {
+) -> std::result::Result<CdpClient, BrowserAttemptFailure> {
     let request = &dispatch.request;
     let policy = &dispatch.policy;
     let request_id = &request.id;
-    if manager.is_none() {
-        let installation = ChromeInstallation::discover(job.configured_chrome_path.as_deref())?;
-        let profile = ManagedProfile::open(&job.profile_dir, data_root)?;
-        *manager = Some(ChromeManager::new(installation, profile));
-    }
-    let manager = manager.as_mut().ok_or_else(|| {
-        AppError::BrowserConnectionFailed("browser manager initialization failed".to_owned())
-    })?;
-    let endpoint = manager.launch_and_wait(job.connect_timeout, cancelled)?;
-    if manager.managed_process_id().is_none() {
-        return Err(AppError::BrowserConnectionFailed(
-            "browser process ownership could not be confirmed".to_owned(),
-        ));
-    }
-    send_stage(owner, events, request_id, BrowserStage::Started);
+    let before_preparation = (|| -> Result<(CdpClient, CdpTarget, GenericProviderAdapter)> {
+        if manager.is_none() {
+            let installation = ChromeInstallation::discover(job.configured_chrome_path.as_deref())?;
+            let profile = ManagedProfile::open(&job.profile_dir, data_root)?;
+            *manager = Some(ChromeManager::new(installation, profile));
+        }
+        let manager = manager.as_mut().ok_or_else(|| {
+            AppError::BrowserConnectionFailed("browser manager initialization failed".to_owned())
+        })?;
+        let endpoint = manager.launch_and_wait(job.connect_timeout, cancelled)?;
+        if manager.managed_process_id().is_none() {
+            return Err(AppError::BrowserConnectionFailed(
+                "browser process ownership could not be confirmed".to_owned(),
+            ));
+        }
+        send_stage(owner, events, request_id, BrowserStage::Started);
 
-    let client = connect_with_one_retry(endpoint, job.connect_timeout, cancelled)?;
-    send_stage(owner, events, request_id, BrowserStage::Connected);
+        let client = connect_with_one_retry(endpoint, job.connect_timeout, cancelled)?;
+        send_stage(owner, events, request_id, BrowserStage::Connected);
 
-    let targets = client.list_targets()?;
-    let page_targets: Vec<CdpTarget> = targets
-        .into_iter()
-        .filter(|target| target.kind == "page")
-        .collect();
-    let core_targets: Vec<BrowserTarget> = page_targets
-        .iter()
-        .map(|target| BrowserTarget::new(&target.id, &target.url))
-        .collect();
-    let target =
-        match TargetResolver::resolve(&core_targets, &job.url_patterns, &FocusEvidence::Unknown) {
+        let targets = client.list_targets()?;
+        let page_targets: Vec<CdpTarget> = targets
+            .into_iter()
+            .filter(|target| target.kind == "page")
+            .collect();
+        let core_targets: Vec<BrowserTarget> = page_targets
+            .iter()
+            .map(|target| BrowserTarget::new(&target.id, &target.url))
+            .collect();
+        let target = match TargetResolver::resolve(
+            &core_targets,
+            &job.url_patterns,
+            &FocusEvidence::Unknown,
+        ) {
             TargetDecision::UseExisting(target_id) => page_targets
                 .into_iter()
                 .find(|target| target.id == target_id)
                 .ok_or(AppError::TargetNotFound)?,
             TargetDecision::CreateNew => client.create_target(&job.start_url)?,
         };
-    client.activate_target(&target.id)?;
-    send_stage(owner, events, request_id, BrowserStage::TargetResolved);
-    client.wait_until_ready(&target, job.page_timeout, cancelled)?;
-    let adapter = GenericProviderAdapter::for_provider(
-        &request.provider_id,
-        dispatch.adapter_override.as_deref(),
-        job.url_patterns.clone(),
-    )?;
+        client.activate_target(&target.id)?;
+        send_stage(owner, events, request_id, BrowserStage::TargetResolved);
+        client.wait_until_ready(&target, job.page_timeout, cancelled)?;
+        let adapter = GenericProviderAdapter::for_provider(
+            &request.provider_id,
+            dispatch.adapter_override.as_deref(),
+            job.url_patterns.clone(),
+        )?;
+        Ok((client, target, adapter))
+    })()
+    .map_err(|error| BrowserAttemptFailure {
+        error,
+        provider_preparation_started: false,
+    })?;
+
+    let (client, target, adapter) = before_preparation;
     let temp_root = data_root.join("Temp");
-    let mut page = PageSession::DedicatedChrome {
-        client: &client,
-        target: &target,
-        temp_root: &temp_root,
-        cancelled,
-    };
-    let outcome = adapter.prepare(&mut page, request, policy)?;
-    outcome.validate_for(request)?;
-    send_event(
-        owner,
-        events,
-        BrowserEvent::Prepared {
-            request_id: request_id.to_owned(),
-            surface: BrowserSurface::DedicatedChrome,
-            outcome,
-        },
-    );
-    Ok(client)
+    (|| -> Result<CdpClient> {
+        let mut page = PageSession::DedicatedChrome {
+            client: &client,
+            target: &target,
+            temp_root: &temp_root,
+            cancelled,
+        };
+        let outcome = adapter.prepare(&mut page, request, policy)?;
+        outcome.validate_for(request)?;
+        send_event(
+            owner,
+            events,
+            BrowserEvent::Prepared {
+                request_id: request_id.to_owned(),
+                surface: BrowserSurface::DedicatedChrome,
+                outcome,
+            },
+        );
+        Ok(client)
+    })()
+    .map_err(|error| BrowserAttemptFailure {
+        error,
+        provider_preparation_started: true,
+    })
 }
 
 fn close_idle_managed_browser(manager: &mut Option<ChromeManager>, client: &mut Option<CdpClient>) {
@@ -785,5 +976,134 @@ mod tests {
         let second = cancellation.begin().expect("second token");
         assert!(first.load(Ordering::Acquire));
         assert!(!second.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn clipboard_fallback_requires_proof_that_nothing_was_inserted() {
+        let before_preparation = |error| BrowserAttemptFailure {
+            error,
+            provider_preparation_started: false,
+        };
+        let during_preparation = |error| BrowserAttemptFailure {
+            error,
+            provider_preparation_started: true,
+        };
+
+        assert!(automatic_clipboard_fallback_allowed(&before_preparation(
+            AppError::ChromeNotFound
+        )));
+        assert!(automatic_clipboard_fallback_allowed(&before_preparation(
+            AppError::TargetTimeout
+        )));
+        assert!(automatic_clipboard_fallback_allowed(&during_preparation(
+            AppError::PreparationFailed {
+                stage: askbridge_core::PreparationFailureStage::ComposerDiscovery,
+                recovery: askbridge_core::PreparationRecovery::Retry,
+                text_inserted: false,
+                attachment_prepared: false,
+            }
+        )));
+        assert!(!automatic_clipboard_fallback_allowed(&during_preparation(
+            AppError::PreparationFailed {
+                stage: askbridge_core::PreparationFailureStage::Verification,
+                recovery: askbridge_core::PreparationRecovery::Retry,
+                text_inserted: true,
+                attachment_prepared: false,
+            }
+        )));
+        assert!(!automatic_clipboard_fallback_allowed(&during_preparation(
+            AppError::PreparationFailed {
+                stage: askbridge_core::PreparationFailureStage::Verification,
+                recovery: askbridge_core::PreparationRecovery::Retry,
+                text_inserted: false,
+                attachment_prepared: true,
+            }
+        )));
+        assert!(automatic_clipboard_fallback_allowed(&before_preparation(
+            AppError::BrowserConnectionFailed("before adapter".to_owned())
+        )));
+        assert!(!automatic_clipboard_fallback_allowed(&during_preparation(
+            AppError::BrowserConnectionFailed("ambiguous mutation state".to_owned())
+        )));
+        assert!(!automatic_clipboard_fallback_allowed(&before_preparation(
+            AppError::BrowserCancelled
+        )));
+    }
+
+    #[test]
+    #[ignore = "writes an in-memory test image to a real ChatGPT window but never sends"]
+    fn dedicated_failure_falls_back_to_real_clipboard_paste_without_sending() {
+        let width = 24;
+        let height = 24;
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                let accent = if (x / 6 + y / 6) % 2 == 0 { 230 } else { 80 };
+                rgba.extend_from_slice(&[accent, 40, 180, 255]);
+            }
+        }
+        let image = askbridge_core::CapturedImage::new(
+            width,
+            height,
+            rgba,
+            askbridge_core::ScreenRect::new(0, 0, width, height),
+        )
+        .expect("test image");
+        let request = askbridge_core::DispatchRequest::new(
+            "manual-fallback-acceptance".to_owned(),
+            askbridge_core::DispatchMode::CaptureWithPrompt,
+            "chatgpt".to_owned(),
+            String::new(),
+            Some(image),
+            1,
+        )
+        .expect("dispatch request");
+        let plan = BrowserLaunchPlan::dedicated_then_clipboard(
+            DedicatedChromeJob {
+                configured_chrome_path: Some(r"missing-for-fallback-test\chrome.exe".to_owned()),
+                profile_dir: "BrowserProfile".to_owned(),
+                connect_timeout: Duration::from_secs(1),
+                page_timeout: Duration::from_secs(1),
+                lifecycle: BrowserLifecycle::OnDemandKeepRunning,
+                start_url: "https://chatgpt.com/".to_owned(),
+                url_patterns: vec!["https://chatgpt.com/".to_owned()],
+            },
+            ClipboardPasteJob {
+                start_url: "https://chatgpt.com/".to_owned(),
+                title_keywords: vec!["ChatGPT".to_owned()],
+                locate_timeout: Duration::from_secs(10),
+            },
+        );
+        let job = BrowserJob {
+            request,
+            policy: PreparationPolicy::new(1_000).expect("policy"),
+            adapter_override: None,
+            plan,
+        };
+        let events = Arc::new(Mutex::new(VecDeque::new()));
+        let cancelled = AtomicBool::new(false);
+        let mut manager = None;
+
+        let result =
+            prepare_browser_job(0, &events, &cancelled, &mut manager, Path::new("."), &job)
+                .expect("safe fallback should paste without a managed browser");
+        assert!(result.is_none());
+
+        let events = events.lock().expect("events");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::FallbackStarted {
+                from: BrowserSurface::DedicatedChrome,
+                to: BrowserSurface::ClipboardPaste,
+                ..
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::Prepared {
+                surface: BrowserSurface::ClipboardPaste,
+                ..
+            }
+        )));
     }
 }

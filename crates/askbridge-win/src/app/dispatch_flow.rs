@@ -8,8 +8,8 @@ use tracing::{error, info};
 
 use crate::adapter::ProviderHealthCheck;
 use crate::browser::{
-    BrowserEvent, BrowserJob, BrowserLaunch, BrowserStage, BrowserSurface, BrowserWarmupJob,
-    ClipboardPasteJob, DedicatedChromeJob, DesktopPwaJob, ProviderHealthJob,
+    BrowserEvent, BrowserJob, BrowserLaunch, BrowserLaunchPlan, BrowserStage, BrowserSurface,
+    BrowserWarmupJob, ClipboardPasteJob, DedicatedChromeJob, DesktopPwaJob, ProviderHealthJob,
 };
 
 use super::{controller::Runtime, error_handler::user_facing_error};
@@ -80,44 +80,63 @@ impl Runtime {
             return;
         }
         let adapter_override = provider.adapter_override.clone();
-        let launch = match self.config.browser.target_preference(&provider.id) {
-            BrowserTargetPreference::DesktopPwa => BrowserLaunch::DesktopPwa(DesktopPwaJob {
-                provider_id: provider.id.clone(),
-                configured_shortcut: self
-                    .config
-                    .browser
-                    .desktop_shortcut(&provider.id)
-                    .map(str::to_owned),
-                start_url: provider.start_url.clone(),
-                url_patterns: provider.url_patterns.clone(),
-            }),
+        let dedicated_job = || DedicatedChromeJob {
+            configured_chrome_path: self.config.browser.chrome_path.clone(),
+            profile_dir: self.config.browser.profile_dir.clone(),
+            connect_timeout: Duration::from_millis(self.config.browser.connect_timeout_ms),
+            page_timeout: Duration::from_millis(self.config.browser.page_timeout_ms),
+            lifecycle: self.config.browser.lifecycle,
+            start_url: provider.start_url.clone(),
+            url_patterns: provider.url_patterns.clone(),
+        };
+        let clipboard_job = || ClipboardPasteJob {
+            start_url: provider.start_url.clone(),
+            title_keywords: crate::paste_mode::provider_title_keywords(
+                &provider.id,
+                &provider.display_name,
+                &provider.start_url,
+            ),
+            locate_timeout: Duration::from_millis(self.config.browser.page_timeout_ms.max(5_000)),
+        };
+        let plan = match self.config.browser.target_preference(&provider.id) {
+            BrowserTargetPreference::DesktopPwa => {
+                BrowserLaunchPlan::single(BrowserLaunch::DesktopPwa(DesktopPwaJob {
+                    provider_id: provider.id.clone(),
+                    configured_shortcut: self
+                        .config
+                        .browser
+                        .desktop_shortcut(&provider.id)
+                        .map(str::to_owned),
+                    start_url: provider.start_url.clone(),
+                    url_patterns: provider.url_patterns.clone(),
+                }))
+            }
             BrowserTargetPreference::DedicatedChrome => {
-                BrowserLaunch::DedicatedChrome(DedicatedChromeJob {
-                    configured_chrome_path: self.config.browser.chrome_path.clone(),
-                    profile_dir: self.config.browser.profile_dir.clone(),
-                    connect_timeout: Duration::from_millis(self.config.browser.connect_timeout_ms),
-                    page_timeout: Duration::from_millis(self.config.browser.page_timeout_ms),
-                    lifecycle: self.config.browser.lifecycle,
-                    start_url: provider.start_url,
-                    url_patterns: provider.url_patterns,
-                })
+                BrowserLaunchPlan::single(BrowserLaunch::DedicatedChrome(dedicated_job()))
+            }
+            BrowserTargetPreference::DedicatedChromeThenClipboardPaste => {
+                if request.image.is_some() {
+                    BrowserLaunchPlan::dedicated_then_clipboard(dedicated_job(), clipboard_job())
+                } else {
+                    info!(
+                        request_id = %request.id,
+                        provider_id = %request.provider_id,
+                        stage = "browser_fallback_skipped",
+                        completed = true,
+                        reason = "text_only_request",
+                        "clipboard fallback is unavailable without a screenshot"
+                    );
+                    BrowserLaunchPlan::single(BrowserLaunch::DedicatedChrome(dedicated_job()))
+                }
             }
             BrowserTargetPreference::ClipboardPaste => {
-                BrowserLaunch::ClipboardPaste(ClipboardPasteJob {
-                    start_url: provider.start_url.clone(),
-                    title_keywords: crate::paste_mode::provider_title_keywords(
-                        &provider.id,
-                        &provider.display_name,
-                        &provider.start_url,
-                    ),
-                    locate_timeout: Duration::from_millis(
-                        self.config.browser.page_timeout_ms.max(5_000),
-                    ),
-                })
+                BrowserLaunchPlan::single(BrowserLaunch::ClipboardPaste(clipboard_job()))
             }
         };
-        let opens_desktop_pwa = matches!(&launch, BrowserLaunch::DesktopPwa(_));
-        let pastes_clipboard = matches!(&launch, BrowserLaunch::ClipboardPaste(_));
+        let opens_desktop_pwa = plan.primary_surface() == BrowserSurface::DesktopPwa;
+        let pastes_clipboard = plan.primary_surface() == BrowserSurface::ClipboardPaste;
+        let has_clipboard_fallback =
+            plan.fallback_surface() == Some(BrowserSurface::ClipboardPaste);
         let job = BrowserJob {
             request: request.clone(),
             policy: match PreparationPolicy::new(self.config.browser.page_timeout_ms) {
@@ -128,7 +147,7 @@ impl Runtime {
                 }
             },
             adapter_override,
-            launch,
+            plan,
         };
         if let Err(error) = self.browser.prepare(job) {
             self.browser_workflow_failed(error);
@@ -143,6 +162,11 @@ impl Runtime {
             self.tray.notify(
                 "AskBridge 正在通过剪贴板粘贴",
                 "将聚焦目标网页并模拟一次 Ctrl+V；请保持目标窗口可见。",
+            );
+        } else if has_clipboard_fallback {
+            self.tray.notify(
+                "AskBridge 正在打开专用 Chrome",
+                "如果浏览器控制在写入前失败，将自动改用一次 Ctrl+V 粘贴截图。",
             );
         } else {
             self.tray.notify(
@@ -245,6 +269,35 @@ impl Runtime {
                         self.tray
                             .notify("AskBridge 无法关闭专用 Chrome", &user_facing_error(&error));
                     }
+                }
+                BrowserEvent::FallbackStarted {
+                    request_id,
+                    from,
+                    to,
+                } => {
+                    if !self.is_current_request(&request_id) {
+                        continue;
+                    }
+                    if let Err(error) = self.workflow.restart_browser_attempt() {
+                        self.browser_workflow_failed(error);
+                        return;
+                    }
+                    info!(
+                        request_id = %request_id,
+                        provider_id = self
+                            .pending_dispatch
+                            .as_ref()
+                            .map_or("", |request| request.provider_id.as_str()),
+                        stage = "browser_fallback",
+                        completed = true,
+                        from = ?from,
+                        to = ?to,
+                        "browser preparation switched to the configured fallback"
+                    );
+                    self.tray.notify(
+                        "AskBridge 已切换到通用粘贴",
+                        "专用浏览器在写入前失败；现在将聚焦目标窗口并模拟一次 Ctrl+V。",
+                    );
                 }
                 BrowserEvent::WarmupReady => {
                     info!(

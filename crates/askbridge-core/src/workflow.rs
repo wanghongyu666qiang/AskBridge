@@ -81,6 +81,26 @@ impl WorkflowController {
         Ok(self.state)
     }
 
+    /// Starts the next browser attempt for the same dispatch request.
+    ///
+    /// This is intentionally limited to browser states before a successful
+    /// preparation so callers cannot turn a completed or failed request back
+    /// into an active one.
+    pub fn restart_browser_attempt(&mut self) -> Result<AppState> {
+        if !matches!(
+            self.state,
+            AppState::StartingBrowser
+                | AppState::ConnectingBrowser
+                | AppState::ResolvingTarget
+                | AppState::WaitingForPage
+                | AppState::PreparingPage
+        ) {
+            return Err(self.invalid_transition("restart_browser_attempt"));
+        }
+        self.state = AppState::StartingBrowser;
+        Ok(self.state)
+    }
+
     pub fn page_prepared(&mut self) -> Result<AppState> {
         self.require_state(AppState::PreparingPage, "page_prepared")?;
         self.state = AppState::PreparedForUser;
@@ -300,6 +320,46 @@ mod tests {
             AppState::PreparedForUser
         );
         assert_eq!(workflow.finish_delivery().expect("finish"), AppState::Idle);
+    }
+
+    #[test]
+    fn safe_browser_fallback_restarts_each_active_browser_stage() {
+        for stage in [
+            AppState::StartingBrowser,
+            AppState::ConnectingBrowser,
+            AppState::ResolvingTarget,
+            AppState::WaitingForPage,
+            AppState::PreparingPage,
+        ] {
+            let mut workflow = WorkflowController { state: stage };
+            assert_eq!(
+                workflow.restart_browser_attempt().expect("restart attempt"),
+                AppState::StartingBrowser
+            );
+            assert_eq!(
+                workflow
+                    .clipboard_surface_ready()
+                    .expect("clipboard surface"),
+                AppState::PreparingPage
+            );
+        }
+    }
+
+    #[test]
+    fn browser_fallback_cannot_restart_inactive_or_completed_workflows() {
+        for stage in [
+            AppState::Idle,
+            AppState::PreparingDispatch,
+            AppState::PreparedForUser,
+            AppState::Cancelling,
+            AppState::Error,
+        ] {
+            let mut workflow = WorkflowController { state: stage };
+            assert!(matches!(
+                workflow.restart_browser_attempt(),
+                Err(AppError::InvalidWorkflowTransition { .. })
+            ));
+        }
     }
 
     #[test]

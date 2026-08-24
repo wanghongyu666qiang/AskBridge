@@ -91,6 +91,7 @@ const PROVIDER_HEALTH_BASE: u16 = 2240;
 const RADIO_CHATGPT_DESKTOP_PWA: u16 = 2301;
 const RADIO_CHATGPT_DEDICATED_CHROME: u16 = 2305;
 const RADIO_CHATGPT_CLIPBOARD_PASTE: u16 = 2306;
+const RADIO_CHATGPT_DEDICATED_THEN_CLIPBOARD: u16 = 2307;
 const EDIT_CHROME_PATH: u16 = 2302;
 const COMBO_LIFECYCLE: u16 = 2303;
 const EDIT_DATA_PATH: u16 = 2304;
@@ -233,6 +234,7 @@ pub struct SettingsWindow {
     chatgpt_desktop_pwa: HWND,
     chatgpt_dedicated_chrome: HWND,
     chatgpt_clipboard_paste: HWND,
+    chatgpt_dedicated_then_clipboard: HWND,
     chrome_path: HWND,
     lifecycle: HWND,
     quick_prompt: HWND,
@@ -339,6 +341,7 @@ impl SettingsWindow {
             chatgpt_desktop_pwa,
             chatgpt_dedicated_chrome,
             chatgpt_clipboard_paste,
+            chatgpt_dedicated_then_clipboard,
             chrome_path,
             lifecycle,
         ) = create_browser_page(browser_page, instance, scale, data_root, &fonts)?;
@@ -404,6 +407,7 @@ impl SettingsWindow {
             chatgpt_desktop_pwa,
             chatgpt_dedicated_chrome,
             chatgpt_clipboard_paste,
+            chatgpt_dedicated_then_clipboard,
             chrome_path,
             lifecycle,
             quick_prompt,
@@ -509,6 +513,11 @@ impl SettingsWindow {
             self.chatgpt_clipboard_paste,
             config.browser.target_preference("chatgpt") == BrowserTargetPreference::ClipboardPaste,
         );
+        set_checked(
+            self.chatgpt_dedicated_then_clipboard,
+            config.browser.target_preference("chatgpt")
+                == BrowserTargetPreference::DedicatedChromeThenClipboardPaste,
+        );
         combo_reset(self.lifecycle);
         let mut lifecycle_selected = 0;
         for (index, (label, value)) in LIFECYCLES.into_iter().enumerate() {
@@ -544,6 +553,8 @@ impl SettingsWindow {
                 BrowserTargetPreference::DesktopPwa
             } else if is_checked(self.chatgpt_clipboard_paste) {
                 BrowserTargetPreference::ClipboardPaste
+            } else if is_checked(self.chatgpt_dedicated_then_clipboard) {
+                BrowserTargetPreference::DedicatedChromeThenClipboardPaste
             } else {
                 BrowserTargetPreference::DedicatedChrome
             },
@@ -897,6 +908,7 @@ mod tests {
         assert!(source.contains("桌面网页端：复用现有登录，但截图需要手动上传"));
         assert!(source.contains("AskBridge 专用 Chrome：支持自动上传图片，需要单独登录"));
         assert!(source.contains("通用粘贴：支持浏览器或 AI 桌面端，仅模拟 Ctrl+V（不验证结果）"));
+        assert!(source.contains("专用 Chrome 优先：安全失败后自动用 Ctrl+V 粘贴截图"));
         let forbidden = ["截图提问会", "自动使用 AskBridge 专用 Chrome"].concat();
         assert!(!source.contains(&forbidden));
     }
