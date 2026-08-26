@@ -8,6 +8,15 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# Force UTF-8 on the error stream so localized PowerShell error diagnostics do
+# not reach callers as raw OEM/GBK bytes (the xtask CLI test asserts on the
+# ASCII marker of a thrown error but must be able to decode the rest too).
+try {
+    [Console]::OutputEncoding = [Text.Encoding]::UTF8
+} catch {
+    # Redirected or restricted hosts can refuse this; proceed without it.
+}
+
 function Assert-Command {
     param([string]$Name)
 
