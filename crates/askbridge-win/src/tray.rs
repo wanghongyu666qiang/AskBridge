@@ -9,8 +9,8 @@ use windows_sys::Win32::{
             NIM_SETVERSION, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
         },
         WindowsAndMessaging::{
-            AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, LoadIconW, MF_CHECKED,
-            MF_GRAYED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SetForegroundWindow, TPM_BOTTOMALIGN,
+            AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, MF_CHECKED, MF_GRAYED,
+            MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SetForegroundWindow, TPM_BOTTOMALIGN,
             TPM_LEFTALIGN, TPM_RETURNCMD, TrackPopupMenu, WM_APP, WM_CONTEXTMENU, WM_LBUTTONDBLCLK,
             WM_RBUTTONUP,
         },
@@ -55,16 +55,10 @@ pub struct TrayIcon {
 
 impl TrayIcon {
     pub fn create(window: HWND) -> Result<Self> {
-        // SAFETY: Loading the shared application icon with a null module handle is supported.
-        let icon = unsafe {
-            LoadIconW(
-                std::ptr::null_mut(),
-                windows_sys::Win32::UI::WindowsAndMessaging::IDI_APPLICATION,
-            )
-        };
+        let icon = crate::app_icon::load_app_icon(true);
         if icon.is_null() {
             return Err(AppError::Windows {
-                operation: "LoadIconW",
+                operation: "load tray icon",
                 win32_code: last_error(),
             });
         }

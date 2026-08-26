@@ -5,6 +5,7 @@ compile_error!("askbridge-win supports Windows only");
 
 mod adapter;
 mod app;
+mod app_icon;
 mod browser;
 mod capture;
 mod clipboard_image;

@@ -1,18 +1,18 @@
 # Asset inventory
 
-Files in this kit: **77**
+Files in this kit: **80**
 
 | File | Size |
 |---|---:|
-| `docs/BRAND_GUIDELINES.md` | 9.0 KB |
+| `docs/BRAND_GUIDELINES.md` | 9.1 KB |
 | `docs/contact-sheet.png` | 80.7 KB |
 | `docs/favicon-readability-sheet.png` | 21.6 KB |
-| `docs/README_INTEGRATION.md` | 5.6 KB |
+| `docs/README_INTEGRATION.md` | 6.0 KB |
 | `favicon/android-chrome-192x192.png` | 1.8 KB |
 | `favicon/android-chrome-512x512.png` | 4.0 KB |
 | `favicon/apple-touch-icon.png` | 1.7 KB |
 | `favicon/browserconfig.xml` | 177 B |
-| `favicon/favicon-16x16.png` | 298 B |
+| `favicon/favicon-16x16.png` | 253 B |
 | `favicon/favicon-32x32.png` | 454 B |
 | `favicon/favicon.ico` | 1.5 KB |
 | `favicon/site.webmanifest` | 458 B |
@@ -21,9 +21,11 @@ Files in this kit: **77**
 | `github/askbridge-social-card.png` | 29.9 KB |
 | `icons/askbridge-cream-1024.png` | 9.1 KB |
 | `icons/askbridge-cream-128.png` | 1.3 KB |
-| `icons/askbridge-cream-16.png` | 298 B |
+| `icons/askbridge-cream-16.png` | 253 B |
 | `icons/askbridge-cream-180.png` | 1.7 KB |
 | `icons/askbridge-cream-192.png` | 1.8 KB |
+| `icons/askbridge-cream-20.png` | 254 B |
+| `icons/askbridge-cream-24.png` | 288 B |
 | `icons/askbridge-cream-256.png` | 2.2 KB |
 | `icons/askbridge-cream-32.png` | 454 B |
 | `icons/askbridge-cream-48.png` | 636 B |
@@ -63,13 +65,14 @@ Files in this kit: **77**
 | `icons/askbridge-transparent-512.png` | 4.2 KB |
 | `icons/askbridge-transparent-64.png` | 784 B |
 | `icons/askbridge-transparent-96.png` | 1.0 KB |
-| `icons/askbridge.ico` | 5.7 KB |
-| `INVENTORY.md` | 3.5 KB |
+| `icons/askbridge.ico` | 6.7 KB |
+| `INVENTORY.md` | 3.7 KB |
 | `scripts/build_favicon.py` | 3.7 KB |
-| `scripts/build_ico.py` | 2.4 KB |
+| `scripts/build_ico.py` | 2.5 KB |
 | `scripts/build_inventory.py` | 783 B |
+| `scripts/build_pixel_icons.py` | 3.9 KB |
 | `scripts/build_review_sheets.py` | 6.7 KB |
-| `scripts/render_assets.py` | 3.4 KB |
+| `scripts/render_assets.py` | 3.7 KB |
 | `source/askbridge-avatar.svg` | 882 B |
 | `source/askbridge-lockup-horizontal.svg` | 1.3 KB |
 | `source/askbridge-lockup-stacked.svg` | 1.3 KB |

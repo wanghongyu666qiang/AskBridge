@@ -63,8 +63,11 @@ LOCKUP_STACKED = {
     "h": 1280,
 }
 
-# Square mark sizes for the PNG kit
+# Square mark sizes for the PNG kit. The small cream sizes are owned by
+# build_pixel_icons.py (hand-snapped pixel grids feed the .ico and favicon);
+# rendering them here would silently regress the tray icon.
 SQUARE_SIZES = [1024, 512, 256, 192, 180, 128, 96, 64, 48, 32, 16]
+PIXEL_OWNED_SIZES = {16, 20, 24}
 
 
 def render_svg(svg_path: Path, width: int, height: int) -> bytes:
@@ -77,6 +80,8 @@ def render_mark_pngs(variant: dict) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for size in SQUARE_SIZES:
+        if variant["name"] == "cream" and size in PIXEL_OWNED_SIZES:
+            continue
         png = render_svg(variant["svg"], size, size)
         img = Image.open(io.BytesIO(png))
         target = out_dir / f"askbridge-{variant['name']}-{size}.png"

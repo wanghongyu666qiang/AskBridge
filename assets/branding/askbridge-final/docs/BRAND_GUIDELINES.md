@@ -204,6 +204,7 @@ PNG renders of every variant live in `icons/`, `web/`, `favicon/`, and
 ```text
 source/*.svg   ──► resvg-py   ──► icons/*.png, web/*.png, github/*.png
                                   │
+                                  ├─► build_pixel_icons.py ──► icons/askbridge-cream-{16,20,24}.png
                                   ├─► build_ico.py       ──► icons/askbridge.ico
                                   ├─► build_favicon.py   ──► favicon/*
                                   └─► build_review_sheets.py ──► docs/*.png
@@ -214,6 +215,7 @@ To re-render the whole kit after editing an SVG:
 ```powershell
 cd D:\askbridge\assets\branding\askbridge-final
 python scripts/render_assets.py
+python scripts/build_pixel_icons.py
 python scripts/build_ico.py
 python scripts/build_favicon.py
 python scripts/build_review_sheets.py

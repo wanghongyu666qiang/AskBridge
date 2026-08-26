@@ -61,56 +61,40 @@ browserconfig.xml
 <meta name="theme-color" content="#FAEEDA">
 ```
 
-## 5. Windows 应用图标（askbridge.exe 资源）
+## 5. Windows 应用图标（exe 资源，已接入）
 
-把 `icons/askbridge.ico`（5.9 KB，含 6 个尺寸：16/32/48/64/128/256）作为
-Windows 资源文件嵌入 `askbridge.exe`。两种接入方式：
-
-### 5.1 用 `winres`（推荐，GNU 与 MSVC 工具链都行）
-
-```toml
-# crates/askbridge-win/Cargo.toml
-[dependencies]
-embed-resource = "3"
-
-[build-dependencies]
-embed-resource = "3"
-```
-
-```rust
-// crates/askbridge-win/build.rs
-fn main() {
-    embed_resource::compile(
-        "../../assets/branding/askbridge-final/icons/askbridge.ico",
-        embed_resource::NONE,
-    );
-}
-```
-
-### 5.2 直接塞进 `.rc`
+`crates/askbridge-win/askbridge.rc` 同时声明 manifest 与图标：
 
 ```rc
-// crates/askbridge-win/resources/askbridge.rc
+1 24 "app.manifest"
 1 ICON "../../assets/branding/askbridge-final/icons/askbridge.ico"
 ```
 
-然后 `windres` 或 MSVC `rc.exe` 编译进二进制。
+`crates/askbridge-win/build.rs` 按工具链编译这份 .rc，并把产物链进两个
+bin（`askbridge` 和 `askbridge-setup`，安装包 Setup.exe 即后者追加 payload，
+图标自动继承）：
 
-### 5.3 安装包 / 便携版的快捷方式图标
+- **Windows GNU**：`windres` 编译为 COFF 目标文件后经 `cargo:rustc-link-arg-bin`
+  链接（binutils 2.30 已验证可透传 ICO 内的 PNG 条目）。
+- **Windows MSVC**：build.rs 定位 Windows SDK 的 `rc.exe`（先 `where`，再
+  遍历 `Windows Kits\10\bin\10.*\x64|x86`）编译为 .res 后同样链接。manifest
+  由 .rc 的 `RT_MANIFEST` 提供（不再走 `/MANIFEST:EMBED`），与 GNU 行为一致，
+  并保证 `askbridge-setup.exe` 因 `asInvoker` 声明不触发 UAC 安装程序检测。
 
-`build.ps1` / `package.ps1` 阶段把这个文件复制到 `target/release/` 或
-便携版根目录，让用户在 Explorer 里看到正确图标：
+`icons/askbridge.ico` 使用 **cream 变体**（深浅任务栏都立得住），含 8 个
+尺寸：16/20/24/32/48/64/128/256。其中 16/20/24 由 `build_pixel_icons.py`
+在整像素网格上手工生成，覆盖托盘在 100% / 125% / 150% DPI 下的请求；
+其余尺寸为矢量源直接渲染。
 
-```powershell
-Copy-Item `
-  assets\branding\askbridge-final\icons\askbridge.ico `
-  target\release\askbridge.ico -Force
-```
+运行时加载在 `crates/askbridge-win/src/app_icon.rs`：托盘按 `SM_CXSMICON`
+取尺寸，窗口类（设置窗口等，见 `app/events.rs` 的 `register_window_class`）
+按 `SM_CXICON`，都从 exe 自身资源加载；资源缺失时回退系统默认图标并记
+`warn` 日志。
 
-托盘图标的运行时缩放在 `crates/askbridge-win/src/tray.rs` 里；用
-`icons/askbridge-transparent-32.png` 作为托盘源（Windows 托盘默认 16×16，
-会自动缩到 16，多给 32 是为了 HiDPI）。PNG → HICON 的转换可以继续用
-`winapi` 的 `CreateIconFromResourceEx`，或者直接用 `ico` 里的 16/32 资源。
+### 5.1 开始菜单 / 资源管理器图标
+
+快捷方式与 Explorer 图标自动来自 exe 资源，无需额外复制 .ico。若未来需要
+独立的 .ico 文件（例如网站下载页），从 `icons/askbridge.ico` 取用即可。
 
 ## 6. 截图工具栏 / 设置窗口里的图标
 
@@ -123,10 +107,10 @@ Copy-Item `
 
 每发一版前，按下面 4 步走一遍：
 
-1. `cd assets/branding/askbridge-final && python scripts/render_assets.py && python scripts/build_ico.py && python scripts/build_favicon.py && python scripts/build_review_sheets.py && python scripts/build_inventory.py` —— 五脚本全跑一次，确认无报错。
+1. `cd assets/branding/askbridge-final && python scripts/render_assets.py && python scripts/build_pixel_icons.py && python scripts/build_ico.py && python scripts/build_favicon.py && python scripts/build_review_sheets.py && python scripts/build_inventory.py` —— 六脚本全跑一次，确认无报错（改了小尺寸像素版时 `build_pixel_icons.py` 必跑）。
 2. 打开 `docs/contact-sheet.png` 和 `docs/favicon-readability-sheet.png`，
    确认 16 px 列还能看出 "框 + 桥" 的轮廓。
-3. `cargo build --release`，确认 `.rc` / `embed_resource` 成功。
+3. `cargo build --release`，确认 `.rc`（windres / rc.exe）编译成功。
 4. 在 Windows 资源管理器里右键 `target/release/askbridge.exe` → 属性 →
    详细信息，看图标是不是新的（多尺寸 ICO 一般会显示 256×256）。
 

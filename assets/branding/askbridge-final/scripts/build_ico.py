@@ -1,9 +1,14 @@
 """
-Build the Windows multi-resolution .ico used by askbridge.exe and askbridge-tray.
+Build the Windows multi-resolution .ico used by askbridge.exe and askbridge-setup.
 
-We pack six standard Windows icon sizes (16/24/32/48/64/128/256) into one .ico so
-the OS can pick the right one for the tray, the taskbar, Alt-Tab, and the
-installer's title bar without re-rasterization.
+The .ico packs the cream variant (the mark on its warm cream tile) so the icon
+stays legible on both light and dark taskbars — the transparent variant drops
+its charcoal brackets on dark surfaces. Sizes cover the tray's DPI-scaled
+requests (16 / 20 / 24 px at 100% / 125% / 150%), plus 32/48/64/128/256 for
+title bars, Alt-Tab, Explorer, and the installer.
+
+16 / 20 / 24 px come from build_pixel_icons.py (hand-snapped pixel grids);
+larger sizes are plain renders of the vector source.
 
 ICO container is little-endian: 6-byte header + 16-byte directory entries per
 image + raw PNG payloads (ICO supports embedded PNG since Vista).
@@ -19,17 +24,14 @@ ROOT = Path(r"D:\askbridge\assets\branding\askbridge-final")
 ICONS = ROOT / "icons"
 OUT = ROOT / "icons" / "askbridge.ico"
 
-# Standard Windows icon sizes — Vista+ supports 256 directly. We skip 24 since
-# Windows picks 24 by nearest-neighbor from 32 in most cases; including 48
-# covers the rare "Details" tile view.
-SIZES = [16, 32, 48, 64, 128, 256]
+SIZES = [16, 20, 24, 32, 48, 64, 128, 256]
 
 
 def main() -> None:
     images: list[tuple[int, Image.Image, bytes]] = []
     from io import BytesIO
     for size in SIZES:
-        src = ICONS / f"askbridge-transparent-{size}.png"
+        src = ICONS / f"askbridge-cream-{size}.png"
         if not src.exists():
             raise FileNotFoundError(src)
         img = Image.open(src).convert("RGBA")

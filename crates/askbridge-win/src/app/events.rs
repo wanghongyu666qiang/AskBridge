@@ -182,13 +182,15 @@ pub(super) fn register_window_class(
     }
     // SAFETY: GetSysColorBrush returns a shared system brush.
     let background = unsafe { GetSysColorBrush(COLOR_WINDOW) };
+    // The embedded app icon; on failure a null class icon only loses the chrome icon.
+    let icon = crate::app_icon::load_app_icon(false);
     let class = WNDCLASSW {
         style: CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: window_proc,
         cbClsExtra: 0,
         cbWndExtra: 0,
         hInstance: instance,
-        hIcon: ptr::null_mut(),
+        hIcon: icon,
         hCursor: cursor,
         hbrBackground: background,
         lpszMenuName: ptr::null(),
