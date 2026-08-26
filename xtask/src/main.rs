@@ -2,7 +2,6 @@ mod package;
 mod package_artifacts;
 mod performance_report;
 mod release_signing;
-mod sha256;
 
 use std::{env, process::ExitCode};
 

@@ -142,33 +142,119 @@ mod tests {
         let sources = [
             ("app controller", include_str!("app/controller.rs")),
             ("app capture", include_str!("app/capture_flow.rs")),
+            ("app commands", include_str!("app/commands.rs")),
             ("app dispatch", include_str!("app/dispatch_flow.rs")),
             ("app errors", include_str!("app/error_handler.rs")),
+            ("app events", include_str!("app/events.rs")),
+            ("app tray", include_str!("tray.rs")),
+            ("app update flow", include_str!("app/update_flow.rs")),
             ("adapter generic", include_str!("adapter/generic.rs")),
             ("adapter JavaScript", include_str!("adapter/javascript.rs")),
+            (
+                "adapter provider health",
+                include_str!("adapter/provider_health.rs"),
+            ),
+            (
+                "adapter rules update",
+                include_str!("adapter/rules_update.rs"),
+            ),
+            ("app icon", include_str!("app_icon.rs")),
             ("browser worker", include_str!("browser/worker.rs")),
             ("CDP", include_str!("browser/cdp.rs")),
             ("Chrome", include_str!("browser/chrome.rs")),
             ("clipboard image", include_str!("clipboard_image.rs")),
+            ("capture mod", include_str!("capture/mod.rs")),
+            (
+                "overlay session",
+                include_str!("capture/overlay/session.rs"),
+            ),
+            ("main", include_str!("main.rs")),
+            ("paste mode", include_str!("paste_mode.rs")),
             ("settings", include_str!("settings_v2/mod.rs")),
+            ("single instance", include_str!("single_instance.rs")),
             ("startup", include_str!("startup.rs")),
-            ("tray", include_str!("tray.rs")),
+            ("update service", include_str!("update/mod.rs")),
+        ];
+        let forbidden_fields = [
+            "prompt",
+            "clipboard",
+            "html",
+            "cookie",
+            "target_url",
+            "debug_port",
+            "error",
         ];
         for (module, source) in sources {
-            for forbidden in [
-                "prompt = %",
-                "clipboard = %",
-                "html = %",
-                "cookie = %",
-                "target_url = %",
-                "debug_port = %",
-                "error = %error",
-            ] {
+            for field in forbidden_fields {
                 assert!(
-                    !source.contains(forbidden),
-                    "{module} logging contains forbidden field fragment {forbidden}"
+                    !contains_forbidden_logging_field(source, field),
+                    "{module} logs a value into the privacy-sensitive field {field}"
                 );
             }
         }
+    }
+
+    /// True when a tracing call writes any value into `field`, either by
+    /// naming the field (`{field} = %anything`) or by formatting an expression
+    /// whose last path segment is the field name (`%value.{field}`, bare
+    /// `%{field}`, `?{field}`). Matching on expression shape instead of one
+    /// literal keeps renames such as `primary_failure.error` from silently
+    /// bypassing the guard.
+    fn contains_forbidden_logging_field(source: &str, field: &str) -> bool {
+        source
+            .lines()
+            .any(|line| contains_field_assignment(line, field))
+    }
+
+    fn contains_field_assignment(line: &str, field: &str) -> bool {
+        if line.contains(&format!("{field} = %")) || line.contains(&format!("{field} = ?")) {
+            return true;
+        }
+        let bytes = line.as_bytes();
+        let mut index = 0_usize;
+        while let Some(offset) = line[index..].find(['%', '?']) {
+            let start = index + offset + 1;
+            let mut end = start;
+            while end < bytes.len()
+                && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' || bytes[end] == b'.')
+            {
+                end += 1;
+            }
+            if line[start..end].rsplit('.').next() == Some(field)
+                || (field == "error"
+                    && line[start..end]
+                        .rsplit('.')
+                        .next()
+                        .is_some_and(|name| name.ends_with("_error")))
+            {
+                return true;
+            }
+            index = end.max(start);
+        }
+        false
+    }
+
+    #[test]
+    fn forbidden_field_scanner_catches_renamed_error_values() {
+        assert!(contains_forbidden_logging_field(
+            "warn!(error = %primary_failure.error, \"x\")",
+            "error"
+        ));
+        assert!(contains_forbidden_logging_field(
+            "warn!(%error, \"x\")",
+            "error"
+        ));
+        assert!(contains_forbidden_logging_field(
+            "warn!(detail = ?paste_error, \"x\")",
+            "error"
+        ));
+        assert!(!contains_forbidden_logging_field(
+            "warn!(error_kind = failure.kind(), \"x\")",
+            "error"
+        ));
+        assert!(!contains_forbidden_logging_field(
+            "info!(stage = \"started\", completed = true)",
+            "error"
+        ));
     }
 }

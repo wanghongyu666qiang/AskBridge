@@ -36,6 +36,7 @@ use crate::{
 use super::{
     OVERLAY_CLASS, OverlayProviderChoice, SelectionAction, SelectionResult,
     draw::{COLOR_KEY, OVERLAY_ALPHA, PaintCache, paint_overlay},
+    gdiplus::GdiPlusRuntime,
     guards::{DesktopSnapshot, OverlayWindow},
     layout::{fallback_toolbar_size, hit_dropdown, point_in_rect, toolbar_layout},
 };
@@ -51,14 +52,20 @@ pub(super) fn select_region_internal(
         .map_err(|_| AppError::CaptureFailed("virtual screen width is too large".to_owned()))?;
     let height = i32::try_from(bounds.height)
         .map_err(|_| AppError::CaptureFailed("virtual screen height is too large".to_owned()))?;
-    let desktop_snapshot = DesktopSnapshot::capture(bounds)
-        .inspect_err(|error| warn!(%error, "capture overlay desktop snapshot unavailable"));
+    let desktop_snapshot = DesktopSnapshot::capture(bounds).inspect_err(|error| {
+        warn!(
+            error_kind = error.kind(),
+            "capture overlay desktop snapshot unavailable"
+        )
+    });
     let use_snapshot_backdrop = desktop_snapshot.is_ok();
     let mut state = Box::new(OverlayState::new(
         instance,
         providers,
         desktop_snapshot.ok(),
     ));
+    // Started once per overlay session; every WM_PAINT only creates graphics.
+    state.gdi_runtime = GdiPlusRuntime::start();
     let class_name = wide(OVERLAY_CLASS);
     let title = wide("AskBridge 区域截图");
     // SAFETY: The class is registered and state remains allocated until the window is destroyed.
@@ -159,10 +166,12 @@ pub(super) fn select_region_internal(
     // SAFETY: DwmFlush synchronizes pending desktop composition commands.
     let flush_result = unsafe { DwmFlush() };
     if flush_result < 0 {
-        return Err(AppError::CaptureFailed(format!(
-            "desktop composition synchronization failed (HRESULT 0x{:08X})",
-            flush_result as u32
-        )));
+        // Purely a timing hint; discarding the completed selection over it
+        // would cost the user their capture.
+        warn!(
+            hresult = format!("0x{:08X}", flush_result as u32),
+            "desktop composition synchronization failed; keeping captured selection"
+        );
     }
 
     let outcome = replace(&mut state.outcome, OverlayOutcome::Pending);
@@ -247,6 +256,9 @@ pub(super) struct OverlayState {
     pub(super) web_toolbar: Option<toolbar_webview::ToolbarWebView>,
     pub(super) web_toolbar_failed: bool,
     outcome: OverlayOutcome,
+    /// Declared last on purpose: the GDI+ shutdown must run after every other
+    /// field has released anything that could still touch GDI+.
+    pub(super) gdi_runtime: Option<GdiPlusRuntime>,
 }
 
 impl OverlayState {
@@ -362,7 +374,10 @@ impl OverlayState {
             }
             Err(error) => {
                 self.web_toolbar_failed = true;
-                warn!(%error, "capture toolbar webview unavailable; using fallback drawing");
+                warn!(
+                    error_kind = error.kind(),
+                    "capture toolbar webview unavailable; using fallback drawing"
+                );
             }
         }
     }
@@ -528,7 +543,10 @@ fn handle_web_toolbar_action(
             && let Err(error) =
                 web_toolbar.set_menu_open(action == toolbar_webview::ACTION_MENU_OPEN)
         {
-            warn!(%error, "capture toolbar provider menu resize failed");
+            warn!(
+                error_kind = error.kind(),
+                "capture toolbar provider menu resize failed"
+            );
         }
         return;
     }
@@ -610,11 +628,19 @@ fn handle_toolbar_click(window: HWND, state: &mut OverlayState, point: (i32, i32
         right: selection.right() as i32,
         bottom: selection.bottom() as i32,
     };
+    // Hit-testing must mirror whichever surface is actually on screen: the
+    // WebView toolbar is placed with the DPI-scaled size, the GDI fallback
+    // paints with unscaled constants.
+    let toolbar_size = if state.web_toolbar.is_some() {
+        toolbar_webview::preferred_size_for_window(window)
+    } else {
+        fallback_toolbar_size()
+    };
     let layout = toolbar_layout(
         &client,
         &selection_rect,
         toolbar.providers.len(),
-        fallback_toolbar_size(),
+        toolbar_size,
     );
     if toolbar.dropdown_open {
         if let Some(index) = hit_dropdown(&layout.dropdown_rects, point) {

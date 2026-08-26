@@ -9,7 +9,7 @@ use crate::{
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 pub const DEFAULT_QUICK_PROMPT: &str = "请分析这张截图，并解释其中的内容。";
-const MAX_BROWSER_TIMEOUT_MS: u64 = 120_000;
+pub(crate) const MAX_BROWSER_TIMEOUT_MS: u64 = 120_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -330,6 +330,9 @@ impl HotkeyConfig {
 pub struct GeneralConfig {
     #[serde(default)]
     pub start_on_login: bool,
+    /// Permanent compatibility tombstone: `auto_submit` was removed by product
+    /// decision and must stay `false` forever. Migration clears it and
+    /// validation rejects `true`; do not resurrect this field as a feature.
     #[serde(default)]
     pub auto_submit: bool,
     #[serde(default)]
@@ -670,5 +673,76 @@ mod tests {
                 Err(AppError::ConfigurationInvalid(_))
             ));
         }
+    }
+
+    fn override_for(id: &str) -> ProviderOverride {
+        ProviderOverride {
+            id: id.to_owned(),
+            display_name: None,
+            enabled: Some(false),
+            start_url: None,
+            url_patterns: None,
+            adapter_override: None,
+        }
+    }
+
+    fn custom_provider(id: &str) -> ProviderConfig {
+        ProviderConfig {
+            id: id.to_owned(),
+            display_name: "Custom".to_owned(),
+            enabled: true,
+            start_url: format!("https://{id}.example.com/"),
+            url_patterns: vec![format!("https://{id}.example.com/")],
+            is_custom: true,
+            adapter_override: None,
+        }
+    }
+
+    #[test]
+    fn merged_providers_rejects_duplicate_overrides() {
+        let config = AppConfig {
+            provider_overrides: vec![override_for("chatgpt"), override_for("chatgpt")],
+            ..AppConfig::default()
+        };
+        assert!(matches!(
+            config.merged_providers(),
+            Err(AppError::ConfigurationInvalid(_))
+        ));
+    }
+
+    #[test]
+    fn merged_providers_rejects_overrides_of_unknown_providers() {
+        let config = AppConfig {
+            provider_overrides: vec![override_for("not-built-in")],
+            ..AppConfig::default()
+        };
+        assert!(matches!(
+            config.merged_providers(),
+            Err(AppError::InvalidProvider(_))
+        ));
+    }
+
+    #[test]
+    fn merged_providers_rejects_custom_ids_colliding_with_built_ins() {
+        let config = AppConfig {
+            custom_providers: vec![custom_provider("chatgpt")],
+            ..AppConfig::default()
+        };
+        assert!(matches!(
+            config.merged_providers(),
+            Err(AppError::ConfigurationInvalid(_))
+        ));
+    }
+
+    #[test]
+    fn merged_providers_rejects_duplicate_custom_ids() {
+        let config = AppConfig {
+            custom_providers: vec![custom_provider("extra"), custom_provider("extra")],
+            ..AppConfig::default()
+        };
+        assert!(matches!(
+            config.merged_providers(),
+            Err(AppError::ConfigurationInvalid(_))
+        ));
     }
 }

@@ -68,6 +68,20 @@ fn decodes_chunked_http_response() {
 }
 
 #[test]
+fn rejects_absurd_chunk_sizes_without_panicking() {
+    // Declared chunk size of usize::MAX - 18 makes `end + 2` wrap around;
+    // the decoder must reject the body instead of slicing out of range.
+    let response =
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nFFFFFFFFFFFFFFED\r\nhello";
+    assert!(!response_is_complete(response).expect("completion check"));
+    assert!(parse_http_response(response).is_err());
+
+    let truncated =
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\nA\r\nshort";
+    assert!(!response_is_complete(truncated).expect("completion check"));
+}
+
+#[test]
 fn target_url_and_id_are_strictly_validated() {
     assert!(validate_page_url("http://127.0.0.1:1234/test").is_ok());
     assert!(validate_page_url("https://example.test/chat").is_ok());

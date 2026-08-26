@@ -59,7 +59,7 @@ impl CaptureService {
             return Ok(CaptureOutcome::Cancelled);
         };
         let raw = screen::capture_screen_rect(source_rect)?;
-        let captured = encoder::captured_image(&raw, source_rect)?;
+        let captured = encoder::captured_image(raw, source_rect)?;
         Ok(CaptureOutcome::Captured(captured))
     }
 
@@ -90,7 +90,7 @@ impl CaptureService {
             return Ok(CaptureOutcome::Cancelled);
         };
         let raw = screen::capture_screen_rect(selection.rect)?;
-        let captured = encoder::captured_image(&raw, selection.rect)?;
+        let captured = encoder::captured_image(raw, selection.rect)?;
         match selection.action {
             overlay::SelectionAction::Ask { provider_id } => {
                 Ok(CaptureOutcome::CapturedForProvider {

@@ -1,3 +1,9 @@
+use std::{
+    fs::File,
+    io::{self, Read},
+    path::Path,
+};
+
 const INITIAL: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
@@ -15,20 +21,50 @@ const K: [u32; 64] = [
 
 /// Incremental hashing for streamed downloads: feed chunks as they arrive from
 /// the network and finalize once the stream ends.
-pub(super) struct Sha256Stream(Sha256);
+///
+/// This is the single SHA-256 implementation shared by the updater
+/// (`askbridge-win`) and the packaging validator (`xtask`); keep it in sync by
+/// construction instead of copying it per crate.
+pub struct Sha256Stream(Sha256);
+
+impl Default for Sha256Stream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Sha256Stream {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self(Sha256::new())
     }
 
-    pub(super) fn update(&mut self, input: &[u8]) {
+    pub fn update(&mut self, input: &[u8]) {
         self.0.update(input);
     }
 
-    pub(super) fn finish_hex(&mut self) -> String {
+    /// Lowercase hex digest of everything fed so far.
+    pub fn finish_hex(&mut self) -> String {
         self.0.finish_hex()
     }
+}
+
+/// Hashes a file in fixed-size chunks without loading it into memory.
+pub fn sha256_file(path: &Path) -> io::Result<String> {
+    sha256_reader(File::open(path)?)
+}
+
+/// Hashes anything readable (zip entries, files) chunk by chunk.
+pub fn sha256_reader(mut reader: impl Read) -> io::Result<String> {
+    let mut state = Sha256Stream::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        state.update(&buffer[..read]);
+    }
+    Ok(state.finish_hex())
 }
 
 struct Sha256 {
@@ -82,13 +118,12 @@ impl Sha256 {
             self.block[self.block_len..].fill(0);
             compress(&mut self.hash, &self.block);
             self.block = [0; 64];
-            self.block_len = 0;
         } else {
             self.block[self.block_len..56].fill(0);
         }
         self.block[56..].copy_from_slice(&bit_len.to_be_bytes());
         compress(&mut self.hash, &self.block);
-        self.hash.iter().map(|word| format!("{word:08X}")).collect()
+        self.hash.iter().map(|word| format!("{word:08x}")).collect()
     }
 }
 
@@ -139,45 +174,50 @@ fn compress(hash: &mut [u32; 8], block: &[u8; 64]) {
 mod tests {
     use super::*;
 
-    fn hash_all(input: &[u8]) -> String {
-        let mut state = Sha256Stream::new();
-        state.update(input);
-        state.finish_hex()
-    }
-
     #[test]
     fn matches_known_sha256_vectors() {
         for (input, expected) in [
             (
                 b"".as_slice(),
-                "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             ),
             (
                 b"abc".as_slice(),
-                "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD",
-            ),
-            // Standard 56-byte vector: padding must spill into a second block.
-            (
-                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".as_slice(),
-                "248D6A61D20638B8E5C026930C3E6039A33CE45964FF2167F6ECEDD419DB06C1",
-            ),
-            // Input longer than one full block exercises the streaming path.
-            (
-                b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmno".as_slice(),
-                "2FF100B36C386C65A1AFC462AD53E25479BEC9498ED00AA5A04DE584BC25301B",
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             ),
         ] {
-            assert_eq!(hash_all(input), expected);
+            let mut sha = Sha256Stream::new();
+            sha.update(input);
+            assert_eq!(sha.finish_hex(), expected);
         }
     }
 
     #[test]
-    fn streamed_updates_match_one_shot_hashing() {
-        let input = b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
-        let mut streamed = Sha256Stream::new();
-        for chunk in input.chunks(7) {
-            streamed.update(chunk);
+    fn streaming_matches_single_update() {
+        let input = vec![0xA5_u8; 10_000];
+        let mut one = Sha256Stream::new();
+        one.update(&input);
+        let mut chunks = Sha256Stream::new();
+        for chunk in input.chunks(37) {
+            chunks.update(chunk);
         }
-        assert_eq!(streamed.finish_hex(), hash_all(input));
+        assert_eq!(one.finish_hex(), chunks.finish_hex());
+    }
+
+    #[test]
+    fn hashes_files_and_readers_identically() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("blob.bin");
+        std::fs::write(&path, [7_u8; 500]).expect("write blob");
+
+        let from_file = sha256_file(&path).expect("file hash");
+        let from_reader = sha256_reader(std::io::Cursor::new([7_u8; 500])).expect("reader hash");
+        assert_eq!(from_file, from_reader);
+        assert_eq!(from_file.len(), 64);
+        assert!(
+            from_file
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
     }
 }

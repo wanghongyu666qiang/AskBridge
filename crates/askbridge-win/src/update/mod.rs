@@ -1,10 +1,9 @@
 mod http;
-mod sha256;
 
 use std::{
     collections::VecDeque,
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -12,10 +11,10 @@ use std::{
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use askbridge_core::{AppError, RELEASE_SIGNING_PUBLIC_KEY, Result};
+use askbridge_core::{AppError, RELEASE_SIGNING_PUBLIC_KEY, Result, Sha256Stream, hex_to_array};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use windows_sys::Win32::{
@@ -23,10 +22,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{PostMessageW, WM_APP},
 };
 
-use self::{
-    http::{get_https, get_https_chunks},
-    sha256::Sha256Stream,
-};
+use self::http::{get_https, get_https_chunks};
 
 pub const WM_UPDATE_EVENT: u32 = WM_APP + 7;
 
@@ -173,10 +169,10 @@ impl UpdateService {
             return None;
         }
         let candidate = self.update_root.join(name);
-        match validate_downloaded_setup(&self.update_root, &candidate) {
-            Ok(()) => Some(candidate),
-            Err(_) => None,
-        }
+        validate_downloaded_setup(&self.update_root, &candidate)
+            .and_then(|()| verify_cached_hash(&candidate))
+            .map(|_| candidate)
+            .ok()
     }
 
     pub fn drain_events(&self) -> Vec<UpdateEvent> {
@@ -199,6 +195,7 @@ impl UpdateService {
 
     pub fn launch_installer(&self, setup_path: &Path) -> Result<()> {
         validate_downloaded_setup(&self.update_root, setup_path)?;
+        verify_cached_hash(setup_path)?;
         let executable = std::env::current_exe().map_err(|source| {
             update_error(format!("无法定位当前运行的 AskBridge 程序（{source}）"))
         })?;
@@ -240,8 +237,16 @@ fn worker_loop(
     current_version: ReleaseVersion,
     automatic_checks_enabled: bool,
 ) {
+    // The automatic cadence is a wall-clock deadline independent of command
+    // traffic: manual checks and downloads must not postpone it indefinitely.
+    let mut next_automatic_check = Instant::now() + CHECK_INTERVAL;
     loop {
-        match commands.recv_timeout(CHECK_INTERVAL) {
+        let timeout = if automatic_checks_enabled {
+            next_automatic_check.saturating_duration_since(Instant::now())
+        } else {
+            CHECK_INTERVAL
+        };
+        match commands.recv_timeout(timeout) {
             Ok(UpdateCommand::Check { manual }) => {
                 let event = match check_latest(&current_version) {
                     Ok(available) => UpdateEvent::Checked { available, manual },
@@ -284,6 +289,7 @@ fn worker_loop(
                 if !automatic_checks_enabled {
                     continue;
                 }
+                next_automatic_check = Instant::now() + CHECK_INTERVAL;
                 let event = match check_latest(&current_version) {
                     Ok(available) => UpdateEvent::Checked {
                         available,
@@ -431,6 +437,7 @@ struct SetupSpool {
     hasher: Sha256Stream,
     temporary: PathBuf,
     destination: PathBuf,
+    hash_record: PathBuf,
     received: u64,
 }
 
@@ -451,6 +458,9 @@ impl SetupSpool {
             hasher: Sha256Stream::new(),
             temporary,
             destination: update_root.join(setup_name),
+            // Persisted next to the published setup so the tray retry path can
+            // re-verify the file instead of trusting whatever sits there.
+            hash_record: update_root.join(format!("{setup_name}.sha256")),
             received: 0,
         })
     }
@@ -501,6 +511,16 @@ impl SetupSpool {
         fs::rename(&self.temporary, &self.destination).map_err(|source| {
             AppError::io("installing cached update", &self.destination, source)
         })?;
+        if let Err(source) = fs::write(&self.hash_record, format!("{actual_hash}\n")) {
+            // Without the record the retry path cannot re-verify the file, so
+            // keep the cache consistent by dropping the published setup too.
+            let _ = fs::remove_file(&self.destination);
+            return Err(AppError::io(
+                "recording update checksum",
+                &self.hash_record,
+                source,
+            ));
+        }
         Ok(self.destination.clone())
     }
 }
@@ -523,7 +543,8 @@ fn cleanup_stale_updates(update_root: &Path) {
         };
         let is_setup = name.starts_with("AskBridge-") && name.ends_with("-Setup.exe");
         let is_partial = name.starts_with(".AskBridge-") && name.ends_with(".partial");
-        if path.is_file() && (is_setup || is_partial) {
+        let is_checksum_record = name.starts_with("AskBridge-") && name.ends_with(".sha256");
+        if path.is_file() && (is_setup || is_partial || is_checksum_record) {
             let _ = fs::remove_file(path);
         }
     }
@@ -553,29 +574,16 @@ fn verify_checksum_signature(
     signature_text: &str,
     public_key_hex: &str,
 ) -> Result<()> {
-    let public_key_bytes = decode_fixed_hex(public_key_hex.trim())
-        .ok_or_else(|| update_error("内嵌更新公钥格式无效"))?;
+    let public_key_bytes =
+        hex_to_array(public_key_hex.trim()).ok_or_else(|| update_error("内嵌更新公钥格式无效"))?;
     let signature_bytes =
-        decode_fixed_hex(signature_text.trim()).ok_or_else(|| update_error("更新签名格式无效"))?;
+        hex_to_array(signature_text.trim()).ok_or_else(|| update_error("更新签名格式无效"))?;
     let verifying_key = VerifyingKey::from_bytes(&public_key_bytes)
         .map_err(|_| update_error("内嵌更新公钥无效"))?;
     let signature = Signature::from_bytes(&signature_bytes);
     verifying_key
         .verify(message, &signature)
         .map_err(|_| update_error("更新签名校验失败，安装包来源不可信"))
-}
-
-fn decode_fixed_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
-    if text.len() != N * 2 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    let mut decoded = [0_u8; N];
-    for (index, byte) in decoded.iter_mut().enumerate() {
-        let high = u32::from_str_radix(&text[2 * index..2 * index + 1], 16).ok()?;
-        let low = u32::from_str_radix(&text[2 * index + 1..2 * index + 2], 16).ok()?;
-        *byte = ((high << 4) | low) as u8;
-    }
-    Some(decoded)
 }
 
 fn progress_step(total: u64) -> u64 {
@@ -599,6 +607,46 @@ fn validate_downloaded_setup(update_root: &Path, setup_path: &Path) -> Result<()
         return Err(update_error("更新安装包路径不安全"));
     }
     Ok(())
+}
+
+/// Re-hashes a cached setup against the `<name>.sha256` record written when it
+/// was published. Anything that modified or replaced the file after download —
+/// corruption, another process — is rejected and removed instead of launched.
+fn verify_cached_hash(setup_path: &Path) -> Result<()> {
+    let Some(name) = setup_path.file_name().and_then(|name| name.to_str()) else {
+        return Err(update_error("更新安装包路径不安全"));
+    };
+    let hash_record = setup_path.with_file_name(format!("{name}.sha256"));
+    let recorded = fs::read_to_string(&hash_record)
+        .map_err(|_| update_error("缓存更新安装包缺少校验记录，请重新下载"))?;
+    let expected = recorded.trim();
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(update_error("缓存更新校验记录无效，请重新下载"));
+    }
+    let actual = hash_file_streaming(setup_path)?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        let _ = fs::remove_file(setup_path);
+        let _ = fs::remove_file(&hash_record);
+        return Err(update_error("缓存更新安装包与校验记录不一致，请重新下载"));
+    }
+    Ok(())
+}
+
+fn hash_file_streaming(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)
+        .map_err(|source| AppError::io("reading cached update", path, source))?;
+    let mut hasher = Sha256Stream::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|source| AppError::io("reading cached update", path, source))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finish_hex())
 }
 
 fn is_safe_file_name(name: &str) -> bool {
@@ -774,6 +822,26 @@ mod tests {
         let next = ReleaseVersion::parse("1.2.4").expect("next");
         assert!(prerelease < stable);
         assert!(stable < next);
+    }
+
+    #[test]
+    fn cached_setup_hash_verification_accepts_match_and_rejects_tampering() {
+        let root = tempdir().expect("root");
+        let setup = root.path().join("AskBridge-1.2.3-Setup.exe");
+        fs::write(&setup, b"installer bytes").expect("setup");
+
+        // A missing record fails closed.
+        assert!(verify_cached_hash(&setup).is_err());
+
+        let record = root.path().join("AskBridge-1.2.3-Setup.exe.sha256");
+        fs::write(&record, format!("{}\n", test_hash(b"installer bytes"))).expect("record");
+        assert!(verify_cached_hash(&setup).is_ok());
+
+        fs::write(&setup, b"tampered bytes").expect("tamper");
+        assert!(verify_cached_hash(&setup).is_err());
+        // The tampered pair is removed so a retry forces a fresh download.
+        assert!(!setup.exists());
+        assert!(!record.exists());
     }
 
     #[test]

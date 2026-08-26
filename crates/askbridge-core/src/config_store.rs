@@ -18,6 +18,10 @@ pub struct ConfigLoad {
     pub recovered_from: Option<PathBuf>,
     pub created_default: bool,
     pub migrated: bool,
+    /// True when the file was written by a newer application version. The
+    /// defaults above only apply to this session; the original file stays on
+    /// disk untouched so a downgrade or re-upgrade loses nothing.
+    pub kept_unsupported_schema: bool,
 }
 
 impl ConfigStore {
@@ -38,6 +42,7 @@ impl ConfigStore {
                 recovered_from: None,
                 created_default: true,
                 migrated: false,
+                kept_unsupported_schema: false,
             });
         }
 
@@ -51,15 +56,25 @@ impl ConfigStore {
                     recovered_from: None,
                     created_default: false,
                     migrated,
+                    kept_unsupported_schema: false,
                 })
             }
-            Err(AppError::ConfigurationParse { .. })
-            | Err(AppError::ConfigurationInvalid(_))
-            | Err(AppError::UnsupportedConfigurationSchema { .. })
-            | Err(AppError::InvalidHotkey(_))
-            | Err(AppError::HotkeyConflict(_))
-            | Err(AppError::InvalidProvider(_))
-            | Err(AppError::InvalidProviderUrl(_)) => {
+            // A file from a newer app version is not corruption. Overwriting it
+            // with defaults would silently wipe the user's configuration the
+            // moment they roll back an update, so keep it on disk and run this
+            // session with defaults instead.
+            Err(AppError::UnsupportedConfigurationSchema { .. }) => Ok(ConfigLoad {
+                config: AppConfig::default(),
+                recovered_from: None,
+                created_default: false,
+                migrated: false,
+                kept_unsupported_schema: true,
+            }),
+            // I/O failures are environmental, not recoverable by resetting.
+            Err(error @ AppError::Io { .. }) => Err(error),
+            // Anything else means the content itself is unusable; back it up
+            // and start over from defaults rather than failing startup.
+            Err(_) => {
                 let backup_path = self.backup_corrupt_config()?;
                 let config = AppConfig::default();
                 self.save(&config)?;
@@ -68,9 +83,9 @@ impl ConfigStore {
                     recovered_from: Some(backup_path),
                     created_default: true,
                     migrated: false,
+                    kept_unsupported_schema: false,
                 })
             }
-            Err(error) => Err(error),
         }
     }
 
@@ -118,15 +133,22 @@ impl ConfigStore {
     }
 
     fn backup_corrupt_config(&self) -> Result<PathBuf> {
-        let suffix = SystemTime::now()
+        let mut suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let backup_path = self.path.with_extension(format!("corrupt-{suffix}.json"));
-        fs::rename(&self.path, &backup_path).map_err(|source| {
-            AppError::io("backing up corrupt configuration", &backup_path, source)
-        })?;
-        Ok(backup_path)
+        // Advance past any suffix that lost the race, so two corruptions in the
+        // same millisecond cannot make the rename fail and hard-error startup.
+        loop {
+            let backup_path = self.path.with_extension(format!("corrupt-{suffix}.json"));
+            if !backup_path.exists() {
+                fs::rename(&self.path, &backup_path).map_err(|source| {
+                    AppError::io("backing up corrupt configuration", &backup_path, source)
+                })?;
+                return Ok(backup_path);
+            }
+            suffix += 1;
+        }
     }
 }
 
@@ -247,5 +269,46 @@ mod tests {
             crate::config::CURRENT_SCHEMA_VERSION
         );
         assert_eq!(persisted["general"]["auto_submit"], false);
+    }
+
+    #[test]
+    fn keeps_newer_schema_file_instead_of_resetting_it() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("config.json");
+        let future_config = format!(
+            r#"{{ "schema_version": {} }}"#,
+            crate::config::CURRENT_SCHEMA_VERSION + 1
+        );
+        fs::write(&path, &future_config).expect("write future config");
+        let store = ConfigStore::new(&path);
+
+        let loaded = store.load_or_create().expect("load with session defaults");
+
+        assert!(loaded.kept_unsupported_schema);
+        assert!(!loaded.created_default);
+        assert_eq!(loaded.config, AppConfig::default());
+        // The file written by the newer version is still on disk untouched.
+        assert_eq!(
+            fs::read_to_string(&path).expect("read kept file"),
+            future_config
+        );
+    }
+
+    #[test]
+    fn recovers_with_defaults_from_parseable_but_invalid_content() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("config.json");
+        fs::write(&path, br#"{ "schema_version": 3, "quick_prompt": "   " }"#)
+            .expect("write invalid config");
+        let store = ConfigStore::new(&path);
+
+        let loaded = store.load_or_create().expect("recover config");
+
+        assert!(!loaded.kept_unsupported_schema);
+        assert!(loaded.recovered_from.is_some());
+        assert_eq!(
+            store.load().expect("load recovered config"),
+            AppConfig::default()
+        );
     }
 }

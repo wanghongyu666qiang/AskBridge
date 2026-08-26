@@ -1,5 +1,7 @@
-// Hand-rolled GDI+ FFI bindings and the per-paint session guard.
-// Kept self-contained: nothing outside this module touches Gdip* directly.
+// Hand-rolled GDI+ FFI bindings. Kept self-contained: nothing outside this
+// module touches Gdip* directly. The process-level startup token lives in
+// [`GdiPlusRuntime`] (one per overlay session); each paint only creates a
+// cheap graphics object bound to the paint DC through [`GdiPlusSession`].
 
 use std::ptr;
 
@@ -101,13 +103,15 @@ unsafe extern "system" {
     ) -> GpStatus;
 }
 
-pub(super) struct GdiPlusSession {
+/// Owns the process-wide GDI+ startup token. `GdiplusStartup`/`GdiplusShutdown`
+/// are documented as once-per-process calls; tearing the library down on every
+/// paint also rebuilds its background thread pool each frame.
+pub(super) struct GdiPlusRuntime {
     token: usize,
-    graphics: *mut core::ffi::c_void,
 }
 
-impl GdiPlusSession {
-    pub(super) unsafe fn start(hdc: *mut core::ffi::c_void) -> Option<Self> {
+impl GdiPlusRuntime {
+    pub(super) fn start() -> Option<Self> {
         let input = GdiplusStartupInput {
             gdiplus_version: 1,
             debug_event_callback: ptr::null_mut(),
@@ -115,21 +119,46 @@ impl GdiPlusSession {
             suppress_external_codecs: 0,
         };
         let mut token = 0usize;
+        // SAFETY: input describes version 1 and no callbacks or output are used.
         if unsafe { GdiplusStartup(&mut token, &input, ptr::null_mut()) } != GDIP_OK {
             return None;
         }
+        Some(Self { token })
+    }
+}
+
+impl Drop for GdiPlusRuntime {
+    fn drop(&mut self) {
+        // SAFETY: token came from a successful GdiplusStartup above.
+        unsafe {
+            GdiplusShutdown(self.token);
+        }
+    }
+}
+
+pub(super) struct GdiPlusSession<'runtime> {
+    _runtime: &'runtime GdiPlusRuntime,
+    graphics: *mut core::ffi::c_void,
+}
+
+impl<'runtime> GdiPlusSession<'runtime> {
+    pub(super) unsafe fn start(
+        hdc: *mut core::ffi::c_void,
+        runtime: &'runtime GdiPlusRuntime,
+    ) -> Option<Self> {
         let mut graphics = ptr::null_mut();
+        // SAFETY: hdc is a live paint or memory DC for this call.
         if unsafe { GdipCreateFromHDC(hdc, &mut graphics) } != GDIP_OK || graphics.is_null() {
-            unsafe {
-                GdiplusShutdown(token);
-            }
             return None;
         }
         unsafe {
             GdipSetSmoothingMode(graphics, GDIP_SMOOTHING_ANTIALIAS);
             GdipSetPixelOffsetMode(graphics, GDIP_PIXEL_OFFSET_HALF);
         }
-        Some(Self { token, graphics })
+        Some(Self {
+            _runtime: runtime,
+            graphics,
+        })
     }
 
     pub(super) fn rounded_rect_rect(
@@ -280,14 +309,11 @@ impl GdiPlusSession {
     }
 }
 
-impl Drop for GdiPlusSession {
+impl Drop for GdiPlusSession<'_> {
     fn drop(&mut self) {
         unsafe {
             if !self.graphics.is_null() {
                 GdipDeleteGraphics(self.graphics);
-            }
-            if self.token != 0 {
-                GdiplusShutdown(self.token);
             }
         }
     }

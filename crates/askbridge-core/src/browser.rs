@@ -53,12 +53,32 @@ impl TargetResolver {
 
 pub fn matches_any_pattern(url: &str, patterns: &[String]) -> bool {
     patterns.iter().any(|pattern| {
-        let pattern = pattern.trim_end_matches('/');
+        let pattern = normalize_scheme_and_host(pattern.trim_end_matches('/'));
+        let url = normalize_scheme_and_host(url);
         url == pattern
             || url
-                .strip_prefix(pattern)
+                .strip_prefix(&pattern)
                 .is_some_and(|suffix| suffix.starts_with('/') || suffix.starts_with('?'))
     })
+}
+
+/// Lowercases the `scheme://host` prefix so matching does not depend on the
+/// case a browser or the configuration happens to use; path and query keep
+/// their casing because some sites treat them as case-sensitive.
+fn normalize_scheme_and_host(value: &str) -> String {
+    let Some((scheme, rest)) = value.split_once("://") else {
+        return value.to_owned();
+    };
+    let (host, suffix) = match rest.find(['/', '?', '#']) {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, ""),
+    };
+    format!(
+        "{}://{}{}",
+        scheme.to_ascii_lowercase(),
+        host.to_ascii_lowercase(),
+        suffix
+    )
 }
 
 #[cfg(test)]
@@ -119,6 +139,31 @@ mod tests {
             TargetResolver::resolve(&targets, &patterns(), &FocusEvidence::Unknown),
             TargetDecision::CreateNew
         );
+    }
+
+    #[test]
+    fn scheme_and_host_case_differences_still_match() {
+        let uppercase_patterns = vec!["https://ChatGPT.com/".to_owned()];
+        assert!(matches_any_pattern(
+            "https://chatgpt.com/c/abc",
+            &uppercase_patterns
+        ));
+
+        let lowercase_patterns = vec!["https://chatgpt.com/".to_owned()];
+        assert!(matches_any_pattern(
+            "https://ChatGPT.com/c/ABC",
+            &lowercase_patterns
+        ));
+        // A case difference inside the pattern's own path stays significant.
+        let path_sensitive = vec!["https://example.test/Chat".to_owned()];
+        assert!(matches_any_pattern(
+            "https://EXAMPLE.test/Chat/x",
+            &path_sensitive
+        ));
+        assert!(!matches_any_pattern(
+            "https://example.test/chat",
+            &path_sensitive
+        ));
     }
 
     #[test]

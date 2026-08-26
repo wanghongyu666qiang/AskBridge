@@ -276,6 +276,36 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn apply_override_updates_present_fields_and_clears_adapter_on_none() {
+        // Outer `Some` with inner `None` is the explicit "clear the adapter"
+        // signal; it gates which automation script may run.
+        let mut provider = built_in_provider();
+        provider.apply_override(&ProviderOverride {
+            id: "example".to_owned(),
+            display_name: None,
+            enabled: Some(false),
+            start_url: None,
+            url_patterns: None,
+            adapter_override: Some(Some("gemini".to_owned())),
+        });
+        assert!(!provider.enabled);
+        assert_eq!(provider.adapter_override.as_deref(), Some("gemini"));
+
+        provider.apply_override(&ProviderOverride {
+            id: "example".to_owned(),
+            display_name: Some("Renamed".to_owned()),
+            enabled: None,
+            start_url: Some("https://renamed.example.com/".to_owned()),
+            url_patterns: Some(vec!["https://renamed.example.com/".to_owned()]),
+            adapter_override: Some(None),
+        });
+        assert_eq!(provider.display_name, "Renamed");
+        assert_eq!(provider.start_url, "https://renamed.example.com/");
+        assert_eq!(provider.url_patterns, vec!["https://renamed.example.com/"]);
+        assert_eq!(provider.adapter_override, None);
+    }
+
     fn built_in_provider() -> ProviderConfig {
         ProviderConfig {
             id: "example".to_owned(),

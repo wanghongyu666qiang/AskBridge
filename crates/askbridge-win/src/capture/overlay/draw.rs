@@ -344,10 +344,13 @@ pub(super) fn paint_overlay(window: HWND, state: &mut super::session::OverlaySta
         } else {
             (device_context, true)
         };
-        // One GDI+ session per paint, shared by every antialiased path. It must
-        // be bound to the context actually drawn into, matching where the
-        // per-call sessions used to start.
-        let gdi_session = GdiPlusSession::start(target_context);
+        // One graphics object per paint, bound to the context actually drawn
+        // into. The expensive process-wide GDI+ startup lives in the session
+        // state and is not repeated per frame.
+        let gdi_session = state
+            .gdi_runtime
+            .as_ref()
+            .and_then(|runtime| GdiPlusSession::start(target_context, runtime));
 
         draw_overlay_frame(
             target_context,
@@ -445,6 +448,9 @@ unsafe fn draw_toolbar(
         toolbar.providers.len(),
         fallback_toolbar_size(),
     );
+    let Some(selected) = toolbar.providers.get(toolbar.selected_index) else {
+        return;
+    };
     unsafe {
         if let Some(gdi) = gdi {
             draw_toolbar_antialiased(gdi, &layout, toolbar);
@@ -470,7 +476,7 @@ unsafe fn draw_toolbar(
         draw_toolbar_item(
             device_context,
             &layout.provider,
-            &toolbar.providers[toolbar.selected_index].display_name,
+            &selected.display_name,
             ToolbarIcon::Provider,
             true,
             cache,
@@ -494,10 +500,7 @@ unsafe fn draw_toolbar(
         draw_toolbar_item(
             device_context,
             &layout.ask,
-            &format!(
-                "问问 {}",
-                toolbar.providers[toolbar.selected_index].display_name
-            ),
+            &format!("问问 {}", selected.display_name),
             ToolbarIcon::Ask,
             false,
             cache,
@@ -522,10 +525,13 @@ unsafe fn draw_toolbar(
                         cache,
                     );
                 }
+                let Some(provider) = toolbar.providers.get(index) else {
+                    continue;
+                };
                 draw_text_in_rect(
                     device_context,
                     rect,
-                    &toolbar.providers[index].display_name,
+                    &provider.display_name,
                     COLOR_TOOLBAR_TEXT,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE,
                     cache,
@@ -583,29 +589,34 @@ unsafe fn draw_toolbar_labels(
 ) {
     unsafe {
         draw_toolbar_label(device_context, &layout.more, "更多", cache);
-        draw_toolbar_label(
-            device_context,
-            &layout.provider,
-            &toolbar.providers[toolbar.selected_index].display_name,
-            cache,
-        );
+        let selected = toolbar.providers.get(toolbar.selected_index);
+        if let Some(selected) = selected {
+            draw_toolbar_label(
+                device_context,
+                &layout.provider,
+                &selected.display_name,
+                cache,
+            );
+        }
         draw_toolbar_label(device_context, &layout.copy, "复制", cache);
         draw_toolbar_label(device_context, &layout.cancel, "取消", cache);
-        draw_toolbar_label(
-            device_context,
-            &layout.ask,
-            &format!(
-                "问问 {}",
-                toolbar.providers[toolbar.selected_index].display_name
-            ),
-            cache,
-        );
+        if let Some(selected) = selected {
+            draw_toolbar_label(
+                device_context,
+                &layout.ask,
+                &format!("问问 {}", selected.display_name),
+                cache,
+            );
+        }
         if toolbar.dropdown_open {
             for (index, rect) in layout.dropdown_rects.iter().enumerate() {
+                let Some(provider) = toolbar.providers.get(index) else {
+                    continue;
+                };
                 draw_text_in_rect(
                     device_context,
                     rect,
-                    &toolbar.providers[index].display_name,
+                    &provider.display_name,
                     COLOR_TOOLBAR_TEXT,
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE,
                     cache,

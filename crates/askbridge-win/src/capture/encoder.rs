@@ -3,9 +3,9 @@ use png::{BitDepth, ColorType, Compression, Encoder};
 
 use super::screen::RawBgraImage;
 
-pub fn captured_image(raw: &RawBgraImage, source_rect: ScreenRect) -> Result<CapturedImage> {
-    let rgba_bytes = bgra_to_rgba(&raw.pixels)?;
-    CapturedImage::new(raw.width, raw.height, rgba_bytes, source_rect)
+pub fn captured_image(mut raw: RawBgraImage, source_rect: ScreenRect) -> Result<CapturedImage> {
+    bgra_to_rgba_in_place(&mut raw.pixels)?;
+    CapturedImage::new(raw.width, raw.height, raw.pixels, source_rect)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -26,18 +26,18 @@ pub fn encode_png(image: &CapturedImage) -> Result<Vec<u8>> {
     Ok(png_bytes)
 }
 
-fn bgra_to_rgba(pixels: &[u8]) -> Result<Vec<u8>> {
+fn bgra_to_rgba_in_place(pixels: &mut [u8]) -> Result<()> {
     if pixels.len() % 4 != 0 {
         return Err(AppError::CaptureFailed(
             "BGRA capture buffer length is invalid".to_owned(),
         ));
     }
-    let mut rgba = pixels.to_vec();
-    for pixel in rgba.chunks_exact_mut(4) {
+    // In-place channel swap avoids a full-size copy of multi-monitor captures.
+    for pixel in pixels.chunks_exact_mut(4) {
         pixel.swap(0, 2);
         pixel[3] = 255;
     }
-    Ok(rgba)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -46,15 +46,15 @@ mod tests {
 
     #[test]
     fn converts_bgra_pixels_to_opaque_rgba() {
-        assert_eq!(
-            bgra_to_rgba(&[3, 2, 1, 0, 30, 20, 10, 128]).expect("valid pixels"),
-            vec![1, 2, 3, 255, 10, 20, 30, 255]
-        );
+        let mut pixels = vec![3, 2, 1, 0, 30, 20, 10, 128];
+        bgra_to_rgba_in_place(&mut pixels).expect("valid pixels");
+        assert_eq!(pixels, vec![1, 2, 3, 255, 10, 20, 30, 255]);
     }
 
     #[test]
     fn rejects_incomplete_bgra_pixels() {
-        assert!(bgra_to_rgba(&[1, 2, 3]).is_err());
+        let mut pixels = vec![1, 2, 3];
+        assert!(bgra_to_rgba_in_place(&mut pixels).is_err());
     }
 
     #[test]
@@ -66,7 +66,7 @@ mod tests {
         };
         let rect = ScreenRect::new(-5, 7, 1, 1);
 
-        let image = captured_image(&raw, rect).expect("capture conversion succeeds");
+        let image = captured_image(raw, rect).expect("capture conversion succeeds");
         let png_bytes = encode_png(&image).expect("PNG encoding succeeds");
 
         assert_eq!(image.source_rect, rect);

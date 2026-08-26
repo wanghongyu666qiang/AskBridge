@@ -5,7 +5,7 @@ use std::{
 
 use serde_json::Value;
 
-use crate::sha256::sha256_file;
+use askbridge_core::sha256_file;
 
 const MAX_DESKTOP_WORKING_SET_BYTES: f64 = 35.0 * 1024.0 * 1024.0;
 

@@ -21,6 +21,9 @@ impl PreparationPolicy {
                 "preparation timeout must be greater than zero".to_owned(),
             ));
         }
+        // Mirror the browser-timeout cap so no single policy can outwait the
+        // whole dispatch budget.
+        let timeout_ms = timeout_ms.min(crate::config::MAX_BROWSER_TIMEOUT_MS);
         Ok(Self {
             timeout_ms,
             submission_mode: SubmissionMode::UserConfirmationRequired,
@@ -125,5 +128,40 @@ mod tests {
                 .submission_mode,
             SubmissionMode::UserConfirmationRequired
         );
+    }
+
+    #[test]
+    fn policy_caps_timeout_at_the_browser_limit() {
+        let capped = PreparationPolicy::new(u64::MAX).expect("policy");
+        assert_eq!(capped.timeout_ms, crate::config::MAX_BROWSER_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn image_results_without_attachment_evidence_are_rejected() {
+        let request = DispatchRequest::new(
+            "request-1".to_owned(),
+            DispatchMode::CaptureWithPrompt,
+            "chatgpt".to_owned(),
+            "Explain this".to_owned(),
+            Some(
+                crate::CapturedImage::new(
+                    1,
+                    1,
+                    vec![0, 0, 0, 255],
+                    crate::ScreenRect::new(0, 0, 1, 1),
+                )
+                .expect("image"),
+            ),
+            1,
+        )
+        .expect("request");
+
+        let outcome = PreparationOutcome::prepared("https://example.test/chat", true, false);
+        assert!(matches!(
+            outcome.validate_for(&request),
+            Err(AppError::InvalidPreparation(_))
+        ));
+        let complete = PreparationOutcome::prepared("https://example.test/chat", true, true);
+        complete.validate_for(&request).expect("complete outcome");
     }
 }

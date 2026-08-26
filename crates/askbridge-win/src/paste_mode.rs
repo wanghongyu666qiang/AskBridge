@@ -24,9 +24,10 @@ use windows_sys::Win32::{
         },
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
-            BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowTextW,
-            GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOWNORMAL,
-            SetForegroundWindow, ShowWindow, SwitchToThisWindow,
+            BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow,
+            GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+            IsWindowVisible, SW_RESTORE, SW_SHOWNORMAL, SetForegroundWindow, ShowWindow,
+            SwitchToThisWindow,
         },
     },
 };
@@ -252,11 +253,32 @@ unsafe extern "system" fn enum_windows_callback(window: HWND, lparam: LPARAM) ->
     }
     // SAFETY: window is valid and title_buffer receives at most its length.
     let mut title_buffer = [0u16; 512];
-    let title_length =
+    let mut title_length =
         unsafe { GetWindowTextW(window, title_buffer.as_mut_ptr(), title_buffer.len() as i32) };
-    let title = String::from_utf16_lossy(
+    let mut title = String::from_utf16_lossy(
         &title_buffer[..title_length.clamp(0, title_buffer.len() as i32) as usize],
     );
+    if title_length == title_buffer.len() as i32 {
+        // The title filled the probe buffer: ask for the real length and
+        // re-read once instead of silently truncating (a keyword past the cut
+        // would never match). The cap keeps an absurd title from forcing a
+        // large allocation inside this enumeration callback.
+        const MAX_TITLE_CHARS: usize = 4096;
+        // SAFETY: window is valid; the call only reports the title length.
+        let reported = unsafe { GetWindowTextLengthW(window) };
+        let capacity = usize::try_from(reported).map(|length| length.saturating_add(1));
+        if let Ok(capacity) = capacity
+            && capacity <= MAX_TITLE_CHARS
+        {
+            let mut full_buffer = vec![0u16; capacity];
+            title_length = unsafe {
+                GetWindowTextW(window, full_buffer.as_mut_ptr(), full_buffer.len() as i32)
+            };
+            title = String::from_utf16_lossy(
+                &full_buffer[..title_length.clamp(0, full_buffer.len() as i32) as usize],
+            );
+        }
+    }
     if let Some(keyword_index) = title_match_index(&title.to_lowercase(), &search.keywords) {
         search.found.push(ProviderWindow {
             hwnd: window,

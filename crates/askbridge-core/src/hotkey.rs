@@ -210,9 +210,6 @@ pub enum HotkeyValidationError {
 
     #[error("dangerous system combination '{0}' is not allowed")]
     DangerousCombination(String),
-
-    #[error("hotkey duplicates '{0}'")]
-    Duplicate(String),
 }
 
 #[cfg(test)]

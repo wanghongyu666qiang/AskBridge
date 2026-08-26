@@ -1,7 +1,8 @@
 use std::{env, fs, path::PathBuf};
 
-use askbridge_core::RELEASE_SIGNING_PUBLIC_KEY;
+use askbridge_core::{RELEASE_SIGNING_PUBLIC_KEY, hex_to_array};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use zeroize::Zeroize;
 
 const SIGNING_KEY_ENV: &str = "ASKBRIDGE_UPDATE_SIGNING_KEY";
 
@@ -103,13 +104,16 @@ impl SignShaOptions {
 /// Signs the exact bytes of a SHA256SUMS.txt with the maintainer's offline
 /// Ed25519 key and writes the lowercase-hex signature next to it.
 pub(crate) fn sign_sha256sums(options: &SignShaOptions) -> Result<(), String> {
-    let secret_hex = match &options.key_file {
+    let mut secret_hex = match &options.key_file {
         Some(path) => read_secret_key(path)?,
         None => env::var(SIGNING_KEY_ENV).map_err(|_| {
             format!("signing requires --key-file or the {SIGNING_KEY_ENV} environment variable")
         })?,
     };
     let secret = parse_secret_key(&secret_hex)?;
+    // The process exits right after signing, but scrub the hex representation
+    // so the plaintext secret does not linger in freed heap memory.
+    secret_hex.zeroize();
     let message = fs::read(&options.input)
         .map_err(|error| format!("reading {}: {error}", options.input.display()))?;
     let signature = secret.sign(&message);
@@ -132,9 +136,9 @@ pub(crate) fn verify_signature_hex(
     signature_text: &str,
     public_key_hex: &str,
 ) -> Result<(), String> {
-    let public_key_bytes = decode_fixed::<32>(public_key_hex.trim())
+    let public_key_bytes = hex_to_array::<32>(public_key_hex.trim())
         .ok_or_else(|| "release public key is not valid 64-character hex".to_owned())?;
-    let signature_bytes = decode_fixed::<64>(signature_text.trim())
+    let signature_bytes = hex_to_array::<64>(signature_text.trim())
         .ok_or_else(|| "update signature is not valid 128-character hex".to_owned())?;
     let verifying_key = VerifyingKey::from_bytes(&public_key_bytes)
         .map_err(|error| format!("release public key is invalid: {error}"))?;
@@ -164,22 +168,11 @@ fn read_secret_key(path: &std::path::Path) -> Result<String, String> {
 }
 
 fn parse_secret_key(hex_text: &str) -> Result<SigningKey, String> {
-    let seed = decode_fixed::<32>(hex_text.trim())
+    let mut seed = hex_to_array::<32>(hex_text.trim())
         .ok_or_else(|| "the signing key must be 64 hex characters".to_owned())?;
-    Ok(SigningKey::from_bytes(&seed))
-}
-
-fn decode_fixed<const N: usize>(text: &str) -> Option<[u8; N]> {
-    if text.len() != N * 2 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    let mut decoded = [0_u8; N];
-    for (index, byte) in decoded.iter_mut().enumerate() {
-        let high = u32::from_str_radix(&text[2 * index..2 * index + 1], 16).ok()?;
-        let low = u32::from_str_radix(&text[2 * index + 1..2 * index + 2], 16).ok()?;
-        *byte = ((high << 4) | low) as u8;
-    }
-    Some(decoded)
+    let key = SigningKey::from_bytes(&seed);
+    seed.zeroize();
+    Ok(key)
 }
 
 fn encode_hex_lower(bytes: &[u8]) -> String {

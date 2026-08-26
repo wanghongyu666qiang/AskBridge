@@ -1,4 +1,4 @@
-use std::ptr;
+use std::{ptr, thread, time::Duration};
 
 use askbridge_core::{AppError, CapturedImage, Result};
 use windows_sys::Win32::{
@@ -10,11 +10,30 @@ use windows_sys::Win32::{
 };
 
 const CF_DIB_FORMAT: u32 = 8;
+const OPEN_RETRY_ATTEMPTS: u32 = 5;
+const OPEN_RETRY_DELAY: Duration = Duration::from_millis(40);
 
+/// Writes `image` to the clipboard as a CF_DIB.
+///
+/// Failure semantics: once [`EmptyClipboard`] succeeds, a later failure cannot
+/// restore the previous clipboard contents, so the clipboard may be left
+/// empty; the caller surfaces the error either way. Opening the clipboard is
+/// retried briefly because other applications routinely hold it open right
+/// after a screenshot is taken.
 pub fn copy_image_to_clipboard(owner: HWND, image: &CapturedImage) -> Result<()> {
     let dib = rgba_to_cf_dib(image)?;
-    // SAFETY: owner is a live AskBridge window and clipboard ownership is scoped by CloseClipboard.
-    if unsafe { OpenClipboard(owner) } == 0 {
+    let mut opened = false;
+    for attempt in 0..OPEN_RETRY_ATTEMPTS {
+        if attempt > 0 {
+            thread::sleep(OPEN_RETRY_DELAY);
+        }
+        // SAFETY: owner is a live AskBridge window and clipboard ownership is scoped by CloseClipboard.
+        if unsafe { OpenClipboard(owner) } != 0 {
+            opened = true;
+            break;
+        }
+    }
+    if !opened {
         return Err(AppError::ClipboardUnavailable);
     }
     let result = (|| {

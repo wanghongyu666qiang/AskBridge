@@ -152,7 +152,12 @@ pub(super) fn decode_chunked_body(body: &[u8]) -> Result<Vec<u8>> {
         let end = cursor
             .checked_add(size)
             .ok_or_else(|| AppError::BrowserProtocol("debugging chunk size overflow".to_owned()))?;
-        if end + 2 > body.len() || &body[end..end + 2] != b"\r\n" {
+        let Some(tail) = body.get(end..) else {
+            return Err(AppError::BrowserProtocol(
+                "invalid chunked debugging body".to_owned(),
+            ));
+        };
+        if tail.len() < 2 || &tail[..2] != b"\r\n" {
             return Err(AppError::BrowserProtocol(
                 "invalid chunked debugging body".to_owned(),
             ));
@@ -184,7 +189,10 @@ pub(super) fn chunked_body_length(body: &[u8]) -> Result<Option<usize>> {
             .map_err(|_| AppError::BrowserProtocol("invalid debugging chunk size".to_owned()))?;
         cursor = line_end + 2;
         if size == 0 {
-            if body.len() >= cursor + 2 && &body[cursor..cursor + 2] == b"\r\n" {
+            if body
+                .get(cursor..)
+                .is_some_and(|tail| tail.starts_with(b"\r\n"))
+            {
                 return Ok(Some(cursor + 2));
             }
             return Ok(None);
@@ -192,10 +200,13 @@ pub(super) fn chunked_body_length(body: &[u8]) -> Result<Option<usize>> {
         let end = cursor
             .checked_add(size)
             .ok_or_else(|| AppError::BrowserProtocol("debugging chunk size overflow".to_owned()))?;
-        if body.len() < end + 2 {
+        let Some(tail) = body.get(end..) else {
+            return Ok(None);
+        };
+        if tail.len() < 2 {
             return Ok(None);
         }
-        if &body[end..end + 2] != b"\r\n" {
+        if &tail[..2] != b"\r\n" {
             return Err(AppError::BrowserProtocol(
                 "invalid chunked debugging body".to_owned(),
             ));

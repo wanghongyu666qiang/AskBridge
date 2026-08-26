@@ -562,7 +562,7 @@ fn prepare_browser_job(
                 tracing::warn!(
                     stage = "browser_fallback_suppressed",
                     completed = false,
-                    error = %primary_failure.error,
+                    error_kind = primary_failure.error.kind(),
                     provider_preparation_started = primary_failure.provider_preparation_started,
                     "automatic clipboard fallback was suppressed to avoid duplicate insertion"
                 );
@@ -571,7 +571,7 @@ fn prepare_browser_job(
             tracing::warn!(
                 stage = "browser_fallback_started",
                 completed = false,
-                error = %primary_failure.error,
+                error_kind = primary_failure.error.kind(),
                 "managed browser preparation failed safely; starting clipboard fallback"
             );
             send_event(
@@ -869,6 +869,13 @@ fn close_idle_managed_browser(manager: &mut Option<ChromeManager>, client: &mut 
 }
 
 fn close_managed_browser(manager: &mut Option<ChromeManager>, client: &mut Option<CdpClient>) {
+    // Bounded so application exit (which joins this worker after Shutdown)
+    // never waits tens of seconds on an unresponsive Chrome. Whatever the
+    // graceful path does not finish in time falls through to terminate.
+    const SHUTDOWN_BUDGET: Duration = Duration::from_secs(7);
+    const MIN_STEP: Duration = Duration::from_secs(1);
+    let started = Instant::now();
+    let remaining = || SHUTDOWN_BUDGET.saturating_sub(started.elapsed());
     let Some(manager) = manager.as_mut() else {
         return;
     };
@@ -876,17 +883,25 @@ fn close_managed_browser(manager: &mut Option<ChromeManager>, client: &mut Optio
         return;
     }
     let close_cancelled = AtomicBool::new(false);
-    let closed = client
+    let mut closed = client
         .take()
-        .is_some_and(|client| client.close_browser(&close_cancelled).is_ok())
-        || manager.read_managed_endpoint().is_ok_and(|endpoint| {
-            CdpClient::connect(endpoint, Duration::from_secs(5), &close_cancelled)
-                .and_then(|client| client.close_browser(&close_cancelled))
-                .is_ok()
-        });
+        .is_some_and(|client| client.close_browser(&close_cancelled).is_ok());
+    if !closed
+        && remaining() >= MIN_STEP
+        && let Some(endpoint) = manager.read_managed_endpoint().ok()
+    {
+        closed = CdpClient::connect(
+            endpoint,
+            remaining().min(Duration::from_secs(5)),
+            &close_cancelled,
+        )
+        .and_then(|client| client.close_browser(&close_cancelled))
+        .is_ok();
+    }
     let exited = closed
+        && remaining() >= MIN_STEP
         && manager
-            .wait_for_managed_exit(Duration::from_secs(5))
+            .wait_for_managed_exit(remaining().min(Duration::from_secs(5)))
             .unwrap_or(false);
     if !exited && manager.terminate_managed().is_err() {
         tracing::warn!(

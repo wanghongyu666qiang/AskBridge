@@ -10,10 +10,12 @@ use serde_json::{Map, Value};
 use zip::ZipArchive;
 
 use crate::release_signing::{embedded_public_key, verify_signature_hex};
-use crate::sha256::{sha256_file, sha256_reader};
+use askbridge_core::{sha256_file, sha256_reader};
 
 const DEFAULT_MAX_RELEASE_EXE_BYTES: u64 = 15 * 1024 * 1024;
-const DEFAULT_MAX_SETUP_BYTES: u64 = 25 * 1024 * 1024;
+// Mirrors MAX_SETUP_BYTES in crates/askbridge-win/src/update/mod.rs so the
+// client download cap and the release validator agree on what is plausible.
+const DEFAULT_MAX_SETUP_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_MAX_STATIC_RESOURCE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SIGNATURE_FILE_BYTES: usize = 1024;
 const REQUIRED_PAYLOAD: [&str; 8] = [
@@ -356,7 +358,9 @@ fn validate_hash_manifest(root: &Path, artifacts: &ArtifactSet) -> Result<(), St
             return Err(format!("Hash target '{leaf}' is missing or ambiguous."));
         }
         let actual_hash = sha256(matches[0])?;
-        if actual_hash != expected_hash {
+        // package.ps1 records uppercase digests; the shared hasher emits
+        // lowercase, so compare case-insensitively like the update client.
+        if !actual_hash.eq_ignore_ascii_case(expected_hash) {
             return Err(format!("Hash verification failed for '{leaf}'."));
         }
         targets.insert(normalized_leaf, leaf.to_owned());
@@ -432,7 +436,7 @@ fn validate_identity_and_sizes(
         required_file(&options.expected_release_exe_path, "ExpectedReleaseExePath")?;
     let expected_hash = sha256(&expected_release)?;
     let packaged_hash = sha256(&release_exe)?;
-    if packaged_hash != expected_hash {
+    if !packaged_hash.eq_ignore_ascii_case(&expected_hash) {
         return Err(format!(
             "Packaged askbridge.exe hash does not match the expected Release EXE. package={packaged_hash} expected={expected_hash}"
         ));
@@ -598,10 +602,12 @@ fn validate_portable_executable(path: &Path, label: &str) -> Result<(), String> 
 }
 
 fn parse_hash_line(line: &str) -> Result<(&str, &str), String> {
+    // Both cases are accepted: package.ps1 records uppercase digests while
+    // sha256sum-style tooling emits lowercase.
     if line.len() < 67
         || !line.as_bytes()[..64]
             .iter()
-            .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(byte))
+            .all(|byte| byte.is_ascii_hexdigit())
         || &line.as_bytes()[64..66] != b"  "
         || line[66..].is_empty()
     {

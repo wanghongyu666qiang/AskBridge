@@ -1,3 +1,5 @@
+use std::fmt;
+
 use std::path::PathBuf;
 
 use thiserror::Error;
@@ -13,6 +15,19 @@ pub enum PreparationFailureStage {
     NavigationChanged,
 }
 
+impl fmt::Display for PreparationFailureStage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::PageReadiness => "page-readiness",
+            Self::ComposerDiscovery => "composer-discovery",
+            Self::AttachmentPreparation => "attachment-preparation",
+            Self::Verification => "verification",
+            Self::NavigationChanged => "navigation-changed",
+        };
+        formatter.write_str(name)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreparationRecovery {
     Retry,
@@ -20,6 +35,19 @@ pub enum PreparationRecovery {
     LoginInBrowser,
     ProviderPageChanged,
     UseDedicatedChrome,
+}
+
+impl fmt::Display for PreparationRecovery {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Retry => "retry",
+            Self::ReopenProviderPage => "reopen-provider-page",
+            Self::LoginInBrowser => "login-in-browser",
+            Self::ProviderPageChanged => "provider-page-changed",
+            Self::UseDedicatedChrome => "use-dedicated-chrome",
+        };
+        formatter.write_str(name)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -142,7 +170,7 @@ pub enum AppError {
     InvalidPreparation(String),
 
     #[error(
-        "page preparation failed at {stage:?}; recovery={recovery:?}; text_inserted={text_inserted}; attachment_prepared={attachment_prepared}"
+        "page preparation failed at {stage}; recovery={recovery}; text_inserted={text_inserted}; attachment_prepared={attachment_prepared}"
     )]
     PreparationFailed {
         stage: PreparationFailureStage,
@@ -158,6 +186,50 @@ impl AppError {
             context,
             path: path.into(),
             source,
+        }
+    }
+
+    /// Stable snake_case category for structured logging. Unlike `Display`,
+    /// this never carries user content, file paths, or operating-system
+    /// message text, so it is always safe to write into log fields.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::HotkeyRegistrationFailed { .. } => "hotkey_registration_failed",
+            Self::HotkeyConflict(_) => "hotkey_conflict",
+            Self::InvalidHotkey(_) => "invalid_hotkey",
+            Self::HotkeyTransactionFailed(_) => "hotkey_transaction_failed",
+            Self::ConfigurationInvalid(_) => "configuration_invalid",
+            Self::UnsupportedConfigurationSchema { .. } => "unsupported_configuration_schema",
+            Self::ConfigurationParse { .. } => "configuration_parse",
+            Self::Io { .. } => "io",
+            Self::SingleInstance { .. } => "single_instance",
+            Self::Windows { .. } => "windows",
+            Self::AlreadyRunning => "already_running",
+            Self::CaptureFailed(_) => "capture_failed",
+            Self::ClipboardUnavailable => "clipboard_unavailable",
+            Self::ClipboardWriteFailed => "clipboard_write_failed",
+            Self::InvalidProvider(_) => "invalid_provider",
+            Self::InvalidProviderUrl(_) => "invalid_provider_url",
+            Self::InvalidDispatchRequest(_) => "invalid_dispatch_request",
+            Self::WorkflowBusy(_) => "workflow_busy",
+            Self::InvalidWorkflowTransition { .. } => "invalid_workflow_transition",
+            Self::BrowserLaunchFailed => "browser_launch_failed",
+            Self::DesktopShortcutNotFound(_) => "desktop_shortcut_not_found",
+            Self::DesktopShortcutRejected(_) => "desktop_shortcut_rejected",
+            Self::DesktopLaunchFailed(_) => "desktop_launch_failed",
+            Self::ChromeNotFound => "chrome_not_found",
+            Self::BrowserProfileRejected(_) => "browser_profile_rejected",
+            Self::BrowserProfileInUse => "browser_profile_in_use",
+            Self::BrowserEndpointUnavailable => "browser_endpoint_unavailable",
+            Self::BrowserConnectionFailed(_) => "browser_connection_failed",
+            Self::BrowserProtocol(_) => "browser_protocol",
+            Self::BrowserCancelled => "browser_cancelled",
+            Self::UpdateFailed(_) => "update_failed",
+            Self::PasteTargetUnavailable => "paste_target_unavailable",
+            Self::TargetNotFound => "target_not_found",
+            Self::TargetTimeout => "target_timeout",
+            Self::InvalidPreparation(_) => "invalid_preparation",
+            Self::PreparationFailed { .. } => "preparation_failed",
         }
     }
 }

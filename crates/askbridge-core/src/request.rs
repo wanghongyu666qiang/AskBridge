@@ -27,6 +27,10 @@ pub struct DispatchRequest {
     pub provider_id: String,
     pub prompt: String,
     pub image: Option<CapturedImage>,
+    /// Permanent compatibility tombstone: deserialization refuses to set it
+    /// (`skip_deserializing`) and validation rejects `true`, so wire-level
+    /// tampering cannot enable auto-submit. Do not resurrect this field as a
+    /// feature.
     #[serde(default, skip_deserializing)]
     pub auto_submit: bool,
     pub created_at_ms: u64,

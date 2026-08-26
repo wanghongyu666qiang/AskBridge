@@ -33,9 +33,15 @@ pub(super) fn toolbar_layout(
     toolbar_size: (i32, i32),
 ) -> ToolbarLayout {
     let (total_width, toolbar_height) = toolbar_size;
-    let right = selection_rect
-        .right
-        .clamp(client.left + total_width + 8, client.right - 8);
+    // On clients narrower than the toolbar the clamp range inverts; pin to the
+    // left edge and let the toolbar clip instead of panicking.
+    let min_right = client.left + total_width.saturating_add(8);
+    let max_right = client.right - 8;
+    let right = if max_right < min_right {
+        min_right
+    } else {
+        selection_rect.right.clamp(min_right, max_right)
+    };
     let left = right - total_width;
     let below = selection_rect.bottom + TOOLBAR_GAP;
     let above = selection_rect.top - toolbar_height - TOOLBAR_GAP;
@@ -198,5 +204,46 @@ mod tests {
         let layout = toolbar_layout(&client, &selection, 4, toolbar_webview::preferred_size());
 
         assert_eq!(layout.outer.right, selection.right);
+    }
+
+    #[test]
+    fn narrow_client_pins_toolbar_instead_of_panicking() {
+        let client = RECT {
+            left: 0,
+            top: 0,
+            right: 400,
+            bottom: 300,
+        };
+        let selection = RECT {
+            left: 40,
+            top: 60,
+            right: 200,
+            bottom: 120,
+        };
+
+        let layout = toolbar_layout(&client, &selection, 1, (680, 46));
+
+        assert_eq!(layout.outer.left, client.left + 8);
+        assert_eq!(layout.outer.right, layout.outer.left + 680);
+    }
+
+    #[test]
+    fn negative_origin_narrow_client_pins_to_left_edge() {
+        let client = RECT {
+            left: -1920,
+            top: 0,
+            right: -1600,
+            bottom: 300,
+        };
+        let selection = RECT {
+            left: -1880,
+            top: 50,
+            right: -1750,
+            bottom: 110,
+        };
+
+        let layout = toolbar_layout(&client, &selection, 2, (680, 46));
+
+        assert_eq!(layout.outer.left, client.left + 8);
     }
 }
