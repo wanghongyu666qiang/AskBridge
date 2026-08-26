@@ -46,3 +46,25 @@ pub fn confirm_close_managed_browser(owner: HWND) -> bool {
         ) == IDYES
     }
 }
+
+pub fn confirm_update(owner: HWND, version: &str, notes: &str, release_url: &str) -> bool {
+    let title = wide("AskBridge 更新");
+    let notes = if notes.trim().is_empty() {
+        "此版本没有附加更新说明。"
+    } else {
+        notes.trim()
+    };
+    let message = wide(&format!(
+        "发现 AskBridge {version}。\n\n{notes}\n\n发布页面：{release_url}\n\n是否下载并安装？安装完成后 AskBridge 会自动重新启动。"
+    ));
+    // SAFETY: Both strings are valid NUL-terminated UTF-16 buffers and owner is the live
+    // AskBridge hidden window. The dialog is synchronous and owns no external pointers.
+    unsafe {
+        MessageBoxW(
+            owner,
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2,
+        ) == IDYES
+    }
+}

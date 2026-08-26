@@ -39,6 +39,12 @@ Screenshot
 
 `auto_submit` 在请求、配置、打包 metadata 和验收中都必须为 `false`。AskBridge 可以准备截图与文字，但不会点击发送按钮，也不会读取网页聊天正文；用户始终负责最终确认和发送。
 
+## 应用更新
+
+`UpdateService` 是独立于截图和浏览器工作流的单工作线程模块。它以 `check_now`、`download`、`launch_installer` 为小接口，内部负责 GitHub Release 解析、版本比较、官方资产地址约束、大小限制、SHA-256、`data/Updates` 原子落盘和事件队列。启动时检查一次，此后最多每 24 小时检查一次；只有用户在托盘确认后才下载。
+
+主进程不直接覆盖自身。校验通过后，它以既有安装目录、父进程 PID 和重启标记启动独立 `Setup.exe`，然后走正常退出；Setup 等待并验证对应 AskBridge 进程已经退出，再调用既有安装事务原位置升级、保留 `data` 并重启。普通手工安装不带这些一次性环境变量，行为保持不变。
+
 ## PowerShell 与 xtask
 
 - PowerShell：Windows 编排、安装/卸载、Setup 与真实 UI/browser smoke test。

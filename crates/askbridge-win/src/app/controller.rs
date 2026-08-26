@@ -21,6 +21,7 @@ use crate::{
     single_instance::{MAIN_WINDOW_CLASS, SingleInstance},
     startup,
     tray::TrayIcon,
+    update::{AvailableUpdate, UpdateService},
     util::last_error,
 };
 
@@ -84,6 +85,7 @@ pub fn run() -> Result<()> {
     let registration_errors = hotkeys.register_initial(&loaded.config.hotkeys);
     let tray = TrayIcon::create(main_window.hwnd())?;
     let settings = SettingsWindow::create(ptr::null_mut(), instance, &loaded.config, &data_root)?;
+    let updater = UpdateService::start(main_window.hwnd(), &data_root, env!("CARGO_PKG_VERSION"))?;
     let browser = BrowserService::start(main_window.hwnd(), data_root);
 
     let mut runtime = Runtime {
@@ -92,6 +94,9 @@ pub fn run() -> Result<()> {
         tray,
         settings,
         browser,
+        updater,
+        available_update: None,
+        update_busy: false,
         config: loaded.config,
         store,
         workflow: WorkflowController::default(),
@@ -143,6 +148,9 @@ pub(super) struct Runtime {
     pub(super) tray: TrayIcon,
     pub(super) settings: SettingsWindow,
     pub(super) browser: BrowserService,
+    pub(super) updater: UpdateService,
+    pub(super) available_update: Option<AvailableUpdate>,
+    pub(super) update_busy: bool,
     pub(super) config: AppConfig,
     pub(super) store: ConfigStore,
     pub(super) workflow: WorkflowController,

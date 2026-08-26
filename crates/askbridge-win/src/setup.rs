@@ -13,12 +13,21 @@ use std::{
 
 const TRAILER_MAGIC: &[u8; 16] = b"ASKBRIDGESETUP10";
 const FOOTER_LEN: u64 = 24;
+const INSTALL_ROOT_ENV: &str = "ASKBRIDGE_INSTALL_ROOT";
+const UPDATE_PARENT_PID_ENV: &str = "ASKBRIDGE_UPDATE_PARENT_PID";
+const RESTART_AFTER_INSTALL_ENV: &str = "ASKBRIDGE_RESTART_AFTER_INSTALL";
 
 #[derive(Debug)]
 struct PayloadEntry {
     name: String,
     offset: u64,
     length: u64,
+}
+
+#[derive(Debug)]
+struct UpdateLaunch {
+    install_root: PathBuf,
+    parent_pid: u32,
 }
 
 fn main() {
@@ -30,6 +39,7 @@ fn main() {
 
 fn run() -> io::Result<()> {
     let setup_exe = env::current_exe()?;
+    let update_launch = validate_update_environment()?;
     let entries = read_payload_manifest(&setup_exe)?;
     let extraction_root = unique_extraction_root()?;
     fs::create_dir_all(&extraction_root)?;
@@ -43,14 +53,25 @@ fn run() -> io::Result<()> {
                 "installer payload is missing Install-AskBridge.ps1",
             ));
         }
-        Command::new("powershell.exe")
+        let mut command = Command::new("powershell.exe");
+        command
             .arg("-NoProfile")
             .arg("-ExecutionPolicy")
             .arg("Bypass")
             .arg("-File")
             .arg(&install_script)
-            .current_dir(&extraction_root)
-            .output()
+            .current_dir(&extraction_root);
+        if let Some(update) = &update_launch {
+            // Normalize and explicitly forward the update contract. This prevents a malformed
+            // inherited value from reaching the installer script after Setup has validated it.
+            command
+                .arg("-InstallRoot")
+                .arg(&update.install_root)
+                .env(INSTALL_ROOT_ENV, &update.install_root)
+                .env(UPDATE_PARENT_PID_ENV, update.parent_pid.to_string())
+                .env(RESTART_AFTER_INSTALL_ENV, "1");
+        }
+        command.output()
     })();
 
     let cleanup_result = fs::remove_dir_all(&extraction_root);
@@ -72,6 +93,126 @@ fn run() -> io::Result<()> {
             stderr.trim()
         )))
     }
+}
+
+fn validate_update_environment() -> io::Result<Option<UpdateLaunch>> {
+    let parent_pid = match env::var(UPDATE_PARENT_PID_ENV) {
+        Ok(value) => Some(parse_update_parent_pid(&value, std::process::id())?),
+        Err(env::VarError::NotPresent) => None,
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ASKBRIDGE_UPDATE_PARENT_PID is not valid UTF-8",
+            ));
+        }
+    };
+    let restart_requested = match env::var(RESTART_AFTER_INSTALL_ENV) {
+        Ok(value) => value == "1",
+        Err(env::VarError::NotPresent) => false,
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ASKBRIDGE_RESTART_AFTER_INSTALL is not valid UTF-8",
+            ));
+        }
+    };
+
+    if parent_pid.is_none() && !restart_requested {
+        return Ok(None);
+    }
+    let parent_pid = parent_pid.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ASKBRIDGE_UPDATE_PARENT_PID is required for an update install",
+        )
+    })?;
+    let requested_root = env::var(INSTALL_ROOT_ENV).map_err(|error| match error {
+        env::VarError::NotPresent => io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ASKBRIDGE_INSTALL_ROOT is required for an update install",
+        ),
+        env::VarError::NotUnicode(_) => io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ASKBRIDGE_INSTALL_ROOT is not valid UTF-8",
+        ),
+    })?;
+    let requested_root = PathBuf::from(requested_root);
+    if !requested_root.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ASKBRIDGE_INSTALL_ROOT must be an absolute path",
+        ));
+    }
+    let canonical_install_root = fs::canonicalize(&requested_root).map_err(|source| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("ASKBRIDGE_INSTALL_ROOT cannot be resolved: {source}"),
+        )
+    })?;
+    let install_root = powershell_compatible_path(&canonical_install_root)?;
+    if install_root.file_name().is_none() || !install_root.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ASKBRIDGE_INSTALL_ROOT must name an existing non-root directory",
+        ));
+    }
+    if !install_root.join("askbridge.exe").is_file()
+        || !install_root.join("install-manifest.json").is_file()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ASKBRIDGE_INSTALL_ROOT is not an existing AskBridge installation",
+        ));
+    }
+    Ok(Some(UpdateLaunch {
+        install_root,
+        parent_pid,
+    }))
+}
+
+fn powershell_compatible_path(path: &Path) -> io::Result<PathBuf> {
+    let value = path.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ASKBRIDGE_INSTALL_ROOT resolved to a non-Unicode path",
+        )
+    })?;
+    let normalized = if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = value.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    };
+    if !normalized.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ASKBRIDGE_INSTALL_ROOT did not resolve to a PowerShell-compatible absolute path",
+        ));
+    }
+    Ok(normalized)
+}
+
+fn parse_update_parent_pid(value: &str, current_pid: u32) -> io::Result<u32> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ASKBRIDGE_UPDATE_PARENT_PID must be a positive decimal process ID",
+        ));
+    }
+    let pid = value.parse::<u64>().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ASKBRIDGE_UPDATE_PARENT_PID must be a positive decimal process ID",
+        )
+    })?;
+    if pid == 0 || pid > u32::MAX as u64 || pid == current_pid as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ASKBRIDGE_UPDATE_PARENT_PID must identify another valid process",
+        ));
+    }
+    Ok(pid as u32)
 }
 
 fn read_payload_manifest(path: &Path) -> io::Result<Vec<PayloadEntry>> {
@@ -204,4 +345,36 @@ fn show_error(title: &str, message: &str) {
             message, title
         ))
         .status();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_parent_pid_accepts_only_a_positive_decimal_pid() {
+        assert_eq!(parse_update_parent_pid("1234", 4321).expect("pid"), 1234);
+        for value in ["", "0", "-1", "+1", " 1", "1 ", "1.0", "abc"] {
+            assert!(parse_update_parent_pid(value, 4321).is_err(), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn update_parent_pid_cannot_be_setup_or_exceed_windows_pid_range() {
+        assert!(parse_update_parent_pid("4321", 4321).is_err());
+        assert!(parse_update_parent_pid("4294967296", 4321).is_err());
+    }
+
+    #[test]
+    fn powershell_path_removes_windows_verbatim_prefixes() {
+        assert_eq!(
+            powershell_compatible_path(Path::new(r"\\?\D:\AskBridge")).expect("drive path"),
+            PathBuf::from(r"D:\AskBridge")
+        );
+        assert_eq!(
+            powershell_compatible_path(Path::new(r"\\?\UNC\server\share\AskBridge"))
+                .expect("UNC path"),
+            PathBuf::from(r"\\server\share\AskBridge")
+        );
+    }
 }

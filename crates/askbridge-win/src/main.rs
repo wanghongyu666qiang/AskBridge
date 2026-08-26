@@ -16,6 +16,7 @@ mod settings_v2;
 mod single_instance;
 mod startup;
 mod tray;
+mod update;
 mod util;
 
 fn main() {

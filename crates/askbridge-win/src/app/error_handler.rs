@@ -34,6 +34,7 @@ pub(super) fn user_facing_error(error: &AppError) -> String {
             "无法连接 AskBridge 专用 Chrome，请重试。".to_owned()
         }
         AppError::BrowserCancelled => "浏览器操作已取消。".to_owned(),
+        AppError::UpdateFailed(details) => format!("程序更新失败：{details}"),
         AppError::PasteTargetUnavailable => {
             "未能激活匹配的浏览器页面或 AI 桌面客户端。请先打开目标窗口，或在设置中改用其他打开方式。".to_owned()
         }

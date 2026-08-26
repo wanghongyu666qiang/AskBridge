@@ -18,6 +18,7 @@ use crate::{
     capture::WM_CAPTURE_BUSY,
     single_instance::{ACTIVATE_MESSAGE, MAIN_WINDOW_CLASS, MAIN_WINDOW_TITLE},
     tray::{TrayEvent, WM_TRAY_CALLBACK, WM_TRAY_DISPATCH, decode_tray_callback},
+    update::WM_UPDATE_EVENT,
     util::{last_error, wide},
 };
 
@@ -73,6 +74,10 @@ impl Runtime {
                     .notify("AskBridge 正在框选", "框选期间触发的其他快捷键已忽略。");
                 Ok(true)
             }
+            WM_UPDATE_EVENT => {
+                self.handle_update_events();
+                Ok(true)
+            }
             WM_HOTKEY => {
                 if !self.paused
                     && let Some(command) = self.hotkeys.command_for_id(message.wParam as i32)
@@ -84,7 +89,13 @@ impl Runtime {
             WM_TRAY_DISPATCH => {
                 match decode_tray_callback(message.lParam) {
                     TrayEvent::ContextMenu => {
-                        if let Some(command) = self.tray.show_menu(self.paused)? {
+                        if let Some(command) = self.tray.show_menu(
+                            self.paused,
+                            self.available_update
+                                .as_ref()
+                                .map(|update| update.version()),
+                            self.update_busy,
+                        )? {
                             self.handle_command(command)?;
                         }
                     }
@@ -249,12 +260,17 @@ mod tests {
         assert_ne!(WM_TRAY_CALLBACK, WM_CAPTURE_BUSY);
         assert_ne!(WM_TRAY_CALLBACK, WM_TRAY_DISPATCH);
         assert_ne!(WM_TRAY_CALLBACK, WM_BROWSER_EVENT);
+        assert_ne!(WM_TRAY_CALLBACK, WM_UPDATE_EVENT);
         assert_ne!(WM_TRAY_DISPATCH, ACTIVATE_MESSAGE);
         assert_ne!(WM_TRAY_DISPATCH, WM_CAPTURE_BUSY);
         assert_ne!(WM_TRAY_DISPATCH, WM_BROWSER_EVENT);
+        assert_ne!(WM_TRAY_DISPATCH, WM_UPDATE_EVENT);
         assert_ne!(ACTIVATE_MESSAGE, WM_CAPTURE_BUSY);
         assert_ne!(ACTIVATE_MESSAGE, WM_BROWSER_EVENT);
+        assert_ne!(ACTIVATE_MESSAGE, WM_UPDATE_EVENT);
         assert_ne!(WM_CAPTURE_BUSY, WM_BROWSER_EVENT);
+        assert_ne!(WM_CAPTURE_BUSY, WM_UPDATE_EVENT);
+        assert_ne!(WM_BROWSER_EVENT, WM_UPDATE_EVENT);
     }
 
     #[test]

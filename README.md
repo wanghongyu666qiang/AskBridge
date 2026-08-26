@@ -10,6 +10,8 @@ AskBridge 是一个 Windows 截图问答工具。框选屏幕内容后，可以�
 2. 双击安装程序并选择安装位置。
 3. 安装完成后运行 `askbridge.exe`。程序启动后常驻 Windows 托盘，右键托盘图标可以打开设置或退出。
 
+AskBridge 启动后会在后台检查 GitHub Releases，此后每 24 小时检查一次。发现新版本时会显示托盘通知；也可以右键托盘图标选择“检查更新”。通过 `Setup.exe` 安装的版本只有在你确认后，才会把官方安装包下载到 `data/Updates`，核对发布页提供的 SHA-256，正常退出、原位置升级并重新启动。更新会保留全部 `data`；失败时恢复原程序。便携版会提示新版本，但需要从官方 Release 手动替换程序文件。
+
 普通用户不需要打开 PowerShell，也不需要运行仓库 `scripts` 目录中的任何命令。
 
 在本仓库参与开发时，编译后的调试程序位于 `target/debug/askbridge.exe`，发布程序位于 `target/release/askbridge.exe`。
@@ -53,7 +55,7 @@ ChatGPT 可以在“设置 > 浏览器”中选择四种打开方式：
 - 安装版或便携版：`askbridge.exe` 同目录下的 `data`
 - 自定义位置：设置绝对路径环境变量 `ASKBRIDGE_DATA_DIR`
 
-配置、日志和专用浏览器资料分别位于 `data/config.json`、`data/logs` 和 `data/BrowserProfile`。网页上传使用的临时截图在操作完成、失败或取消后删除。
+配置、日志、专用浏览器资料和更新缓存分别位于 `data/config.json`、`data/logs`、`data/BrowserProfile` 和 `data/Updates`。网页上传使用的临时截图在操作完成、失败或取消后删除；已使用或遗留的更新安装包会在下次启动时清理。
 
 更多信息见 [隐私说明](docs/PRIVACY.md) 和 [故障排查](docs/TROUBLESHOOTING.md)。
 
@@ -91,6 +93,14 @@ cargo xtask help
 ```
 
 脚本不会默认把发布产物写入 C 盘。
+
+推送普通提交只会运行 CI，不会创建 Release。发布时先确保 `Cargo.toml` 中的版本号已更新并完成本地验收，再推送与版本号完全一致的 `vX.Y.Z` 标签；`.github/workflows/release.yml` 会在 Windows MSVC 环境自动复查格式、Clippy、测试和发布构建，生成安装包、便携包及 SHA-256 文件，并创建 GitHub Release：
+
+```powershell
+git push origin main
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
 
 </details>
 

@@ -27,8 +27,15 @@ $previousRunEntry = Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorActio
 $previousRunValue = if ($null -eq $previousRunEntry) { $null } else { [string]$previousRunEntry.AskBridge }
 $previousInstallEnvironment = $env:ASKBRIDGE_INSTALL_ROOT
 $previousDataEnvironment = $env:ASKBRIDGE_DATA_DIR
+$previousUpdateParent = $env:ASKBRIDGE_UPDATE_PARENT_PID
+$previousRestartAfterInstall = $env:ASKBRIDGE_RESTART_AFTER_INSTALL
+$previousSetupNoDialog = $env:ASKBRIDGE_SETUP_NO_DIALOG
 $setupProcess = $null
 $installedProcess = $null
+$updateParentProcess = $null
+$updateParentPid = $null
+$updateRestartedProcess = $null
+$updateStopper = $null
 
 function Get-AskBridgePackageVersion {
     Push-Location $repoRoot
@@ -45,7 +52,7 @@ function Get-AskBridgePackageVersion {
 }
 
 try {
-    Write-Host "[1/4] Build portable and self-extracting packages"
+    Write-Host "[1/5] Build portable and self-extracting packages"
     & (Join-Path $repoRoot "scripts\package.ps1") -ArtifactRoot $artifactRoot
     if ($LASTEXITCODE -ne 0) { throw "package.ps1 failed with exit code $LASTEXITCODE." }
     $expectedVersion = Get-AskBridgePackageVersion
@@ -67,9 +74,15 @@ try {
     $setup = @(Get-ChildItem -LiteralPath $artifactRoot -File -Filter "*-Setup.exe")
     if ($setup.Count -ne 1) { throw "Packaging did not produce exactly one Setup.exe." }
 
-    Write-Host "[2/4] Run Setup.exe and verify clean exit"
+    Write-Host "[2/5] Run Setup.exe and verify clean exit"
     $env:ASKBRIDGE_INSTALL_ROOT = $installRoot
-    $setupProcess = Start-Process -FilePath $setup[0].FullName -PassThru -WindowStyle Hidden
+    $env:ASKBRIDGE_UPDATE_PARENT_PID = $null
+    $env:ASKBRIDGE_RESTART_AFTER_INSTALL = $null
+    $env:ASKBRIDGE_SETUP_NO_DIALOG = "1"
+    $initialSetupStdout = Join-Path $root "setup-install.stdout.log"
+    $initialSetupStderr = Join-Path $root "setup-install.stderr.log"
+    $setupProcess = Start-Process -FilePath $setup[0].FullName -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput $initialSetupStdout -RedirectStandardError $initialSetupStderr
     $manifestPath = Join-Path $installRoot "install-manifest.json"
     $deadline = [DateTime]::UtcNow.AddSeconds(45)
     while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
@@ -81,6 +94,14 @@ try {
     if (-not $setupProcess.WaitForExit(30000)) {
         throw "Setup.exe did not exit after installation."
     }
+    $setupProcess.WaitForExit()
+    $setupProcess.Refresh()
+    $setupExitCode = $setupProcess.ExitCode
+    if ($null -ne $setupExitCode -and $setupExitCode -ne 0) {
+        $setupError = Get-Content -LiteralPath $initialSetupStderr -Raw -ErrorAction SilentlyContinue
+        $setupOutput = Get-Content -LiteralPath $initialSetupStdout -Raw -ErrorAction SilentlyContinue
+        throw "Setup.exe installation failed with exit code $setupExitCode. stderr: $setupError stdout: $setupOutput"
+    }
     $setupProcess = $null
     foreach ($file in @("askbridge.exe", "WebView2Loader.dll", "install-manifest.json", "Uninstall-AskBridge.ps1")) {
         if (-not (Test-Path -LiteralPath (Join-Path $installRoot $file) -PathType Leaf)) {
@@ -88,10 +109,76 @@ try {
         }
     }
 
-    Write-Host "[3/4] Start the installed application"
+    Write-Host "[3/5] Run Setup.exe in update mode and restart the installed application"
     # The acceptance root is below the repository target directory, so explicitly bind the
     # child process to its installed data directory instead of the development-tree data root.
     $env:ASKBRIDGE_DATA_DIR = Join-Path $installRoot "data"
+    $updateSentinel = Join-Path $installRoot "data\setup-update-preserves-data.txt"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $updateSentinel) -Force | Out-Null
+    Set-Content -LiteralPath $updateSentinel -Value "preserve-me" -Encoding ASCII
+    $updateParentProcess = @(Start-Process -FilePath (Join-Path $installRoot "askbridge.exe") -PassThru -WindowStyle Hidden)[0]
+    $updateParentPid = [int]$updateParentProcess.Id
+    Start-Sleep -Seconds 2
+    if ($null -eq (Get-Process -Id $updateParentPid -ErrorAction SilentlyContinue)) {
+        throw "Setup-installed AskBridge exited before update acceptance."
+    }
+    $env:ASKBRIDGE_UPDATE_PARENT_PID = [string]$updateParentPid
+    $env:ASKBRIDGE_RESTART_AFTER_INSTALL = "1"
+    $stopCommand = "Start-Sleep -Milliseconds 750; Stop-Process -Id $updateParentPid -Force -ErrorAction SilentlyContinue"
+    $updateStopper = Start-Process -FilePath "powershell.exe" -ArgumentList @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $stopCommand
+    ) -PassThru -WindowStyle Hidden
+    $updateSetupStdout = Join-Path $root "setup-update.stdout.log"
+    $updateSetupStderr = Join-Path $root "setup-update.stderr.log"
+    $setupProcess = Start-Process -FilePath $setup[0].FullName -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput $updateSetupStdout -RedirectStandardError $updateSetupStderr
+    if (-not $setupProcess.WaitForExit(30000)) {
+        throw "Setup.exe update mode did not exit after installation."
+    }
+    $setupProcess.WaitForExit()
+    $setupProcess.Refresh()
+    $setupExitCode = $setupProcess.ExitCode
+    if ($null -ne $setupExitCode -and $setupExitCode -ne 0) {
+        $setupError = Get-Content -LiteralPath $updateSetupStderr -Raw -ErrorAction SilentlyContinue
+        $setupOutput = Get-Content -LiteralPath $updateSetupStdout -Raw -ErrorAction SilentlyContinue
+        throw "Setup.exe update mode failed with exit code $setupExitCode. stderr: $setupError stdout: $setupOutput"
+    }
+    $setupProcess = $null
+    $updateParentProcess.Refresh()
+    if (-not $updateParentProcess.HasExited) {
+        throw "Setup.exe update mode returned before its owning AskBridge process exited."
+    }
+    if (-not (Test-Path -LiteralPath $updateSentinel -PathType Leaf)) {
+        throw "Setup.exe update mode removed user data."
+    }
+    $targetExecutable = [IO.Path]::GetFullPath((Join-Path $installRoot "askbridge.exe"))
+    $restartDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        $updateRestartedProcess = @(Get-Process -Name askbridge -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Path -and $_.Path.Equals($targetExecutable, [StringComparison]::OrdinalIgnoreCase)
+            } | Select-Object -First 1)
+        if ($updateRestartedProcess.Count -gt 0) { break }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $restartDeadline)
+    if ($updateRestartedProcess.Count -eq 0) {
+        $setupError = Get-Content -LiteralPath $updateSetupStderr -Raw -ErrorAction SilentlyContinue
+        $setupOutput = Get-Content -LiteralPath $updateSetupStdout -Raw -ErrorAction SilentlyContinue
+        $applicationLog = Get-Content -LiteralPath (Join-Path $installRoot "data\logs\askbridge.log") -Raw -ErrorAction SilentlyContinue
+        $observedProcesses = @(Get-Process -Name askbridge -ErrorAction SilentlyContinue | ForEach-Object {
+            "PID=$($_.Id) Path=$($_.Path)"
+        }) -join "; "
+        throw "Setup.exe update mode did not restart AskBridge. stderr: $setupError stdout: $setupOutput application log: $applicationLog observed processes: $observedProcesses"
+    }
+    $updateRestartedProcess = $updateRestartedProcess[0]
+    $env:ASKBRIDGE_UPDATE_PARENT_PID = $previousUpdateParent
+    $env:ASKBRIDGE_RESTART_AFTER_INSTALL = $previousRestartAfterInstall
+    $env:ASKBRIDGE_SETUP_NO_DIALOG = $previousSetupNoDialog
+    Stop-Process -Id $updateRestartedProcess.Id -Force -ErrorAction SilentlyContinue
+    Wait-Process -Id $updateRestartedProcess.Id -Timeout 5 -ErrorAction SilentlyContinue
+    $updateRestartedProcess = $null
+
+    Write-Host "[4/5] Start the installed application"
     $installedProcess = Start-Process -FilePath (Join-Path $installRoot "askbridge.exe") -PassThru -WindowStyle Hidden
     Start-Sleep -Seconds 2
     $installedProcess.Refresh()
@@ -100,25 +187,33 @@ try {
     Wait-Process -Id $installedProcess.Id -Timeout 5 -ErrorAction SilentlyContinue
     $installedProcess = $null
 
-    Write-Host "[4/4] Uninstall and remove isolated data"
+    Write-Host "[5/5] Uninstall and remove isolated data"
     & (Join-Path $installRoot "Uninstall-AskBridge.ps1") -InstallRoot $installRoot -RemoveData
     if (Test-Path -LiteralPath (Join-Path $installRoot "askbridge.exe")) {
         throw "Setup smoke uninstall left askbridge.exe behind."
     }
-    Write-Host "Setup.exe version, hashes, Release EXE identity, extraction, install, clean exit, first launch, and uninstall acceptance passed."
+    Write-Host "Setup.exe version, hashes, Release EXE identity, extraction, install, update wait/restart, clean exit, first launch, and uninstall acceptance passed."
 }
 finally {
-    foreach ($ownedProcess in @($installedProcess, $setupProcess)) {
+    foreach ($ownedProcess in @($installedProcess, $updateParentProcess, $updateRestartedProcess, $updateStopper, $setupProcess)) {
         if ($null -ne $ownedProcess) {
-            $ownedProcess.Refresh()
-            if (-not $ownedProcess.HasExited) {
-                Stop-Process -Id $ownedProcess.Id -Force -ErrorAction SilentlyContinue
-                Wait-Process -Id $ownedProcess.Id -Timeout 5 -ErrorAction SilentlyContinue
+            try {
+                $ownedProcess.Refresh()
+                if (-not $ownedProcess.HasExited) {
+                    Stop-Process -InputObject $ownedProcess -Force -ErrorAction SilentlyContinue
+                    $ownedProcess.WaitForExit(5000) | Out-Null
+                }
+            }
+            catch {
+                # The owned process may already have exited and released its process handle.
             }
         }
     }
     $env:ASKBRIDGE_INSTALL_ROOT = $previousInstallEnvironment
     $env:ASKBRIDGE_DATA_DIR = $previousDataEnvironment
+    $env:ASKBRIDGE_UPDATE_PARENT_PID = $previousUpdateParent
+    $env:ASKBRIDGE_RESTART_AFTER_INSTALL = $previousRestartAfterInstall
+    $env:ASKBRIDGE_SETUP_NO_DIALOG = $previousSetupNoDialog
     if ($null -eq $previousRunValue) {
         Remove-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction SilentlyContinue
     }

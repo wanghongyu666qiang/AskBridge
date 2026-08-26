@@ -30,9 +30,12 @@ if ($existing.Count -gt 0) {
 }
 
 $logicalProcessors = [Math]::Max(1, [Environment]::ProcessorCount)
-$startClock = [Diagnostics.Stopwatch]::StartNew()
-$process = Start-Process -FilePath $executable -PassThru -WindowStyle Hidden
+$previousDisableUpdateCheck = $env:ASKBRIDGE_DISABLE_UPDATE_CHECK
+$process = $null
 try {
+    $env:ASKBRIDGE_DISABLE_UPDATE_CHECK = "1"
+    $startClock = [Diagnostics.Stopwatch]::StartNew()
+    $process = Start-Process -FilePath $executable -PassThru -WindowStyle Hidden
     $process.WaitForInputIdle(5000) | Out-Null
     $coldStartMs = $startClock.Elapsed.TotalMilliseconds
     Start-Sleep -Seconds 2
@@ -104,11 +107,12 @@ try {
     Write-Host "Performance report written to $resolvedOutput"
 }
 finally {
-    if (-not $process.HasExited) {
+    $env:ASKBRIDGE_DISABLE_UPDATE_CHECK = $previousDisableUpdateCheck
+    if ($null -ne $process -and -not $process.HasExited) {
         $process.CloseMainWindow() | Out-Null
         Start-Sleep -Milliseconds 500
     }
-    if (-not $process.HasExited) {
+    if ($null -ne $process -and -not $process.HasExited) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     }
 }

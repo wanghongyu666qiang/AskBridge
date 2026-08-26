@@ -10,7 +10,7 @@ use windows_sys::Win32::{
         },
         WindowsAndMessaging::{
             AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HICON, LoadIconW, MF_CHECKED,
-            MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SetForegroundWindow, TPM_BOTTOMALIGN,
+            MF_GRAYED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SetForegroundWindow, TPM_BOTTOMALIGN,
             TPM_LEFTALIGN, TPM_RETURNCMD, TrackPopupMenu, WM_APP, WM_CONTEXTMENU, WM_LBUTTONDBLCLK,
             WM_RBUTTONUP,
         },
@@ -27,6 +27,8 @@ pub const MENU_TEXT_ONLY: u16 = 1003;
 pub const MENU_PAUSE: u16 = 1004;
 pub const MENU_SETTINGS: u16 = 1005;
 pub const MENU_EXIT: u16 = 1006;
+pub const MENU_CHECK_UPDATES: u16 = 1007;
+pub const MENU_INSTALL_UPDATE: u16 = 1008;
 
 const TRAY_ICON_ID: u32 = 1;
 
@@ -100,7 +102,12 @@ impl TrayIcon {
         Ok(tray)
     }
 
-    pub fn show_menu(&self, paused: bool) -> Result<Option<u16>> {
+    pub fn show_menu(
+        &self,
+        paused: bool,
+        available_update: Option<&str>,
+        update_busy: bool,
+    ) -> Result<Option<u16>> {
         // SAFETY: CreatePopupMenu has no preconditions.
         let menu = unsafe { CreatePopupMenu() };
         if menu.is_null() {
@@ -122,6 +129,25 @@ impl TrayIcon {
                 MF_STRING | if paused { MF_CHECKED } else { MF_UNCHECKED },
             )?;
             append_item(menu, MENU_SETTINGS, "设置…", MF_STRING)?;
+            append_item(menu, 0, "", MF_SEPARATOR)?;
+            append_item(
+                menu,
+                MENU_CHECK_UPDATES,
+                if update_busy {
+                    "正在检查或下载更新…"
+                } else {
+                    "检查更新…"
+                },
+                MF_STRING | if update_busy { MF_GRAYED } else { 0 },
+            )?;
+            if let Some(version) = available_update {
+                append_item(
+                    menu,
+                    MENU_INSTALL_UPDATE,
+                    &format!("安装 AskBridge {version}…"),
+                    MF_STRING | if update_busy { MF_GRAYED } else { 0 },
+                )?;
+            }
             append_item(menu, 0, "", MF_SEPARATOR)?;
             append_item(menu, MENU_EXIT, "退出", MF_STRING)?;
 

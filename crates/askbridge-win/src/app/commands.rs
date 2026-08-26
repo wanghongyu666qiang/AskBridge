@@ -8,8 +8,8 @@ use crate::{
         CONTROL_OPEN_BROWSER, CONTROL_OPEN_LOGIN, CONTROL_RESTORE_DEFAULTS,
     },
     tray::{
-        MENU_CAPTURE_QUICK, MENU_CAPTURE_WITH_PROMPT, MENU_EXIT, MENU_PAUSE, MENU_SETTINGS,
-        MENU_TEXT_ONLY,
+        MENU_CAPTURE_QUICK, MENU_CAPTURE_WITH_PROMPT, MENU_CHECK_UPDATES, MENU_EXIT,
+        MENU_INSTALL_UPDATE, MENU_PAUSE, MENU_SETTINGS, MENU_TEXT_ONLY,
     },
 };
 
@@ -23,6 +23,8 @@ impl Runtime {
             MENU_TEXT_ONLY => self.route_command(AppCommand::TextOnlyPrompt),
             MENU_PAUSE => self.toggle_paused(),
             MENU_SETTINGS => self.settings.show(),
+            MENU_CHECK_UPDATES => self.check_for_updates(),
+            MENU_INSTALL_UPDATE => self.prompt_and_download_update(),
             MENU_EXIT => {
                 info!("application exit requested");
                 self.browser.cancel();
