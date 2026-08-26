@@ -10,7 +10,7 @@ AskBridge 是一个 Windows 截图问答工具。框选屏幕内容后，可以�
 2. 双击安装程序并选择安装位置。
 3. 安装完成后运行 `askbridge.exe`。程序启动后常驻 Windows 托盘，右键托盘图标可以打开设置或退出。
 
-AskBridge 启动后会在后台检查 GitHub Releases，此后每 24 小时检查一次。发现新版本时会显示托盘通知；也可以右键托盘图标选择“检查更新”。通过 `Setup.exe` 安装的版本只有在你确认后，才会把官方安装包下载到 `data/Updates`，核对发布页提供的 SHA-256，正常退出、原位置升级并重新启动。更新会保留全部 `data`；失败时恢复原程序。便携版会提示新版本，但需要从官方 Release 手动替换程序文件。
+AskBridge 启动后会在后台检查 GitHub Releases，此后每 24 小时检查一次。发现新版本时会显示托盘通知；也可以右键托盘图标选择“检查更新”。通过 `Setup.exe` 安装的版本只有在你确认后，才会把官方安装包下载到 `data/Updates` 并在设置窗口显示进度，核对发布页提供的 SHA-256 以及维护者的离线 Ed25519 签名，正常退出、原位置升级并重新启动。如果安装器启动失败，可以从托盘菜单再次选择“安装”，直接使用已校验的安装包，无需重新下载。更新会保留全部 `data`；失败时恢复原程序。便携版会提示新版本，但需要从官方 Release 手动替换程序文件。
 
 普通用户不需要打开 PowerShell，也不需要运行仓库 `scripts` 目录中的任何命令。
 
@@ -94,13 +94,21 @@ cargo xtask help
 
 脚本不会默认把发布产物写入 C 盘。
 
-推送普通提交只会运行 CI，不会创建 Release。发布时先确保 `Cargo.toml` 中的版本号已更新并完成本地验收，再推送与版本号完全一致的 `vX.Y.Z` 标签；`.github/workflows/release.yml` 会在 Windows MSVC 环境自动复查格式、Clippy、测试和发布构建，生成安装包、便携包及 SHA-256 文件，并创建 GitHub Release：
+推送普通提交只会运行 CI，不会创建 Release。发布时先确保 `Cargo.toml` 中的版本号已更新并完成本地验收，再推送与版本号完全一致的 `vX.Y.Z` 标签；`.github/workflows/release.yml` 会在 Windows MSVC 环境自动复查格式、Clippy、测试和发布构建，生成安装包、便携包及 SHA-256 文件并用仓库密钥对哈希清单做离线 Ed25519 签名，然后创建 GitHub Release：
 
 ```powershell
 git push origin main
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
+
+发布依赖 GitHub Actions 保密项 `UPDATE_SIGNING_KEY` 中保存的签名私钥（十六进制）。本地生成密钥对使用：
+
+```powershell
+cargo xtask gen-update-key --output <绝对路径>
+```
+
+本地打包同样必须提供 `-UpdateSigningKeyFile` 或环境变量 `ASKBRIDGE_UPDATE_SIGNING_KEY`，否则打包会直接失败。
 
 </details>
 

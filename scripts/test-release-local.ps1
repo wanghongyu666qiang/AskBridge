@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$AcceptanceRoot,
-    [switch]$SelfTestFailureHandling
+    [switch]$SelfTestFailureHandling,
+    [string]$UpdateSigningKeyFile
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,6 +10,15 @@ Set-StrictMode -Version Latest
 
 $repoRoot = [IO.Path]::GetFullPath((Resolve-Path (Join-Path $PSScriptRoot "..")).Path).TrimEnd('\')
 $targetRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "target")).TrimEnd('\') + '\'
+
+# Fall back to the conventional gitignored key location next to the repository.
+$UpdateSigningKeyFile = [string]$UpdateSigningKeyFile
+if ([string]::IsNullOrWhiteSpace($UpdateSigningKeyFile)) {
+    $defaultKeyFile = Join-Path $repoRoot ".update-signing-key.json"
+    if (Test-Path -LiteralPath $defaultKeyFile -PathType Leaf) {
+        $UpdateSigningKeyFile = $defaultKeyFile
+    }
+}
 
 function Invoke-Step {
     param([string]$Name, [scriptblock]$Command)
@@ -107,7 +117,8 @@ try {
 
     Invoke-Step "[7/10] Build and validate temporary package artifacts" {
         & (Join-Path $repoRoot "scripts\test-package.ps1") `
-            -AcceptanceRoot (Join-Path $root "package")
+            -AcceptanceRoot (Join-Path $root "package") `
+            -UpdateSigningKeyFile $UpdateSigningKeyFile
     }
 
     Invoke-Step "[8/10] Run Rust format, Clippy, and tests" {

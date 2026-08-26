@@ -9,11 +9,13 @@ use std::{
 use serde_json::{Map, Value};
 use zip::ZipArchive;
 
+use crate::release_signing::{embedded_public_key, verify_signature_hex};
 use crate::sha256::{sha256_file, sha256_reader};
 
 const DEFAULT_MAX_RELEASE_EXE_BYTES: u64 = 15 * 1024 * 1024;
 const DEFAULT_MAX_SETUP_BYTES: u64 = 25 * 1024 * 1024;
 const DEFAULT_MAX_STATIC_RESOURCE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_SIGNATURE_FILE_BYTES: usize = 1024;
 const REQUIRED_PAYLOAD: [&str; 8] = [
     "askbridge.exe",
     "WebView2Loader.dll",
@@ -41,6 +43,7 @@ pub(crate) struct PackageArtifactOptions {
     max_release_exe_bytes: u64,
     max_setup_bytes: u64,
     max_static_resource_bytes: u64,
+    require_update_signature: bool,
 }
 
 impl PackageArtifactOptions {
@@ -52,23 +55,30 @@ impl PackageArtifactOptions {
         let mut max_release_exe_bytes = DEFAULT_MAX_RELEASE_EXE_BYTES;
         let mut max_setup_bytes = DEFAULT_MAX_SETUP_BYTES;
         let mut max_static_resource_bytes = DEFAULT_MAX_STATIC_RESOURCE_BYTES;
+        let mut require_update_signature = false;
         let mut args = args.into_iter();
         while let Some(flag) = args.next() {
-            let value = args
-                .next()
-                .ok_or_else(|| format!("{flag} requires a value"))?;
             match flag.as_str() {
-                "--artifact-root" => artifact_root = Some(value.into()),
-                "--expected-version" => expected_version = Some(value),
-                "--expected-release-exe-path" => expected_release_exe_path = Some(value.into()),
-                "--expected-source-root" => expected_source_root = Some(value.into()),
+                "--artifact-root" => artifact_root = Some(option_value(&flag, &mut args)?.into()),
+                "--expected-version" => expected_version = Some(option_value(&flag, &mut args)?),
+                "--expected-release-exe-path" => {
+                    expected_release_exe_path = Some(option_value(&flag, &mut args)?.into())
+                }
+                "--expected-source-root" => {
+                    expected_source_root = Some(option_value(&flag, &mut args)?.into())
+                }
                 "--max-release-exe-bytes" => {
-                    max_release_exe_bytes = parse_positive_bytes(&flag, &value)?
+                    max_release_exe_bytes =
+                        parse_positive_bytes(&flag, &option_value(&flag, &mut args)?)?
                 }
-                "--max-setup-bytes" => max_setup_bytes = parse_positive_bytes(&flag, &value)?,
+                "--max-setup-bytes" => {
+                    max_setup_bytes = parse_positive_bytes(&flag, &option_value(&flag, &mut args)?)?
+                }
                 "--max-static-resource-bytes" => {
-                    max_static_resource_bytes = parse_positive_bytes(&flag, &value)?
+                    max_static_resource_bytes =
+                        parse_positive_bytes(&flag, &option_value(&flag, &mut args)?)?
                 }
+                "--require-update-signature" => require_update_signature = true,
                 _ => return Err(format!("unknown option '{flag}'")),
             }
         }
@@ -94,19 +104,27 @@ impl PackageArtifactOptions {
             max_release_exe_bytes,
             max_setup_bytes,
             max_static_resource_bytes,
+            require_update_signature,
         })
     }
 }
 
 pub(crate) fn validate_package_artifacts(options: &PackageArtifactOptions) -> Result<(), String> {
     let artifact_root = required_directory(&options.artifact_root, "ArtifactRoot")?;
-    let artifacts = discover_artifacts(&artifact_root, &options.expected_version)?;
+    let artifacts = discover_artifacts(
+        &artifact_root,
+        &options.expected_version,
+        options.require_update_signature,
+    )?;
     validate_file_header(&artifacts.zip, &[0x50, 0x4B], "Portable ZIP")?;
     validate_portable_executable(&artifacts.setup, "Setup EXE")?;
 
     let portable_files = validate_portable_payload(&artifacts.portable)?;
     validate_zip(&artifacts.zip, &artifacts.portable, &portable_files)?;
     validate_hash_manifest(&artifact_root, &artifacts)?;
+    if let Some(signature) = &artifacts.signature {
+        validate_signature_file(signature, &artifacts.hashes)?;
+    }
     validate_metadata(&artifacts.portable, &options.expected_version)?;
     validate_identity_and_sizes(options, &artifacts)?;
     Ok(())
@@ -117,9 +135,14 @@ struct ArtifactSet {
     zip: PathBuf,
     setup: PathBuf,
     hashes: PathBuf,
+    signature: Option<PathBuf>,
 }
 
-fn discover_artifacts(root: &Path, version: &str) -> Result<ArtifactSet, String> {
+fn discover_artifacts(
+    root: &Path,
+    version: &str,
+    require_update_signature: bool,
+) -> Result<ArtifactSet, String> {
     let entries = read_entries(root)?;
     let portable = single_matching(&entries, true, "portable directory", |name| {
         name.starts_with("AskBridge-")
@@ -133,11 +156,23 @@ fn discover_artifacts(root: &Path, version: &str) -> Result<ArtifactSet, String>
     let hashes = single_matching(&entries, false, "SHA256SUMS file", |name| {
         name.starts_with("AskBridge-") && name.ends_with("-SHA256SUMS.txt")
     })?;
+    let signature = optional_matching(&entries, false, "update signature file", |name| {
+        name.starts_with("AskBridge-") && name.ends_with("-SHA256SUMS.txt.sig")
+    })?;
+    if require_update_signature && signature.is_none() {
+        return Err(
+            "Artifact output is missing the required SHA256SUMS update signature (.sig)."
+                .to_owned(),
+        );
+    }
 
-    let allowed: HashSet<OsString> = [&portable, &zip, &setup, &hashes]
+    let mut allowed: HashSet<OsString> = [&portable, &zip, &setup, &hashes]
         .into_iter()
         .filter_map(|path| path.file_name().map(ToOwned::to_owned))
         .collect();
+    if let Some(signature) = &signature {
+        allowed.extend(signature.file_name().map(ToOwned::to_owned));
+    }
     let unexpected: Vec<String> = entries
         .iter()
         .filter(|entry| !allowed.contains(&entry.file_name()))
@@ -160,11 +195,20 @@ fn discover_artifacts(root: &Path, version: &str) -> Result<ArtifactSet, String>
             "Artifact names do not match expected version {version}."
         ));
     }
+    if let Some(signature) = &signature
+        && !file_name(signature)?
+            .eq_ignore_ascii_case(&format!("{expected_name}-SHA256SUMS.txt.sig"))
+    {
+        return Err(format!(
+            "Artifact names do not match expected version {version}."
+        ));
+    }
     Ok(ArtifactSet {
         portable,
         zip,
         setup,
         hashes,
+        signature,
     })
 }
 
@@ -572,7 +616,38 @@ fn single_matching(
     label: &str,
     predicate: impl Fn(&str) -> bool,
 ) -> Result<PathBuf, String> {
-    let matches: Vec<PathBuf> = entries
+    let matches = matching_entries(entries, directory, predicate);
+    if matches.len() != 1 {
+        return Err(format!(
+            "Artifact output must contain exactly one {label}; found {}.",
+            matches.len()
+        ));
+    }
+    Ok(matches.into_iter().next().expect("one match"))
+}
+
+fn optional_matching(
+    entries: &[fs::DirEntry],
+    directory: bool,
+    label: &str,
+    predicate: impl Fn(&str) -> bool,
+) -> Result<Option<PathBuf>, String> {
+    let matches = matching_entries(entries, directory, predicate);
+    if matches.len() > 1 {
+        return Err(format!(
+            "Artifact output must contain at most one {label}; found {}.",
+            matches.len()
+        ));
+    }
+    Ok(matches.into_iter().next())
+}
+
+fn matching_entries(
+    entries: &[fs::DirEntry],
+    directory: bool,
+    predicate: impl Fn(&str) -> bool,
+) -> Vec<PathBuf> {
+    entries
         .iter()
         .filter(|entry| {
             entry
@@ -581,14 +656,37 @@ fn single_matching(
                 && predicate(&entry.file_name().to_string_lossy())
         })
         .map(fs::DirEntry::path)
-        .collect();
-    if matches.len() != 1 {
+        .collect()
+}
+
+/// Checks the detached maintainer signature over the exact SHA256SUMS bytes.
+fn validate_signature_file(signature: &Path, hashes: &Path) -> Result<(), String> {
+    validate_signature_file_with_key(signature, hashes, embedded_public_key())
+}
+
+fn validate_signature_file_with_key(
+    signature: &Path,
+    hashes: &Path,
+    public_key_hex: &str,
+) -> Result<(), String> {
+    let message =
+        fs::read(hashes).map_err(|error| format!("reading {}: {error}", hashes.display()))?;
+    let signature_bytes =
+        fs::read(signature).map_err(|error| format!("reading {}: {error}", signature.display()))?;
+    if signature_bytes.len() > MAX_SIGNATURE_FILE_BYTES {
         return Err(format!(
-            "Artifact output must contain exactly one {label}; found {}.",
-            matches.len()
+            "Update signature file {} is unexpectedly large.",
+            signature.display()
         ));
     }
-    Ok(matches.into_iter().next().expect("one match"))
+    let signature_text = std::str::from_utf8(&signature_bytes)
+        .map_err(|_| "Update signature must be ASCII hex text.".to_owned())?;
+    verify_signature_hex(&message, signature_text, public_key_hex).map_err(|error| {
+        format!(
+            "Update signature verification failed for {}: {error}",
+            signature.display()
+        )
+    })
 }
 
 fn collect_files(root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -678,6 +776,11 @@ fn parse_positive_bytes(flag: &str, value: &str) -> Result<u64, String> {
         .ok()
         .filter(|value| *value > 0)
         .ok_or_else(|| format!("{flag} must be a positive byte count"))
+}
+
+fn option_value(flag: &str, args: &mut impl Iterator<Item = String>) -> Result<String, String> {
+    args.next()
+        .ok_or_else(|| format!("{flag} requires a value"))
 }
 
 fn required_option<T>(value: Option<T>, message: &str) -> Result<T, String> {

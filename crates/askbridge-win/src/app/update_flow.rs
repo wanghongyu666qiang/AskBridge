@@ -1,12 +1,14 @@
+use std::path::Path;
+
 use tracing::{error, info, warn};
 use windows_sys::Win32::UI::WindowsAndMessaging::PostQuitMessage;
 
 use crate::{
-    update::{UpdateAction, UpdateEvent},
+    update::{AvailableUpdate, UpdateAction, UpdateEvent},
     util::confirm_update,
 };
 
-use super::controller::Runtime;
+use super::{controller::Runtime, error_handler::user_facing_error};
 
 impl Runtime {
     pub(super) fn check_for_updates(&mut self) {
@@ -45,6 +47,12 @@ impl Runtime {
                     release.version()
                 ),
             );
+            return;
+        }
+        // A previously downloaded and verified setup is installed directly;
+        // the user already consented when it was downloaded.
+        if let Some(setup_path) = self.updater.cached_verified_setup(release.version()) {
+            self.install_downloaded_update(&release, &setup_path);
             return;
         }
         if !confirm_update(
@@ -131,38 +139,25 @@ impl Runtime {
                         }
                     }
                 }
+                UpdateEvent::DownloadProgress {
+                    version,
+                    received,
+                    total,
+                } => {
+                    let percent = received
+                        .min(total)
+                        .checked_mul(100)
+                        .and_then(|scaled| scaled.checked_div(total))
+                        .unwrap_or(100);
+                    self.settings
+                        .set_status(&format!("正在下载并校验 AskBridge {version}… {percent}%"));
+                }
                 UpdateEvent::Downloaded {
                     release,
                     setup_path,
                 } => {
                     self.update_busy = false;
-                    if self.updater.launch_installer(&setup_path).is_err() {
-                        error!(
-                            stage = "update_install",
-                            completed = false,
-                            "downloaded updater could not be launched"
-                        );
-                        self.settings
-                            .set_status("更新已下载并通过校验，但安装程序无法启动。");
-                        self.tray
-                            .notify("AskBridge 更新失败", "安装程序无法启动；当前版本保持不变。");
-                        continue;
-                    }
-                    info!(
-                        stage = "update_install",
-                        completed = false,
-                        "verified updater launched; application will exit"
-                    );
-                    self.settings.set_status(&format!(
-                        "AskBridge {} 已下载并通过校验，正在退出并安装。",
-                        release.version()
-                    ));
-                    self.browser.cancel();
-                    // SAFETY: Called on the UI thread to allow owned resources to drop cleanly;
-                    // the updater waits for this process before replacing installed files.
-                    unsafe {
-                        PostQuitMessage(0);
-                    }
+                    self.install_downloaded_update(&release, &setup_path);
                 }
                 UpdateEvent::Failed {
                     action,
@@ -186,6 +181,48 @@ impl Runtime {
                     );
                 }
             }
+        }
+    }
+
+    /// Installs a previously downloaded and hash-verified setup, either right
+    /// after its download finishes or later from the tray menu retry entry.
+    fn install_downloaded_update(&mut self, release: &AvailableUpdate, setup_path: &Path) {
+        if !self.workflow.is_idle() {
+            self.tray
+                .notify("AskBridge 正在处理", "请先完成或取消当前操作，再安装更新。");
+            return;
+        }
+        self.settings.set_status(&format!(
+            "正在安装已校验的 AskBridge {}…",
+            release.version()
+        ));
+        if let Err(install_error) = self.updater.launch_installer(setup_path) {
+            error!(
+                stage = "update_install",
+                completed = false,
+                "verified updater could not be launched"
+            );
+            self.settings.set_status(&format!(
+                "AskBridge {} 已通过校验，但安装程序无法启动：{}。可从托盘菜单重试安装。",
+                release.version(),
+                user_facing_error(&install_error)
+            ));
+            self.tray.notify(
+                "AskBridge 更新失败",
+                "安装程序无法启动；可从托盘菜单再次选择“安装”重试，无需重新下载。",
+            );
+            return;
+        }
+        info!(
+            stage = "update_install",
+            completed = false,
+            "verified updater launched; application will exit"
+        );
+        self.browser.cancel();
+        // SAFETY: Called on the UI thread to allow owned resources to drop cleanly;
+        // the updater waits for this process before replacing installed files.
+        unsafe {
+            PostQuitMessage(0);
         }
     }
 }

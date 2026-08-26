@@ -41,7 +41,7 @@ Screenshot
 
 ## 应用更新
 
-`UpdateService` 是独立于截图和浏览器工作流的单工作线程模块。它以 `check_now`、`download`、`launch_installer` 为小接口，内部负责 GitHub Release 解析、版本比较、官方资产地址约束、大小限制、SHA-256、`data/Updates` 原子落盘和事件队列。启动时检查一次，此后最多每 24 小时检查一次；只有用户在托盘确认后才下载。
+`UpdateService` 是独立于截图和浏览器工作流的单工作线程模块。它以 `check_now`、`download`、`launch_installer` 为小接口，内部负责 GitHub Release 解析、版本比较、官方资产地址约束、大小限制、SHA256SUMS 的离线 Ed25519 签名校验（公钥编译进 `askbridge-core::RELEASE_SIGNING_PUBLIC_KEY`）、流式落盘（边下载边写入 `.partial` 并计算 SHA-256，校验通过后才改名为正式文件，失败自动清理）、节流的进度事件、`data/Updates` 原子发布和事件队列。启动时检查一次，此后最多每 24 小时检查一次；只有用户在托盘确认后才下载。安装器启动失败后，托盘菜单的安装入口会优先复用已校验的本地安装包。
 
 主进程不直接覆盖自身。校验通过后，它以既有安装目录、父进程 PID 和重启标记启动独立 `Setup.exe`，然后走正常退出；Setup 等待并验证对应 AskBridge 进程已经退出，再调用既有安装事务原位置升级、保留 `data` 并重启。普通手工安装不带这些一次性环境变量，行为保持不变。
 

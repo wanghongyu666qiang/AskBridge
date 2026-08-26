@@ -10,7 +10,7 @@ AskBridge is a Windows screenshot-to-AI tool. After selecting an area of the scr
 2. Double-click the installer and choose an install location.
 3. After installation, run `askbridge.exe`. The program lives in the Windows tray; right-click the tray icon to open settings or exit.
 
-AskBridge checks GitHub Releases in the background after startup and then once every 24 hours. When a new version is available, it shows a tray notification; you can also choose "Check for updates" from the tray menu. Builds installed through `Setup.exe` download the official installer into `data/Updates` only after you confirm, verify its release SHA-256, exit cleanly, upgrade in place, and restart. Updates preserve all files under `data`, and a failed update restores the previous program files. Portable builds notify you about new versions but must be replaced manually from the official Release.
+AskBridge checks GitHub Releases in the background after startup and then once every 24 hours. When a new version is available, it shows a tray notification; you can also choose "Check for updates" from the tray menu. Builds installed through `Setup.exe` download the official installer into `data/Updates` only after you confirm (with progress shown in the settings window), verify its release SHA-256 plus the maintainer's offline Ed25519 signature, exit cleanly, upgrade in place, and restart. If launching the installer fails, choose "Install" from the tray menu again to reuse the verified download without re-downloading. Updates preserve all files under `data`, and a failed update restores the previous program files. Portable builds notify you about new versions but must be replaced manually from the official Release.
 
 Regular users do not need to open PowerShell or run any command from the repository's `scripts` directory.
 
@@ -93,13 +93,21 @@ An explicit empty directory must be provided when generating installer and porta
 
 Scripts never write release artifacts to the C drive by default.
 
-Pushing an ordinary commit runs CI but does not create a Release. For a release, update the version in `Cargo.toml`, complete local acceptance, and push a matching `vX.Y.Z` tag. `.github/workflows/release.yml` then re-runs formatting, Clippy, tests, and the release build on Windows MSVC, creates the installer, portable ZIP, and SHA-256 manifest, and publishes the GitHub Release:
+Pushing an ordinary commit runs CI but does not create a Release. For a release, update the version in `Cargo.toml`, complete local acceptance, and push a matching `vX.Y.Z` tag. `.github/workflows/release.yml` then re-runs formatting, Clippy, tests, and the release build on Windows MSVC, creates the installer, portable ZIP, and SHA-256 manifest signed offline with the repository secret key using Ed25519, and publishes the GitHub Release:
 
 ```powershell
 git push origin main
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
+
+Releases rely on the signing private key stored in the `UPDATE_SIGNING_KEY` GitHub Actions secret (hex encoded). To generate a key pair locally:
+
+```powershell
+cargo xtask gen-update-key --output <absolute-path>
+```
+
+Local packaging likewise requires either `-UpdateSigningKeyFile` or the `ASKBRIDGE_UPDATE_SIGNING_KEY` environment variable; otherwise packaging fails.
 
 </details>
 

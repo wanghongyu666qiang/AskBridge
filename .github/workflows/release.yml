@@ -74,6 +74,8 @@ jobs:
 
       - name: Build release packages
         shell: pwsh
+        env:
+          ASKBRIDGE_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: cargo xtask package --artifact-root "$env:ASKBRIDGE_ARTIFACT_ROOT"
 
       - name: Validate release packages
@@ -85,7 +87,8 @@ jobs:
             --artifact-root "$env:ASKBRIDGE_ARTIFACT_ROOT" `
             --expected-version "$env:ASKBRIDGE_VERSION" `
             --expected-release-exe-path "$releaseExe" `
-            --expected-source-root "$sourceRoot"
+            --expected-source-root "$sourceRoot" `
+            --require-update-signature
 
       - name: Preserve workflow artifacts
         uses: actions/upload-artifact@v4
@@ -95,6 +98,7 @@ jobs:
             ${{ env.ASKBRIDGE_ARTIFACT_ROOT }}/AskBridge-${{ env.ASKBRIDGE_VERSION }}-Setup.exe
             ${{ env.ASKBRIDGE_ARTIFACT_ROOT }}/AskBridge-${{ env.ASKBRIDGE_VERSION }}-windows-x64.zip
             ${{ env.ASKBRIDGE_ARTIFACT_ROOT }}/AskBridge-${{ env.ASKBRIDGE_VERSION }}-SHA256SUMS.txt
+            ${{ env.ASKBRIDGE_ARTIFACT_ROOT }}/AskBridge-${{ env.ASKBRIDGE_VERSION }}-SHA256SUMS.txt.sig
           if-no-files-found: error
 
       - name: Create GitHub Release
@@ -106,6 +110,7 @@ jobs:
             "$env:ASKBRIDGE_ARTIFACT_ROOT/AskBridge-$env:ASKBRIDGE_VERSION-Setup.exe" `
             "$env:ASKBRIDGE_ARTIFACT_ROOT/AskBridge-$env:ASKBRIDGE_VERSION-windows-x64.zip" `
             "$env:ASKBRIDGE_ARTIFACT_ROOT/AskBridge-$env:ASKBRIDGE_VERSION-SHA256SUMS.txt" `
+            "$env:ASKBRIDGE_ARTIFACT_ROOT/AskBridge-$env:ASKBRIDGE_VERSION-SHA256SUMS.txt.sig" `
             --verify-tag `
             --generate-notes `
             --title "AskBridge $env:GITHUB_REF_NAME"

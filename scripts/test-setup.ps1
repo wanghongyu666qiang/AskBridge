@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$AcceptanceRoot
+    [string]$AcceptanceRoot,
+    [string]$UpdateSigningKeyFile
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +16,14 @@ if (-not [IO.Path]::IsPathRooted($AcceptanceRoot)) {
 $root = [IO.Path]::GetFullPath($AcceptanceRoot).TrimEnd('\')
 if (-not $root.StartsWith($targetRoot, [StringComparison]::OrdinalIgnoreCase)) {
     throw "AcceptanceRoot must be a new child of the repository target directory."
+}
+# Fall back to the conventional gitignored key location next to the repository.
+$UpdateSigningKeyFile = [string]$UpdateSigningKeyFile
+if ([string]::IsNullOrWhiteSpace($UpdateSigningKeyFile)) {
+    $defaultKeyFile = Join-Path $repoRoot ".update-signing-key.json"
+    if (Test-Path -LiteralPath $defaultKeyFile -PathType Leaf) {
+        $UpdateSigningKeyFile = $defaultKeyFile
+    }
 }
 if (Test-Path -LiteralPath $root) {
     throw "AcceptanceRoot already exists; refusing to overwrite it."
@@ -53,7 +62,7 @@ function Get-AskBridgePackageVersion {
 
 try {
     Write-Host "[1/5] Build portable and self-extracting packages"
-    & (Join-Path $repoRoot "scripts\package.ps1") -ArtifactRoot $artifactRoot
+    & (Join-Path $repoRoot "scripts\package.ps1") -ArtifactRoot $artifactRoot -UpdateSigningKeyFile $UpdateSigningKeyFile
     if ($LASTEXITCODE -ne 0) { throw "package.ps1 failed with exit code $LASTEXITCODE." }
     $expectedVersion = Get-AskBridgePackageVersion
     Push-Location $repoRoot
@@ -62,7 +71,8 @@ try {
             --artifact-root $artifactRoot `
             --expected-version $expectedVersion `
             --expected-release-exe-path (Join-Path $repoRoot "target\release\askbridge.exe") `
-            --expected-source-root $repoRoot
+            --expected-source-root $repoRoot `
+            --require-update-signature
         if ($LASTEXITCODE -ne 0) {
             throw "package artifact validator failed with exit code $LASTEXITCODE."
         }

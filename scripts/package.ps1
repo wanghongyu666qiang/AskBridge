@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$ArtifactRoot
+    [string]$ArtifactRoot,
+    [string]$UpdateSigningKeyFile
 )
 
 $ErrorActionPreference = "Stop"
@@ -157,7 +158,7 @@ Push-Location $repoRoot
 try {
     Assert-Command "cargo"
     Assert-Command "iexpress.exe"
-    Write-Host "[1/6] Resolving package version"
+    Write-Host "[1/7] Resolving package version"
     $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed with exit code $LASTEXITCODE." }
     $package = $metadata.packages | Where-Object { $_.name -eq "askbridge-win" } | Select-Object -First 1
@@ -175,13 +176,13 @@ try {
         }
     }
 
-    Write-Host "[2/6] Building release binary"
+    Write-Host "[2/7] Building release binary"
     cargo build --workspace --release --locked
     if ($LASTEXITCODE -ne 0) { throw "Release build failed with exit code $LASTEXITCODE." }
     cargo build --package askbridge-win --bin askbridge-setup --release --locked
     if ($LASTEXITCODE -ne 0) { throw "Setup build failed with exit code $LASTEXITCODE." }
 
-    Write-Host "[3/6] Preparing deterministic package directory"
+    Write-Host "[3/7] Preparing deterministic package directory"
     if (Test-Path -LiteralPath $packageRoot) {
         Remove-Item -LiteralPath $packageRoot -Recurse -Force
     }
@@ -209,11 +210,11 @@ try {
         chrome_bundled = $false
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot "package.json") -Encoding UTF8
 
-    Write-Host "[4/6] Creating portable ZIP"
+    Write-Host "[4/7] Creating portable ZIP"
     if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
     Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal
 
-    Write-Host "[5/6] Creating user-level self-extracting installer"
+    Write-Host "[5/7] Creating user-level self-extracting installer"
     $setupStub = Join-Path $repoRoot "target\release\askbridge-setup.exe"
     if (-not (Test-Path -LiteralPath $setupStub -PathType Leaf)) {
         throw "Setup stub build did not produce $setupStub"
@@ -222,12 +223,31 @@ try {
     Add-SetupPayload -StubPath $setupStub -SetupPath $setupPath -PayloadFiles $files
     Wait-StableFile -Path $setupPath
 
-    Write-Host "[6/6] Writing artifact hashes"
+    Write-Host "[6/7] Writing artifact hashes"
     $hashPath = Join-Path $artifactRoot "$packageName-SHA256SUMS.txt"
     Write-And-VerifyHashes -Paths @($zipPath, $setupPath, (Join-Path $packageRoot "askbridge.exe")) -HashPath $hashPath
+
+    Write-Host "[7/7] Signing artifact hashes"
+    $sigPath = Join-Path $artifactRoot "$packageName-SHA256SUMS.txt.sig"
+    $hasKeyFile = -not [string]::IsNullOrWhiteSpace($UpdateSigningKeyFile)
+    if ($hasKeyFile -and -not (Test-Path -LiteralPath $UpdateSigningKeyFile -PathType Leaf)) {
+        throw "UpdateSigningKeyFile does not exist: $UpdateSigningKeyFile"
+    }
+    $hasKeyEnv = -not [string]::IsNullOrWhiteSpace([string]$env:ASKBRIDGE_UPDATE_SIGNING_KEY)
+    if (-not $hasKeyFile -and -not $hasKeyEnv) {
+        throw "An update signing key is required: pass -UpdateSigningKeyFile or set ASKBRIDGE_UPDATE_SIGNING_KEY. The updater refuses unsigned releases."
+    }
+    $signArguments = @("xtask", "sign-sha256sums", "--input", $hashPath, "--output", $sigPath)
+    if ($hasKeyFile) {
+        $signArguments += @("--key-file", $UpdateSigningKeyFile)
+    }
+    & cargo @signArguments
+    if ($LASTEXITCODE -ne 0) { throw "cargo xtask sign-sha256sums failed with exit code $LASTEXITCODE." }
+
     Write-Host "Portable package: $zipPath"
     Write-Host "Installer package: $setupPath"
     Write-Host "Hashes: $hashPath"
+    Write-Host "Signature: $sigPath"
 }
 finally {
     Pop-Location

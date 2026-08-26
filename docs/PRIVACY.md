@@ -33,7 +33,7 @@ AskBridge 是本机 Windows 快捷操作层，不是 AI 服务。它只把用户
 ## 程序更新联网
 
 - AskBridge 启动后以及每 24 小时通过 HTTPS 读取官方 GitHub 仓库的最新 Release 元数据，也允许用户从托盘手动检查。检查请求不包含截图、问题、配置、日志、账号或浏览器资料。
-- 只有用户确认安装后，AskBridge 才下载 Release 中与版本号严格匹配的 `Setup.exe` 和 `SHA256SUMS.txt`。下载地址必须属于 `wanghongyu666qiang/AskBridge` 官方仓库，安装包必须通过大小和 SHA-256 校验。
+- 只有用户确认安装后，AskBridge 才下载 Release 中与版本号严格匹配的 `Setup.exe`、`SHA256SUMS.txt` 及其签名文件 `.sig`。下载地址必须属于 `wanghongyu666qiang/AskBridge` 官方仓库，哈希清单必须通过程序内嵌公钥的 Ed25519 签名校验，安装包必须通过大小和 SHA-256 校验。这些请求同样不包含任何用户数据。
 - 下载文件只写入 AskBridge 数据目录的 `Updates` 子目录。更新完成或程序再次启动后会清理已使用或遗留的安装包；更新过程保留整个 `data` 目录。
 - 更新程序等待当前 AskBridge 正常退出后才替换程序文件，成功后重新启动；校验或启动安装器失败时不会修改当前程序。
 

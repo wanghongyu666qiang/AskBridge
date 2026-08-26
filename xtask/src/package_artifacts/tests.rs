@@ -75,6 +75,7 @@ impl Fixture {
             max_release_exe_bytes: super::DEFAULT_MAX_RELEASE_EXE_BYTES,
             max_setup_bytes: super::DEFAULT_MAX_SETUP_BYTES,
             max_static_resource_bytes: super::DEFAULT_MAX_STATIC_RESOURCE_BYTES,
+            require_update_signature: false,
         };
         Self {
             _root: root,
@@ -391,6 +392,61 @@ fn rejects_release_identity_source_identity_and_size_bounds() {
         validate_package_artifacts(&fixture.options)
             .expect_err("size bound")
             .starts_with("Release EXE is")
+    );
+}
+
+#[test]
+fn missing_update_signature_fails_only_when_required() {
+    let mut fixture = Fixture::valid();
+    fixture.options.require_update_signature = true;
+    assert_eq!(
+        validate_package_artifacts(&fixture.options).expect_err("missing signature"),
+        "Artifact output is missing the required SHA256SUMS update signature (.sig)."
+    );
+}
+
+#[test]
+fn a_matching_update_signature_passes_and_a_tampered_one_fails() {
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let secret = SigningKey::from_bytes(&[5_u8; 32]);
+    let public_hex: String = secret
+        .verifying_key()
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+
+    let fixture = Fixture::valid();
+    let manifest = fixture.artifact_root.join("AskBridge-9.9.9-SHA256SUMS.txt");
+    let signature_path = fixture
+        .artifact_root
+        .join("AskBridge-9.9.9-SHA256SUMS.txt.sig");
+    let message = fs::read(&manifest).expect("manifest bytes");
+    let signature_hex: String = secret
+        .sign(&message)
+        .to_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    fs::write(&signature_path, format!("{signature_hex}\n")).expect("signature file");
+
+    // The stray .sig must be recognized by the artifact whitelist and routed to
+    // signature verification. A test-key signature cannot match the embedded
+    // release public key, so the full pipeline must fail at exactly that stage.
+    let error = validate_package_artifacts(&fixture.options).expect_err("foreign signature");
+    assert!(
+        error.starts_with("Update signature verification failed"),
+        "unexpected error: {error}"
+    );
+
+    // Injected-key verification accepts the matching signature.
+    super::validate_signature_file_with_key(&signature_path, &manifest, &public_hex)
+        .expect("matching signature");
+
+    fs::write(&signature_path, "0".repeat(128)).expect("tampered signature");
+    assert!(
+        super::validate_signature_file_with_key(&signature_path, &manifest, &public_hex).is_err()
     );
 }
 

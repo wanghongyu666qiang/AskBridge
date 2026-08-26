@@ -9,6 +9,7 @@ pub mod preparation;
 pub mod provider;
 pub mod request;
 pub mod state;
+pub mod update_signing;
 pub mod workflow;
 
 pub use browser::{
@@ -27,4 +28,5 @@ pub use preparation::{PreparationOutcome, PreparationPolicy, SubmissionMode};
 pub use provider::{BUILT_IN_ADAPTER_IDS, ProviderConfig, ProviderOverride};
 pub use request::{DispatchMode, DispatchRequest};
 pub use state::AppState;
+pub use update_signing::RELEASE_SIGNING_PUBLIC_KEY;
 pub use workflow::WorkflowController;

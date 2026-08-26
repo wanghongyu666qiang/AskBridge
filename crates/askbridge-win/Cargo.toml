@@ -16,6 +16,7 @@ path = "src/setup.rs"
 
 [dependencies]
 askbridge-core = { path = "../askbridge-core" }
+ed25519-dalek.workspace = true
 png.workspace = true
 serde.workspace = true
 serde_json.workspace = true

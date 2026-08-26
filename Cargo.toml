@@ -20,6 +20,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 windows-sys = "0.61"
 png = "0.18"
+ed25519-dalek = { version = "2.2", default-features = false, features = [
+    "fast",
+    "std",
+] }
 
 [profile.release]
 codegen-units = 1

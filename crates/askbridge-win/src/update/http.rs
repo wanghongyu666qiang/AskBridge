@@ -14,6 +14,21 @@ use windows_sys::Win32::{
 const REQUEST_TIMEOUT_MS: i32 = 15_000;
 
 pub(super) fn get_https(url: &str, max_bytes: usize) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    get_https_chunks(url, max_bytes, |chunk| {
+        body.extend_from_slice(chunk);
+        Ok(())
+    })?;
+    Ok(body)
+}
+
+/// Streams the response body to `sink` in bounded chunks. Returning an error
+/// from `sink` aborts the transfer without reading further data.
+pub(super) fn get_https_chunks(
+    url: &str,
+    max_bytes: usize,
+    mut sink: impl FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
     if max_bytes == 0 {
         return Err(update_error("HTTP 响应大小限制不能为零"));
     }
@@ -75,7 +90,7 @@ pub(super) fn get_https(url: &str, max_bytes: usize) -> Result<Vec<u8>> {
     if !(200..300).contains(&status) {
         return Err(update_error(format!("更新服务器返回 HTTP {status}")));
     }
-    read_response(&request, max_bytes)
+    read_response(&request, max_bytes, &mut sink)
 }
 
 fn response_status(request: &InternetHandle) -> Result<u32> {
@@ -98,8 +113,12 @@ fn response_status(request: &InternetHandle) -> Result<u32> {
     Ok(status)
 }
 
-fn read_response(request: &InternetHandle, max_bytes: usize) -> Result<Vec<u8>> {
-    let mut source = Vec::new();
+fn read_response(
+    request: &InternetHandle,
+    max_bytes: usize,
+    sink: &mut impl FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
+    let mut total: usize = 0;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         let mut read = 0_u32;
@@ -119,12 +138,13 @@ fn read_response(request: &InternetHandle, max_bytes: usize) -> Result<Vec<u8>> 
             break;
         }
         let read = usize::try_from(read).map_err(|_| update_error("HTTP 响应长度溢出"))?;
-        if source.len().saturating_add(read) > max_bytes {
+        total = total.saturating_add(read);
+        if total > max_bytes {
             return Err(update_error("更新服务器响应超出大小限制"));
         }
-        source.extend_from_slice(&buffer[..read]);
+        sink(&buffer[..read])?;
     }
-    Ok(source)
+    Ok(())
 }
 
 struct InternetHandle(*mut core::ffi::c_void);
