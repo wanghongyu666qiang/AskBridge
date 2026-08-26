@@ -2,6 +2,10 @@
 
 [简体中文](README.md) | [English](README_EN.md)
 
+<p align="center">
+  <img src="assets/branding/askbridge-final/github/askbridge-readme-header.png" alt="AskBridge — screenshot to AI bridge for Windows" width="800">
+</p>
+
 AskBridge is a Windows screenshot-to-AI tool. After selecting an area of the screen, you can copy the capture, switch AI models, or stage the screenshot together with preset text into an AI website's input box. Whether to actually send is always decided by the user.
 
 ## Download and Setup
@@ -32,11 +36,12 @@ After switching models in the capture toolbar, the new choice is saved as the de
 
 AskBridge supports ChatGPT, Gemini, Claude, Doubao, and custom HTTPS providers.
 
-ChatGPT offers three opening modes under "Settings > Browser":
+ChatGPT offers four opening modes under "Settings > Browser":
 
 - **Desktop web**: reuses your existing login; screenshots must be uploaded manually.
 - **AskBridge-managed Chrome**: supports automatic screenshot upload after a one-time sign-in inside the isolated browser.
 - **Universal paste**: writes the screenshot to the clipboard, focuses a matching provider page or supported AI desktop-client window, and synthesizes one Ctrl+V; you confirm and send manually. This mode can use the login state in your daily browser or the ChatGPT, Claude, and Doubao desktop clients, and it does not verify the paste result. When no matching window is open, it opens a new page in the default browser and waits briefly before pasting.
+- **Dedicated Chrome first, safe fallback to universal paste**: screenshot requests are staged by the dedicated Chrome first; only when a failure happens before any text or attachment has been written does AskBridge automatically fall back to one Ctrl+V. If anything may already have been written, AskBridge stops instead of pasting again. Text-only requests still use the dedicated Chrome only.
 
 The managed Chrome uses a dedicated `BrowserProfile` and never connects to or modifies your daily Chrome profile.
 
@@ -72,7 +77,8 @@ The `scripts` directory contains project maintenance automation, not user-facing
 
 - `build.ps1` and `test.ps1` are the daily build and test entry points.
 - `package.ps1` and `test-release-local.ps1` are the packaging and full release acceptance entry points.
-- `test-*`, `validate-*`, and `measure-*` are standalone checkers invoked by the entry points above, validating installation, path guards, real UI behavior, and performance data.
+- `test-*` and `validate-*` are standalone checkers invoked by the entry points above, validating installation, path guards, and real UI behavior.
+- `measure-*` are independent performance-measurement helpers that you run manually when profiling.
 - `cargo xtask` holds performance-report and release-artifact validation logic that can be tested as pure Rust.
 - `Install-AskBridge.ps1` and `Uninstall-AskBridge.ps1` are packaged into release artifacts.
 
@@ -82,7 +88,7 @@ The `scripts` directory contains project maintenance automation, not user-facing
 Full local release acceptance:
 
 ```powershell
-./scripts/test-release-local.ps1 -AcceptanceRoot D:/AskBridge/target/release-local-acceptance
+./scripts/test-release-local.ps1 -AcceptanceRoot D:/your-chosen-acceptance-root/target/release-local-acceptance
 ```
 
 An explicit empty directory must be provided when generating installer and portable packages:

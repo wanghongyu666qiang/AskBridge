@@ -2,6 +2,10 @@
 
 [简体中文](README.md) | [English](README_EN.md)
 
+<p align="center">
+  <img src="assets/branding/askbridge-final/github/askbridge-readme-header.png" alt="AskBridge — screenshot to AI bridge for Windows" width="800">
+</p>
+
 AskBridge 是一个 Windows 截图问答工具。框选屏幕内容后，可以复制截图、切换 AI 模型，或将截图和预设文字准备到 AI 网页的输入区。最终是否发送始终由用户决定。
 
 ## 下载与打开
@@ -73,7 +77,8 @@ cargo xtask help
 
 - `build.ps1` 和 `test.ps1` 是日常构建与测试入口。
 - `package.ps1` 和 `test-release-local.ps1` 是打包与完整发布验收入口。
-- `test-*`、`validate-*` 和 `measure-*` 是被上述入口调用的独立检查器，用于验证安装、路径保护、真实 UI 和性能数据。
+- `test-*` 和 `validate-*` 是被上述入口调用的独立检查器，用于验证安装、路径保护和真实 UI。
+- `measure-*` 是独立的性能测量辅助脚本，需要分析性能时手动运行。
 - `cargo xtask` 承担可纯 Rust 测试的性能报告与发布产物验证逻辑。
 - `Install-AskBridge.ps1` 与 `Uninstall-AskBridge.ps1` 会被打包进发布产物。
 
@@ -83,7 +88,7 @@ cargo xtask help
 完整本地发布验收：
 
 ```powershell
-./scripts/test-release-local.ps1 -AcceptanceRoot D:/AskBridge/target/release-local-acceptance
+./scripts/test-release-local.ps1 -AcceptanceRoot D:/你选择的验收目录/target/release-local-acceptance
 ```
 
 生成安装包和便携包时必须显式指定一个空目录：
