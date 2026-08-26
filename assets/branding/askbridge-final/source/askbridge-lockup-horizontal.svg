@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 480" width="1440" height="480" role="img" aria-labelledby="title desc">
+  <title id="title">AskBridge logo — horizontal lockup</title>
+  <desc id="desc">Horizontal lockup: the AskBridge mark on the left and the wordmark "AskBridge" with the subtitle "screenshot → AI bridge" on the right, on a warm cream canvas.</desc>
+
+  <rect width="1440" height="480" fill="#FAEEDA"/>
+
+  <g transform="translate(0, 0)">
+    <g transform="scale(0.46875)">
+      <g fill="none" stroke="#2C2C2A" stroke-width="68" stroke-linecap="square" stroke-linejoin="miter">
+        <path d="M 100 320 L 100 100 L 320 100"/>
+        <path d="M 924 320 L 924 100 L 704 100"/>
+        <path d="M 100 704 L 100 924 L 320 924"/>
+        <path d="M 924 704 L 924 924 L 704 924"/>
+      </g>
+      <path d="M 292 760 L 292 480 A 220 220 0 0 1 732 480 L 732 760 L 660 760 L 660 540 A 148 148 0 0 0 364 540 L 364 760 Z" fill="#D85A30"/>
+    </g>
+  </g>
+
+  <g font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" fill="#2C2C2A">
+    <text x="540" y="252" font-size="180" font-weight="700" letter-spacing="-6">AskBridge</text>
+    <text x="544" y="332" font-size="48" font-weight="500" letter-spacing="0" fill="#993C1D">screenshot &#8594; AI bridge</text>
+  </g>
+</svg>

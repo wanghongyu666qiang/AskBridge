@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 460 460" width="460" height="460" role="img" aria-labelledby="title desc">
+  <title id="title">AskBridge GitHub avatar</title>
+  <desc id="desc">460x460 GitHub profile / organization avatar. Cream square, centered mark.</desc>
+
+  <rect width="460" height="460" fill="#FAEEDA"/>
+
+  <g transform="translate(0, 0) scale(0.44921875)">
+    <g fill="none" stroke="#2C2C2A" stroke-width="68" stroke-linecap="square" stroke-linejoin="miter">
+      <path d="M 100 320 L 100 100 L 320 100"/>
+      <path d="M 924 320 L 924 100 L 704 100"/>
+      <path d="M 100 704 L 100 924 L 320 924"/>
+      <path d="M 924 704 L 924 924 L 704 924"/>
+    </g>
+    <path d="M 292 760 L 292 480 A 220 220 0 0 1 732 480 L 732 760 L 660 760 L 660 540 A 148 148 0 0 0 364 540 L 364 760 Z" fill="#D85A30"/>
+  </g>
+</svg>
