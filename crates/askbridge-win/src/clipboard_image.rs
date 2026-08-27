@@ -112,7 +112,7 @@ fn rgba_to_cf_dib(image: &CapturedImage) -> Result<Vec<u8>> {
     let row_len = image.width as usize * 4;
     for y in (0..image.height as usize).rev() {
         let row = &image.rgba_bytes[y * row_len..(y + 1) * row_len];
-        for rgba in row.chunks_exact(4) {
+        for rgba in row.as_chunks::<4>().0 {
             dib.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
         }
     }

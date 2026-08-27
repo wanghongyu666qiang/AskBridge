@@ -139,7 +139,9 @@ pub(super) fn file_input_accepts_png(result: &Value) -> bool {
         return false;
     };
     let pairs: Vec<(&str, &str)> = attributes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .filter_map(|pair| Some((pair[0].as_str()?, pair[1].as_str()?)))
         .collect();
     if pairs

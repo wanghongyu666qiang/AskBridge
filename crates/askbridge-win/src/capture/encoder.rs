@@ -33,7 +33,7 @@ fn bgra_to_rgba_in_place(pixels: &mut [u8]) -> Result<()> {
         ));
     }
     // In-place channel swap avoids a full-size copy of multi-monitor captures.
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
         pixel[3] = 255;
     }
