@@ -38,10 +38,10 @@ impl TargetResolver {
             .filter(|target| matches_any_pattern(&target.url, url_patterns))
             .collect();
 
-        if let FocusEvidence::Confirmed(focused_id) = focus
-            && matches.iter().any(|target| target.id == *focused_id)
-        {
-            return TargetDecision::UseExisting(focused_id.clone());
+        if let FocusEvidence::Confirmed(focused_id) = focus {
+            if matches.iter().any(|target| target.id == *focused_id) {
+                return TargetDecision::UseExisting(focused_id.clone());
+            }
         }
 
         match matches.as_slice() {
