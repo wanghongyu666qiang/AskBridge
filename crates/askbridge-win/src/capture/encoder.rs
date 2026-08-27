@@ -27,7 +27,7 @@ pub fn encode_png(image: &CapturedImage) -> Result<Vec<u8>> {
 }
 
 fn bgra_to_rgba_in_place(pixels: &mut [u8]) -> Result<()> {
-    if pixels.len() % 4 != 0 {
+    if !pixels.len().is_multiple_of(4) {
         return Err(AppError::CaptureFailed(
             "BGRA capture buffer length is invalid".to_owned(),
         ));

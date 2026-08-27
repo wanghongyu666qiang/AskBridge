@@ -80,14 +80,14 @@ fn compile_msvc_resources() -> PathBuf {
 
 fn find_rc_exe() -> Option<PathBuf> {
     // Developer Command Prompts put rc.exe on PATH.
-    if let Ok(output) = Command::new("where").arg("rc.exe").output() {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(first) = stdout.lines().next().map(str::trim) {
-                if !first.is_empty() {
-                    return Some(PathBuf::from(first));
-                }
-            }
+    if let Ok(output) = Command::new("where").arg("rc.exe").output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(first) = stdout.lines().next().map(str::trim)
+            && !first.is_empty()
+        {
+            return Some(PathBuf::from(first));
         }
     }
     // GitHub runners and plain SDK installs keep it under Windows Kits\10\bin,

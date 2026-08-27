@@ -277,11 +277,11 @@ impl<B: HotkeyBackend> HotkeyManager<B> {
         let mut candidates_removed = true;
 
         for change in changes {
-            if let Some(candidate) = &change.candidate {
-                if let Err(error) = self.backend.unregister(candidate.id) {
-                    errors.push(error);
-                    candidates_removed = false;
-                }
+            if let Some(candidate) = &change.candidate
+                && let Err(error) = self.backend.unregister(candidate.id)
+            {
+                errors.push(error);
+                candidates_removed = false;
             }
         }
         for change in changes {

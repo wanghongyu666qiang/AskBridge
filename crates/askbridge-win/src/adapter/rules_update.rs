@@ -56,14 +56,13 @@ pub(crate) fn refresh_rules_from_environment(data_root: &Path) -> Result<RuleUpd
         .ok()
         .filter(|value| !value.trim().is_empty());
 
-    if let Some(remote_url) = remote_url {
-        if let Ok(source) = fetch_https_json(&remote_url)
-            && let Ok(rules) = parse_source(&source)
-            && persist_cache(&cache_path, &source).is_ok()
-        {
-            install_rules(Some(rules))?;
-            return Ok(RuleUpdateSource::Remote);
-        }
+    if let Some(remote_url) = remote_url
+        && let Ok(source) = fetch_https_json(&remote_url)
+        && let Ok(rules) = parse_source(&source)
+        && persist_cache(&cache_path, &source).is_ok()
+    {
+        install_rules(Some(rules))?;
+        return Ok(RuleUpdateSource::Remote);
     }
 
     if let Ok(source) = fs::read(&cache_path)

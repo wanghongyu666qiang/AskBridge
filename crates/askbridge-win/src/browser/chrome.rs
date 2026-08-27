@@ -299,7 +299,7 @@ fn read_app_path(root: HKEY, view: u32) -> Option<PathBuf> {
             &mut byte_len,
         )
     };
-    if status != ERROR_SUCCESS || byte_len < 2 || byte_len % 2 != 0 {
+    if status != ERROR_SUCCESS || byte_len < 2 || !byte_len.is_multiple_of(2) {
         return None;
     }
 

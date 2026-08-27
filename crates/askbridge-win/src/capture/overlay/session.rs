@@ -642,15 +642,15 @@ fn handle_toolbar_click(window: HWND, state: &mut OverlayState, point: (i32, i32
         toolbar.providers.len(),
         toolbar_size,
     );
-    if toolbar.dropdown_open {
-        if let Some(index) = hit_dropdown(&layout.dropdown_rects, point) {
-            toolbar.selected_index = index;
-            toolbar.dropdown_open = false;
-            unsafe {
-                InvalidateRect(window, ptr::null(), 0);
-            }
-            return true;
+    if toolbar.dropdown_open
+        && let Some(index) = hit_dropdown(&layout.dropdown_rects, point)
+    {
+        toolbar.selected_index = index;
+        toolbar.dropdown_open = false;
+        unsafe {
+            InvalidateRect(window, ptr::null(), 0);
         }
+        return true;
     }
     if point_in_rect(point, &layout.provider) {
         toolbar.dropdown_open = !toolbar.dropdown_open;

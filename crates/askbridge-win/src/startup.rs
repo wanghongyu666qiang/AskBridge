@@ -92,7 +92,7 @@ fn read_command() -> Result<Option<String>> {
         return Ok(None);
     }
     check_status("querying startup registry value", status)?;
-    if value_type != REG_SZ || bytes == 0 || bytes as usize % size_of::<u16>() != 0 {
+    if value_type != REG_SZ || bytes == 0 || !(bytes as usize).is_multiple_of(size_of::<u16>()) {
         return Err(AppError::ConfigurationInvalid(
             "AskBridge startup registry value is not a valid string".to_owned(),
         ));

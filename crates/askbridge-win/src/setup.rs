@@ -76,10 +76,10 @@ fn run() -> io::Result<()> {
 
     let cleanup_result = fs::remove_dir_all(&extraction_root);
     let output = install_status?;
-    if let Err(error) = cleanup_result {
-        if error.kind() != io::ErrorKind::NotFound {
-            return Err(error);
-        }
+    if let Err(error) = cleanup_result
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        return Err(error);
     }
     if output.status.success() {
         Ok(())

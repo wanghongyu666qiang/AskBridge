@@ -236,17 +236,18 @@ impl<'runtime> GdiPlusSession<'runtime> {
             );
             GdipAddPathLine(path, x, y + height - radius, x, y + radius);
             GdipClosePathFigure(path);
-            if fill != 0 {
-                if let Some(brush) = self.solid_brush(fill) {
-                    GdipFillPath(self.graphics, brush, path);
-                    GdipDeleteBrush(brush);
-                }
+            if fill != 0
+                && let Some(brush) = self.solid_brush(fill)
+            {
+                GdipFillPath(self.graphics, brush, path);
+                GdipDeleteBrush(brush);
             }
-            if stroke != 0 && stroke_width > 0.0 {
-                if let Some(pen) = self.pen(stroke, stroke_width) {
-                    GdipDrawPath(self.graphics, pen, path);
-                    GdipDeletePen(pen);
-                }
+            if stroke != 0
+                && stroke_width > 0.0
+                && let Some(pen) = self.pen(stroke, stroke_width)
+            {
+                GdipDrawPath(self.graphics, pen, path);
+                GdipDeletePen(pen);
             }
             GdipDeletePath(path);
         }
@@ -273,17 +274,18 @@ impl<'runtime> GdiPlusSession<'runtime> {
         sw: f32,
     ) {
         unsafe {
-            if fill != 0 {
-                if let Some(brush) = self.solid_brush(fill) {
-                    GdipFillEllipse(self.graphics, brush, x, y, width, height);
-                    GdipDeleteBrush(brush);
-                }
+            if fill != 0
+                && let Some(brush) = self.solid_brush(fill)
+            {
+                GdipFillEllipse(self.graphics, brush, x, y, width, height);
+                GdipDeleteBrush(brush);
             }
-            if stroke != 0 && sw > 0.0 {
-                if let Some(pen) = self.pen(stroke, sw) {
-                    GdipDrawEllipse(self.graphics, pen, x, y, width, height);
-                    GdipDeletePen(pen);
-                }
+            if stroke != 0
+                && sw > 0.0
+                && let Some(pen) = self.pen(stroke, sw)
+            {
+                GdipDrawEllipse(self.graphics, pen, x, y, width, height);
+                GdipDeletePen(pen);
             }
         }
     }
