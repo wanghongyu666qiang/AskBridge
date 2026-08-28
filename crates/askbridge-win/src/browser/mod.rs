@@ -13,8 +13,8 @@ pub use endpoint::DevToolsEndpoint;
 pub use profile::ManagedProfile;
 pub use worker::{
     BrowserEvent, BrowserJob, BrowserLaunch, BrowserLaunchPlan, BrowserService, BrowserStage,
-    BrowserSurface, BrowserWarmupJob, ClipboardPasteJob, DedicatedChromeJob, DesktopPwaJob,
-    ProviderHealthJob, WM_BROWSER_EVENT,
+    BrowserSurface, BrowserWarmupJob, ClipboardPasteJob, ClipboardPasteOpenTarget,
+    DedicatedChromeJob, DesktopPwaJob, ProviderHealthJob, WM_BROWSER_EVENT,
 };
 
 #[cfg(test)]
@@ -102,6 +102,147 @@ mod integration_tests {
         let removed = remove_profile_when_released(&profile_path);
 
         test_result.expect("CDP round trip");
+        close_result.expect("normal Browser.close");
+        assert!(exited, "managed Chrome did not close normally");
+        assert!(removed, "temporary Chrome profile remained locked");
+    }
+
+    #[test]
+    #[ignore = "launches installed Chrome and requires an interactive Windows desktop"]
+    fn clipboard_paste_loopback_observes_image_in_unfocused_editor() {
+        let chrome_path =
+            env::var("ASKBRIDGE_TEST_CHROME").expect("ASKBRIDGE_TEST_CHROME must name chrome.exe");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let address = listener.local_addr().expect("listener address");
+        let stop_server = Arc::new(AtomicBool::new(false));
+        let server_stop = Arc::clone(&stop_server);
+        let server = thread::spawn(move || {
+            const BODY: &[u8] = br#"<!doctype html>
+<title>AskBridge Clipboard Fixture</title>
+<style>
+  #editor { position: fixed; left: 20px; right: 20px; bottom: 20px; height: 120px; border: 1px solid #888; }
+</style>
+<body tabindex='-1'>
+  <div id='editor' role='textbox' aria-label='Message' contenteditable='true'></div>
+  <script>
+    window.__askbridgePasteReceipt = { count: 0, image: false };
+    document.getElementById('editor').addEventListener('paste', event => {
+      const items = Array.from(event.clipboardData?.items || []);
+      window.__askbridgePasteReceipt = {
+        count: window.__askbridgePasteReceipt.count + 1,
+        image: items.some(item => item.kind === 'file' && item.type.startsWith('image/'))
+      };
+    });
+    document.body.focus();
+  </script>
+</body>"#;
+            while !server_stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+                        let mut request = [0u8; 1024];
+                        let _ = stream.read(&mut request);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            BODY.len()
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.write_all(BODY);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let profile_path = unique_integration_profile();
+        let profile = ManagedProfile::open(&profile_path.to_string_lossy(), &profile_path)
+            .expect("managed profile");
+        let installation =
+            ChromeInstallation::discover(Some(&chrome_path)).expect("Chrome installation");
+        let mut manager = ChromeManager::new(installation, profile);
+        let cancelled = AtomicBool::new(false);
+        let endpoint = manager
+            .launch_and_wait(Duration::from_secs(15), &cancelled)
+            .expect("dynamic endpoint");
+
+        let test_result = (|| -> askbridge_core::Result<bool> {
+            let client = CdpClient::connect(endpoint.clone(), Duration::from_secs(5), &cancelled)?;
+            let url = format!("http://127.0.0.1:{}/", address.port());
+            let target = client.create_target(&url)?;
+            client.activate_target(&target.id)?;
+            client.wait_until_ready(&target, Duration::from_secs(5), &cancelled)?;
+            client.evaluate_in_target(
+                &target,
+                "document.body.focus(); ({ editorFocused: document.activeElement?.id === 'editor' })",
+                &cancelled,
+                Duration::from_secs(2),
+            )?;
+
+            let image = CapturedImage::new(
+                24,
+                24,
+                vec![0x40; 24 * 24 * 4],
+                ScreenRect::new(0, 0, 24, 24),
+            )?;
+            crate::clipboard_image::copy_image_to_clipboard(std::ptr::null_mut(), &image)?;
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let window = loop {
+                if let Some(window) = crate::paste_mode::find_provider_windows(&[
+                    "AskBridge Clipboard Fixture".to_owned(),
+                ])
+                .into_iter()
+                .next()
+                {
+                    break window;
+                }
+                if Instant::now() >= deadline {
+                    return Err(askbridge_core::AppError::PasteTargetUnavailable);
+                }
+                thread::sleep(Duration::from_millis(50));
+            };
+            crate::paste_mode::prepare_paste_target(window.hwnd)?;
+            crate::paste_mode::send_paste()?;
+
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let value = client.evaluate_in_target(
+                    &target,
+                    "window.__askbridgePasteReceipt",
+                    &cancelled,
+                    Duration::from_secs(1),
+                )?;
+                if value
+                    .pointer("/result/value/image")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                {
+                    return Ok(true);
+                }
+                if Instant::now() >= deadline {
+                    return Ok(false);
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        })();
+
+        let close_result =
+            CdpClient::close_managed_endpoint(endpoint, Duration::from_secs(5), &cancelled);
+        let exited = manager
+            .wait_for_managed_exit(Duration::from_secs(10))
+            .expect("wait for Chrome");
+        stop_server.store(true, Ordering::Release);
+        server.join().expect("server");
+        let removed = remove_profile_when_released(&profile_path);
+
+        assert!(
+            test_result.expect("clipboard paste fixture"),
+            "Ctrl+V succeeded but the unfocused editor received no image paste"
+        );
         close_result.expect("normal Browser.close");
         assert!(exited, "managed Chrome did not close normally");
         assert!(removed, "temporary Chrome profile remained locked");

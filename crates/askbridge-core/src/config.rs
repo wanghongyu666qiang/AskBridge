@@ -382,8 +382,8 @@ pub enum BrowserTargetPreference {
     DedicatedChromeThenClipboardPaste,
     DesktopPwa,
     /// Screenshot to clipboard, focus a matching provider page or supported
-    /// AI desktop client, and synthesize one Ctrl+V. Sending stays manual;
-    /// the result is unverified.
+    /// AI desktop client, synthesize one Ctrl+V, and require a structural
+    /// attachment receipt. Sending stays manual.
     ClipboardPaste,
 }
 
@@ -464,7 +464,7 @@ mod tests {
             BrowserTargetPreference::DedicatedChrome
         );
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
-        assert_eq!(config.merged_providers().expect("providers").len(), 4);
+        assert_eq!(config.merged_providers().expect("providers").len(), 7);
     }
 
     #[test]
@@ -496,7 +496,7 @@ mod tests {
             config.browser.target_preference("chatgpt"),
             BrowserTargetPreference::DesktopPwa
         );
-        assert_eq!(config.merged_providers().expect("providers").len(), 4);
+        assert_eq!(config.merged_providers().expect("providers").len(), 7);
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
     }
 
@@ -627,7 +627,7 @@ mod tests {
         assert_eq!(config.provider_overrides.len(), 1);
         assert_eq!(config.custom_providers.len(), 1);
         assert_eq!(config.default_provider_id, "example");
-        assert_eq!(config.merged_providers().expect("providers").len(), 5);
+        assert_eq!(config.merged_providers().expect("providers").len(), 8);
     }
 
     #[test]

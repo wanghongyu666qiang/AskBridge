@@ -41,6 +41,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tungstenite",
+ "windows",
  "windows-sys 0.61.2",
  "wry",
 ]

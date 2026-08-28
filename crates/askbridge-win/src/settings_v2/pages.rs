@@ -144,7 +144,7 @@ pub(super) fn create_provider_page(
     let defaults = built_in_providers();
     let mut rows = Vec::new();
     for (index, provider) in defaults.into_iter().enumerate() {
-        let y = 78 + index as i32 * 48;
+        let y = 72 + index as i32 * 36;
         let enabled = create_control(
             page,
             instance,
@@ -201,7 +201,7 @@ pub(super) fn create_provider_page(
         scale,
         "自定义供应商（每行：id | 名称 | 起始网址 | 匹配前缀；多个前缀用逗号分隔）",
         12,
-        278,
+        332,
         720,
         24,
         0,
@@ -221,9 +221,9 @@ pub(super) fn create_provider_page(
             | ES_AUTOVSCROLL as u32
             | ES_WANTRETURN as u32,
         12,
-        308,
+        358,
         710,
-        132,
+        82,
         WS_EX_CLIENTEDGE,
         EDIT_CUSTOM_PROVIDERS,
     )?;

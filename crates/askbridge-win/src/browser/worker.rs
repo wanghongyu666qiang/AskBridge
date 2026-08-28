@@ -11,8 +11,9 @@ use std::{
 };
 
 use askbridge_core::{
-    AppError, BrowserLifecycle, BrowserTarget, DispatchRequest, FocusEvidence, PreparationOutcome,
-    PreparationPolicy, Result, TargetDecision, TargetResolver,
+    AppError, BrowserLifecycle, BrowserTarget, DispatchRequest, FocusEvidence,
+    PreparationFailureStage, PreparationOutcome, PreparationPolicy, PreparationRecovery, Result,
+    TargetDecision, TargetResolver,
 };
 use windows_sys::Win32::{
     Foundation::HWND,
@@ -30,6 +31,10 @@ use crate::adapter::{
 use crate::util::last_error;
 
 pub const WM_BROWSER_EVENT: u32 = WM_APP + 5;
+const COLD_OPEN_EDITOR_STABILITY_TIMEOUT: Duration = Duration::from_secs(7);
+const COLD_OPEN_EDITOR_MIN_SETTLE: Duration = Duration::from_secs(5);
+const COLD_OPEN_EDITOR_STABILITY_INTERVAL: Duration = Duration::from_millis(100);
+const COLD_OPEN_EDITOR_STABILITY_SAMPLES: u8 = 3;
 
 #[derive(Debug, Clone)]
 pub struct BrowserJob {
@@ -73,7 +78,7 @@ impl BrowserLaunchPlan {
         }
     }
 
-    const fn primary(&self) -> &BrowserLaunch {
+    pub(crate) const fn primary(&self) -> &BrowserLaunch {
         &self.primary
     }
 
@@ -134,9 +139,21 @@ pub struct DesktopPwaJob {
 pub struct ClipboardPasteJob {
     pub start_url: String,
     pub title_keywords: Vec<String>,
+    /// How to cold-open the user-selected target when no matching window is
+    /// already available. Delivery stays clipboard-based either way.
+    pub open_target: ClipboardPasteOpenTarget,
     /// Total budget for locating the target window, including the one-time
     /// cold-open wait when no matching window exists yet.
     pub locate_timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub enum ClipboardPasteOpenTarget {
+    DefaultBrowser,
+    DesktopPwa {
+        provider_id: String,
+        configured_shortcut: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -703,6 +720,7 @@ fn prepare_clipboard_paste_job(
 
     let deadline = Instant::now() + job.locate_timeout;
     let mut page_opened = false;
+    let mut cold_open_editor_settled = false;
     let mut activation_error = None;
     'locate: loop {
         if cancelled.load(Ordering::Acquire) {
@@ -717,11 +735,47 @@ fn prepare_clipboard_paste_job(
                 keyword_index = window.keyword_index,
                 "provider window located for clipboard paste"
             );
-            match crate::paste_mode::activate(window.hwnd) {
-                Ok(()) => {
+            let mut preparation = crate::paste_mode::prepare_paste_target(window.hwnd);
+            if preparation.is_ok() && page_opened && !cold_open_editor_settled {
+                wait_for_cold_open_editor_settle(window.hwnd, cancelled)?;
+                cold_open_editor_settled = true;
+                preparation = crate::paste_mode::prepare_paste_target(window.hwnd);
+            }
+            match preparation
+                .and_then(|()| crate::paste_mode::paste_attachment_baseline(window.hwnd))
+            {
+                Ok(baseline) => {
+                    // A cold provider page can re-render the composer while
+                    // UI Automation walks the tree for the baseline. Re-focus
+                    // and re-verify the exact target immediately before the
+                    // only input injection; failure here is still pre-write.
+                    if let Err(error) = crate::paste_mode::prepare_paste_target(window.hwnd) {
+                        tracing::warn!(
+                            stage = "paste_target_focus_changed",
+                            completed = false,
+                            window_class = %window.class,
+                            process = %window.process,
+                            "paste target changed while capturing the attachment baseline"
+                        );
+                        activation_error = Some(error);
+                        continue;
+                    }
                     // Do not retry a partial SendInput on another target: the
                     // first target may already have received part of Ctrl+V.
                     crate::paste_mode::send_paste()?;
+                    let verified = crate::paste_mode::wait_for_paste_attachment(
+                        window.hwnd,
+                        baseline,
+                        Duration::from_secs(5),
+                        cancelled,
+                    )
+                    .map_err(|error| match error {
+                        AppError::BrowserCancelled => error,
+                        _ => clipboard_paste_verification_failed(),
+                    })?;
+                    if !verified {
+                        return Err(clipboard_paste_verification_failed());
+                    }
                     break 'locate;
                 }
                 // The located window may be on another virtual desktop or
@@ -729,11 +783,11 @@ fn prepare_clipboard_paste_job(
                 // before falling through to a fresh page on this desktop.
                 Err(error) => {
                     tracing::warn!(
-                        stage = "paste_activation_denied",
+                        stage = "paste_target_not_ready",
                         completed = false,
                         window_class = %window.class,
                         process = %window.process,
-                        "located window refused activation; trying another candidate"
+                        "located window could not expose a focused editor; trying another candidate"
                     );
                     activation_error = Some(error);
                 }
@@ -744,9 +798,19 @@ fn prepare_clipboard_paste_job(
             tracing::info!(
                 stage = "paste_window_not_found",
                 completed = false,
-                "no activatable provider window yet; opening the default browser"
+                "no paste-ready provider window yet; opening the configured target"
             );
-            crate::paste_mode::open_default_browser(&job.start_url)?;
+            match &job.open_target {
+                ClipboardPasteOpenTarget::DefaultBrowser => {
+                    crate::paste_mode::open_default_browser(&job.start_url)?;
+                }
+                ClipboardPasteOpenTarget::DesktopPwa {
+                    provider_id,
+                    configured_shortcut,
+                } => {
+                    DesktopPwaLauncher::open(provider_id, configured_shortcut.as_deref())?;
+                }
+            }
         }
         if Instant::now() >= deadline {
             return Err(activation_error.unwrap_or(AppError::PasteTargetUnavailable));
@@ -756,7 +820,7 @@ fn prepare_clipboard_paste_job(
 
     // validate_for is intentionally skipped: paste mode delivers only the
     // screenshot, so quick-dispatch prompts are deliberately not filled in.
-    let outcome = PreparationOutcome::prepared(&job.start_url, false, false);
+    let outcome = PreparationOutcome::prepared(&job.start_url, false, true);
     send_event(
         owner,
         events,
@@ -767,6 +831,55 @@ fn prepare_clipboard_paste_job(
         },
     );
     Ok(())
+}
+
+fn wait_for_cold_open_editor_settle(window: HWND, cancelled: &AtomicBool) -> Result<()> {
+    let started = Instant::now();
+    let deadline = Instant::now() + COLD_OPEN_EDITOR_STABILITY_TIMEOUT;
+    let mut previous = None;
+    let mut consecutive_stable_samples = 0u8;
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(AppError::BrowserCancelled);
+        }
+
+        let sample = crate::paste_mode::prepare_paste_target(window)
+            .and_then(|()| crate::paste_mode::paste_attachment_baseline(window));
+        if let Ok(current) = sample {
+            if previous == Some(current) {
+                consecutive_stable_samples = consecutive_stable_samples.saturating_add(1);
+            } else {
+                consecutive_stable_samples = 1;
+                previous = Some(current);
+            }
+        } else {
+            // Cold Chromium pages can replace the accessibility subtree while
+            // they hydrate. This is still pre-write, so discard the sample and
+            // keep probing within the bounded readiness budget.
+            previous = None;
+            consecutive_stable_samples = 0;
+        }
+        if consecutive_stable_samples >= COLD_OPEN_EDITOR_STABILITY_SAMPLES
+            && started.elapsed() >= COLD_OPEN_EDITOR_MIN_SETTLE
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(AppError::PasteTargetUnavailable);
+        }
+        thread::sleep(COLD_OPEN_EDITOR_STABILITY_INTERVAL);
+    }
+}
+
+fn clipboard_paste_verification_failed() -> AppError {
+    // Ctrl+V was already synthesized. Treat attachment state as potentially
+    // prepared so no caller can safely paste the screenshot a second time.
+    AppError::PreparationFailed {
+        stage: PreparationFailureStage::Verification,
+        recovery: PreparationRecovery::Retry,
+        text_inserted: false,
+        attachment_prepared: true,
+    }
 }
 
 fn prepare_dedicated_browser_job(
@@ -1046,6 +1159,28 @@ mod tests {
     }
 
     #[test]
+    fn uncertain_clipboard_receipt_is_marked_as_a_possible_attachment_write() {
+        assert!(matches!(
+            clipboard_paste_verification_failed(),
+            AppError::PreparationFailed {
+                stage: PreparationFailureStage::Verification,
+                recovery: PreparationRecovery::Retry,
+                text_inserted: false,
+                attachment_prepared: true,
+            }
+        ));
+    }
+
+    #[test]
+    fn cold_open_editor_settle_honours_cancellation_before_waiting() {
+        let cancelled = AtomicBool::new(true);
+        assert!(matches!(
+            wait_for_cold_open_editor_settle(0 as HWND, &cancelled),
+            Err(AppError::BrowserCancelled)
+        ));
+    }
+
+    #[test]
     #[ignore = "writes an in-memory test image to a real ChatGPT window but never sends"]
     fn dedicated_failure_falls_back_to_real_clipboard_paste_without_sending() {
         let width = 24;
@@ -1086,7 +1221,11 @@ mod tests {
             ClipboardPasteJob {
                 start_url: "https://chatgpt.com/".to_owned(),
                 title_keywords: vec!["ChatGPT".to_owned()],
-                locate_timeout: Duration::from_secs(10),
+                open_target: ClipboardPasteOpenTarget::DesktopPwa {
+                    provider_id: "chatgpt".to_owned(),
+                    configured_shortcut: None,
+                },
+                locate_timeout: Duration::from_secs(45),
             },
         );
         let job = BrowserJob {

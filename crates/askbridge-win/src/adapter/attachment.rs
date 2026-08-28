@@ -7,7 +7,7 @@ use askbridge_core::{AppError, Result};
 
 use crate::browser::FileInputResult;
 
-use super::composer::{ATTEMPT_TIMEOUT, PROBE_INTERVAL, polling_deadline, wait_for_next_probe};
+use super::composer::{PROBE_INTERVAL, polling_deadline, wait_for_next_probe};
 
 pub(super) fn poll_file_input_preparation<F>(
     cancelled: &AtomicBool,
@@ -43,7 +43,11 @@ where
                 Err(AppError::TargetTimeout)
             };
         }
-        let result = evaluate((deadline - now).min(ATTEMPT_TIMEOUT))?;
+        // A file-input attempt includes DOM discovery, file assignment,
+        // event dispatch, and an attachment receipt. Reusing the composer's
+        // short probe slice can time out before mutation and make a later
+        // retry unsafe. Only an explicit NotFound result is retried.
+        let result = evaluate(deadline - now)?;
         if !matches!(result, FileInputResult::NotFound) {
             return Ok(result);
         }
@@ -78,5 +82,24 @@ mod tests {
         .expect("file input");
         assert_eq!(attempts, 2);
         assert_eq!(result, FileInputResult::Prepared);
+    }
+
+    #[test]
+    fn attachment_attempt_receives_the_full_remaining_policy_budget() {
+        let cancelled = AtomicBool::new(false);
+        let mut observed = Duration::ZERO;
+        let result = poll_file_input_preparation_with_interval(
+            &cancelled,
+            Duration::from_secs(2),
+            Duration::ZERO,
+            |attempt_timeout| {
+                observed = attempt_timeout;
+                Ok(FileInputResult::Prepared)
+            },
+        )
+        .expect("file input");
+
+        assert_eq!(result, FileInputResult::Prepared);
+        assert!(observed > Duration::from_millis(1_900));
     }
 }

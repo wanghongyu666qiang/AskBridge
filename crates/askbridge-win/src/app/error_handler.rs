@@ -1,7 +1,40 @@
-use askbridge_core::{AppCommand, AppError, AppState, PreparationRecovery};
+use askbridge_core::{
+    AppCommand, AppError, AppState, PreparationFailureStage, PreparationRecovery,
+};
 use tracing::error;
 
 use super::controller::Runtime;
+
+fn browser_diagnostic_code(error: &AppError) -> &'static str {
+    match error {
+        AppError::BrowserConnectionFailed(detail) if detail == "CDP command timed out" => {
+            "cdp_command_timeout"
+        }
+        AppError::BrowserConnectionFailed(detail)
+            if detail == "persistent CDP connection is not available" =>
+        {
+            "cdp_connection_unavailable"
+        }
+        AppError::BrowserConnectionFailed(_) => "browser_connection_other",
+        AppError::BrowserProtocol(detail) if detail.contains("DOM.setFileInputFiles") => {
+            "cdp_set_file_input_rejected"
+        }
+        AppError::BrowserProtocol(detail) if detail.contains("Runtime.callFunctionOn") => {
+            "cdp_attachment_event_or_receipt_rejected"
+        }
+        AppError::BrowserProtocol(detail) if detail.contains("DOM.resolveNode") => {
+            "cdp_file_input_resolve_rejected"
+        }
+        AppError::BrowserProtocol(detail) if detail.contains("attachment receipt") => {
+            "attachment_receipt_invalid"
+        }
+        AppError::BrowserProtocol(detail) if detail.contains("CDP method") => {
+            "cdp_method_rejected_other"
+        }
+        AppError::BrowserProtocol(_) => "browser_protocol_other",
+        _ => "not_applicable",
+    }
+}
 
 pub(super) fn user_facing_error(error: &AppError) -> String {
     match error {
@@ -40,6 +73,12 @@ pub(super) fn user_facing_error(error: &AppError) -> String {
         }
         AppError::TargetNotFound => "未找到可用的目标页面。".to_owned(),
         AppError::TargetTimeout => "目标页面加载超时，请检查浏览器后重试。".to_owned(),
+        AppError::PreparationFailed {
+            stage: PreparationFailureStage::Verification,
+            attachment_prepared: true,
+            ..
+        } => "已经执行一次截图粘贴，但无法确认附件状态。请先检查页面并移除可能存在的图片，不要直接重试。"
+            .to_owned(),
         AppError::PreparationFailed { recovery, .. } => match recovery {
             PreparationRecovery::LoginInBrowser => {
                 "请先在所选浏览器中登录当前供应商，然后重试。".to_owned()
@@ -70,11 +109,32 @@ impl Runtime {
             .pending_dispatch
             .as_ref()
             .map_or("", |request| request.provider_id.as_str());
+        let (preparation_stage, recovery, text_inserted, attachment_prepared) = match &error {
+            AppError::PreparationFailed {
+                stage,
+                recovery,
+                text_inserted,
+                attachment_prepared,
+            } => (
+                Some(*stage),
+                Some(*recovery),
+                *text_inserted,
+                *attachment_prepared,
+            ),
+            _ => (None, None, false, false),
+        };
+        let diagnostic_code = browser_diagnostic_code(&error);
         error!(
             request_id = %request_id,
             provider_id = %provider_id,
             stage = "browser_workflow",
             completed = false,
+            error_kind = error.kind(),
+            diagnostic_code,
+            ?preparation_stage,
+            ?recovery,
+            text_inserted,
+            attachment_prepared,
             "browser surface workflow failed"
         );
         self.pending_dispatch = None;
@@ -126,5 +186,33 @@ mod tests {
         assert!(message.contains("AskBridge 专用 Chrome"));
         assert!(message.contains("关闭"));
         assert!(message.contains("重试"));
+    }
+
+    #[test]
+    fn browser_diagnostics_classify_attachment_protocol_failures_without_logging_details() {
+        assert_eq!(
+            browser_diagnostic_code(&AppError::BrowserConnectionFailed(
+                "CDP command timed out".to_owned()
+            )),
+            "cdp_command_timeout"
+        );
+        assert_eq!(
+            browser_diagnostic_code(&AppError::BrowserProtocol(
+                "CDP method DOM.setFileInputFiles failed".to_owned()
+            )),
+            "cdp_set_file_input_rejected"
+        );
+    }
+
+    #[test]
+    fn uncertain_attachment_message_forbids_direct_retry() {
+        let message = user_facing_error(&AppError::PreparationFailed {
+            stage: PreparationFailureStage::Verification,
+            recovery: PreparationRecovery::Retry,
+            text_inserted: false,
+            attachment_prepared: true,
+        });
+        assert!(message.contains("无法确认附件状态"));
+        assert!(message.contains("不要直接重试"));
     }
 }

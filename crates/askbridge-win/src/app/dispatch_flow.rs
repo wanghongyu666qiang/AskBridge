@@ -9,7 +9,8 @@ use tracing::{error, info};
 use crate::adapter::ProviderHealthCheck;
 use crate::browser::{
     BrowserEvent, BrowserJob, BrowserLaunch, BrowserLaunchPlan, BrowserStage, BrowserSurface,
-    BrowserWarmupJob, ClipboardPasteJob, DedicatedChromeJob, DesktopPwaJob, ProviderHealthJob,
+    BrowserWarmupJob, ClipboardPasteJob, ClipboardPasteOpenTarget, DedicatedChromeJob,
+    DesktopPwaJob, ProviderHealthJob,
 };
 
 use super::{controller::Runtime, error_handler::user_facing_error};
@@ -89,34 +90,56 @@ impl Runtime {
             start_url: provider.start_url.clone(),
             url_patterns: provider.url_patterns.clone(),
         };
-        let clipboard_job = || ClipboardPasteJob {
+        let desktop_job = || DesktopPwaJob {
+            provider_id: provider.id.clone(),
+            configured_shortcut: self
+                .config
+                .browser
+                .desktop_shortcut(&provider.id)
+                .map(str::to_owned),
+            start_url: provider.start_url.clone(),
+            url_patterns: provider.url_patterns.clone(),
+        };
+        let clipboard_job = |open_target| ClipboardPasteJob {
             start_url: provider.start_url.clone(),
             title_keywords: crate::paste_mode::provider_title_keywords(
                 &provider.id,
                 &provider.display_name,
                 &provider.start_url,
             ),
-            locate_timeout: Duration::from_millis(self.config.browser.page_timeout_ms.max(5_000)),
+            locate_timeout: clipboard_locate_timeout(
+                self.config.browser.connect_timeout_ms,
+                self.config.browser.page_timeout_ms,
+                &open_target,
+            ),
+            open_target,
         };
         let plan = match self.config.browser.target_preference(&provider.id) {
             BrowserTargetPreference::DesktopPwa => {
-                BrowserLaunchPlan::single(BrowserLaunch::DesktopPwa(DesktopPwaJob {
-                    provider_id: provider.id.clone(),
-                    configured_shortcut: self
-                        .config
-                        .browser
-                        .desktop_shortcut(&provider.id)
-                        .map(str::to_owned),
-                    start_url: provider.start_url.clone(),
-                    url_patterns: provider.url_patterns.clone(),
-                }))
+                if request.image.is_some() {
+                    desktop_pwa_screenshot_plan(clipboard_job(
+                        ClipboardPasteOpenTarget::DesktopPwa {
+                            provider_id: provider.id.clone(),
+                            configured_shortcut: self
+                                .config
+                                .browser
+                                .desktop_shortcut(&provider.id)
+                                .map(str::to_owned),
+                        },
+                    ))
+                } else {
+                    BrowserLaunchPlan::single(BrowserLaunch::DesktopPwa(desktop_job()))
+                }
             }
             BrowserTargetPreference::DedicatedChrome => {
                 BrowserLaunchPlan::single(BrowserLaunch::DedicatedChrome(dedicated_job()))
             }
             BrowserTargetPreference::DedicatedChromeThenClipboardPaste => {
                 if request.image.is_some() {
-                    BrowserLaunchPlan::dedicated_then_clipboard(dedicated_job(), clipboard_job())
+                    BrowserLaunchPlan::dedicated_then_clipboard(
+                        dedicated_job(),
+                        clipboard_job(ClipboardPasteOpenTarget::DefaultBrowser),
+                    )
                 } else {
                     info!(
                         request_id = %request.id,
@@ -130,7 +153,9 @@ impl Runtime {
                 }
             }
             BrowserTargetPreference::ClipboardPaste => {
-                BrowserLaunchPlan::single(BrowserLaunch::ClipboardPaste(clipboard_job()))
+                BrowserLaunchPlan::single(BrowserLaunch::ClipboardPaste(clipboard_job(
+                    ClipboardPasteOpenTarget::DefaultBrowser,
+                )))
             }
         };
         let opens_desktop_pwa = plan.primary_surface() == BrowserSurface::DesktopPwa;
@@ -420,5 +445,71 @@ impl Runtime {
         if self.workflow.state() == askbridge_core::AppState::Cancelling {
             let _ = self.workflow.finish_cancelling();
         }
+    }
+}
+
+fn desktop_pwa_screenshot_plan(clipboard: ClipboardPasteJob) -> BrowserLaunchPlan {
+    BrowserLaunchPlan::single(BrowserLaunch::ClipboardPaste(clipboard))
+}
+
+fn clipboard_locate_timeout(
+    connect_timeout_ms: u64,
+    page_timeout_ms: u64,
+    open_target: &ClipboardPasteOpenTarget,
+) -> Duration {
+    let page_timeout = Duration::from_millis(page_timeout_ms.max(5_000));
+    match open_target {
+        ClipboardPasteOpenTarget::DesktopPwa { .. } => Duration::from_millis(connect_timeout_ms)
+            .saturating_add(page_timeout)
+            .min(Duration::from_secs(120)),
+        ClipboardPasteOpenTarget::DefaultBrowser => page_timeout,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_pwa_screenshot_keeps_pwa_target_and_adds_clipboard_delivery() {
+        let clipboard = ClipboardPasteJob {
+            start_url: "https://ai.example/".to_owned(),
+            title_keywords: vec!["Custom AI".to_owned()],
+            open_target: ClipboardPasteOpenTarget::DesktopPwa {
+                provider_id: "custom-ai".to_owned(),
+                configured_shortcut: Some(r"D:\AI\Custom AI.lnk".to_owned()),
+            },
+            locate_timeout: Duration::from_secs(5),
+        };
+
+        let plan = desktop_pwa_screenshot_plan(clipboard);
+        assert_eq!(plan.primary_surface(), BrowserSurface::ClipboardPaste);
+        assert!(matches!(
+            plan.primary(),
+            BrowserLaunch::ClipboardPaste(ClipboardPasteJob {
+                open_target: ClipboardPasteOpenTarget::DesktopPwa { provider_id, .. },
+                ..
+            }) if provider_id == "custom-ai"
+        ));
+    }
+
+    #[test]
+    fn desktop_pwa_cold_open_gets_process_startup_plus_page_readiness_budget() {
+        let desktop = ClipboardPasteOpenTarget::DesktopPwa {
+            provider_id: "chatgpt".to_owned(),
+            configured_shortcut: None,
+        };
+        assert_eq!(
+            clipboard_locate_timeout(10_000, 10_000, &desktop),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            clipboard_locate_timeout(10_000, 10_000, &ClipboardPasteOpenTarget::DefaultBrowser),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            clipboard_locate_timeout(120_000, 120_000, &desktop),
+            Duration::from_secs(120)
+        );
     }
 }

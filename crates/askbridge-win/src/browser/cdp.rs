@@ -23,7 +23,10 @@ mod protocol;
 mod validation;
 
 pub(crate) use attachment::FileInputResult;
-use attachment::{attachment_receipt, has_new_attachment_receipt, query_acceptable_file_inputs};
+use attachment::{
+    attachment_receipt, first_preferred_file_input_candidates, has_new_attachment_receipt,
+    query_acceptable_file_inputs,
+};
 use connection::{BrowserConnection, TargetSession};
 use http::{parse_http_response, read_http_response};
 use protocol::ProtocolSocket;
@@ -222,7 +225,15 @@ impl CdpClient {
             .and_then(Value::as_i64)
             .ok_or_else(|| AppError::BrowserProtocol("DOM root has no node id".to_owned()))?;
         let mut candidates =
-            query_acceptable_file_inputs(&mut session, root_id, preferred_selectors, cancelled)?;
+            first_preferred_file_input_candidates(preferred_selectors, |selector| {
+                let selector = selector.to_owned();
+                query_acceptable_file_inputs(
+                    &mut session,
+                    root_id,
+                    std::slice::from_ref(&selector),
+                    cancelled,
+                )
+            })?;
         if candidates.is_empty() {
             candidates = query_acceptable_file_inputs(
                 &mut session,

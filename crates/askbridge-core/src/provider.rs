@@ -174,6 +174,33 @@ pub fn built_in_providers() -> Vec<ProviderConfig> {
             is_custom: false,
             adapter_override: Some("doubao".to_owned()),
         },
+        ProviderConfig {
+            id: "deepseek".to_owned(),
+            display_name: "DeepSeek".to_owned(),
+            enabled: true,
+            start_url: "https://chat.deepseek.com/".to_owned(),
+            url_patterns: vec!["https://chat.deepseek.com/".to_owned()],
+            is_custom: false,
+            adapter_override: None,
+        },
+        ProviderConfig {
+            id: "glm".to_owned(),
+            display_name: "智谱清言".to_owned(),
+            enabled: true,
+            start_url: "https://chatglm.cn/".to_owned(),
+            url_patterns: vec!["https://chatglm.cn/".to_owned()],
+            is_custom: false,
+            adapter_override: None,
+        },
+        ProviderConfig {
+            id: "kimi".to_owned(),
+            display_name: "Kimi".to_owned(),
+            enabled: true,
+            start_url: "https://www.kimi.com/".to_owned(),
+            url_patterns: vec!["https://www.kimi.com/".to_owned()],
+            is_custom: false,
+            adapter_override: None,
+        },
     ]
 }
 
@@ -261,6 +288,9 @@ mod tests {
                 ("gemini", "https://gemini.google.com/app"),
                 ("claude", "https://claude.ai/new"),
                 ("doubao", "https://www.doubao.com/chat/"),
+                ("deepseek", "https://chat.deepseek.com/"),
+                ("glm", "https://chatglm.cn/"),
+                ("kimi", "https://www.kimi.com/"),
             ]
         );
         assert!(providers.iter().all(|provider| provider.validate().is_ok()));

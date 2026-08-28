@@ -256,7 +256,10 @@ mod tests {
         let chatgpt = load_rule(Some("chatgpt")).expect("rule").expect("chatgpt");
         let claude = load_rule(Some("claude")).expect("rule").expect("claude");
 
-        assert_eq!(chatgpt.file_input_selectors(), ["#upload-files"]);
+        assert_eq!(
+            chatgpt.file_input_selectors(),
+            ["#upload-files", "#mobile-composer-files-input"]
+        );
         assert_eq!(
             claude.file_input_selectors(),
             ["#chat-input-file-upload-onpage"]

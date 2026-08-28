@@ -5,9 +5,24 @@ use serde_json::{Value, json};
 
 use super::connection::TargetSession;
 
+pub(super) fn first_preferred_file_input_candidates<F>(
+    selectors: &[String],
+    mut query: F,
+) -> Result<Vec<i64>>
+where
+    F: FnMut(&str) -> Result<Vec<i64>>,
+{
+    for selector in selectors {
+        let candidates = query(selector)?;
+        if !candidates.is_empty() {
+            return Ok(candidates);
+        }
+    }
+    Ok(Vec::new())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct AttachmentReceipt {
-    pub(super) file_count: u64,
     pub(super) named_count: u64,
     pub(super) preview_count: u64,
     pub(super) busy_count: u64,
@@ -17,8 +32,7 @@ pub(super) fn has_new_attachment_receipt(
     baseline: AttachmentReceipt,
     current: AttachmentReceipt,
 ) -> bool {
-    current.file_count > 0
-        && current.busy_count == 0
+    current.busy_count == 0
         && (current.named_count > baseline.named_count
             || current.preview_count > baseline.preview_count)
 }
@@ -61,7 +75,6 @@ pub(super) fn attachment_receipt(
                     if (element.getAttribute('aria-busy') === 'true' || element.getAttribute('role') === 'progressbar' || state === 'uploading' || state === 'pending') busy++;
                 }
                 return {
-                    fileCount: this.files ? this.files.length : 0,
                     namedCount: named,
                     previewCount: previews,
                     busyCount: busy
@@ -82,7 +95,6 @@ pub(super) fn attachment_receipt(
             .ok_or_else(|| AppError::BrowserProtocol(format!("attachment receipt has no {name}")))
     };
     Ok(AttachmentReceipt {
-        file_count: count("fileCount")?,
         named_count: count("namedCount")?,
         preview_count: count("previewCount")?,
         busy_count: count("busyCount")?,
@@ -162,4 +174,42 @@ pub(super) fn file_input_accepts_png(result: &Value) -> bool {
                     )
                 })
         })
+}
+
+#[cfg(test)]
+mod preferred_selector_tests {
+    use super::*;
+
+    #[test]
+    fn first_matching_exact_selector_wins_without_unioning_layout_variants() {
+        let selectors = vec!["#desktop-upload".to_owned(), "#mobile-upload".to_owned()];
+        let mut queried = Vec::new();
+        let candidates = first_preferred_file_input_candidates(&selectors, |selector| {
+            queried.push(selector.to_owned());
+            Ok(match selector {
+                "#desktop-upload" => Vec::new(),
+                "#mobile-upload" => vec![42],
+                _ => vec![90, 91, 92],
+            })
+        })
+        .expect("candidate");
+
+        assert_eq!(candidates, [42]);
+        assert_eq!(queried, selectors);
+    }
+
+    #[test]
+    fn ambiguity_within_one_exact_selector_is_preserved_for_fail_closed_handling() {
+        let selectors = vec!["#upload".to_owned(), "input[type=file]".to_owned()];
+        let candidates = first_preferred_file_input_candidates(&selectors, |selector| {
+            Ok(if selector == "#upload" {
+                vec![7, 8]
+            } else {
+                vec![9]
+            })
+        })
+        .expect("candidates");
+
+        assert_eq!(candidates, [7, 8]);
+    }
 }

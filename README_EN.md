@@ -34,13 +34,13 @@ After switching models in the capture toolbar, the new choice is saved as the de
 
 ## Browser Selection
 
-AskBridge supports ChatGPT, Gemini, Claude, Doubao, and custom HTTPS providers.
+AskBridge supports ChatGPT, Gemini, Claude, Doubao, DeepSeek, Zhipu Qingyan (GLM), Kimi, and custom HTTPS providers.
 
 ChatGPT offers four opening modes under "Settings > Browser":
 
-- **Desktop web**: reuses your existing login; screenshots must be uploaded manually.
+- **Desktop web**: reuses your existing login. For screenshot requests, AskBridge focuses one unambiguous editor, synthesizes one Ctrl+V, and reports success only after stable new attachment structure appears; you still send manually. Text-only requests only open the page.
 - **AskBridge-managed Chrome**: supports automatic screenshot upload after a one-time sign-in inside the isolated browser.
-- **Universal paste**: writes the screenshot to the clipboard, focuses a matching provider page or supported AI desktop-client window, and synthesizes one Ctrl+V; you confirm and send manually. This mode can use the login state in your daily browser or the ChatGPT, Claude, and Doubao desktop clients, and it does not verify the paste result. When no matching window is open, it opens a new page in the default browser and waits briefly before pasting.
+- **Universal paste**: writes the screenshot to the clipboard, focuses a matching provider page or supported AI desktop-client window, and synthesizes one Ctrl+V; you confirm and send manually. This mode can use the login state in your daily browser or the ChatGPT, Claude, and Doubao desktop clients. AskBridge reports success only after stable new attachment structure appears near one unambiguous editor. When no matching window is open, it opens a new page in the default browser. If the paste was executed but the attachment state remains uncertain, AskBridge stops and asks you to inspect the page; it never pastes again automatically.
 - **Dedicated Chrome first, safe fallback to universal paste**: screenshot requests are staged by the dedicated Chrome first; only when a failure happens before any text or attachment has been written does AskBridge automatically fall back to one Ctrl+V. If anything may already have been written, AskBridge stops instead of pasting again. Text-only requests still use the dedicated Chrome only.
 
 The managed Chrome uses a dedicated `BrowserProfile` and never connects to or modifies your daily Chrome profile.

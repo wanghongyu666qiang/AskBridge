@@ -14,7 +14,8 @@
         "div.ProseMirror[contenteditable=\"true\"]"
       ],
       "file_input_selectors": [
-        "#upload-files"
+        "#upload-files",
+        "#mobile-composer-files-input"
       ]
     },
     {

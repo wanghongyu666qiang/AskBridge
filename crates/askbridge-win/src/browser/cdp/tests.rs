@@ -678,24 +678,16 @@ fn detach_event_during_attach_never_publishes_the_stale_session() {
 }
 
 #[test]
-fn file_input_state_alone_never_claims_page_attachment_readiness() {
+fn page_attachment_receipt_does_not_depend_on_consumed_file_input_state() {
     let baseline = AttachmentReceipt {
-        file_count: 0,
         named_count: 2,
         preview_count: 1,
         busy_count: 0,
     };
+    assert!(!has_new_attachment_receipt(baseline, baseline));
     assert!(!has_new_attachment_receipt(
         baseline,
         AttachmentReceipt {
-            file_count: 1,
-            ..baseline
-        }
-    ));
-    assert!(!has_new_attachment_receipt(
-        baseline,
-        AttachmentReceipt {
-            file_count: 1,
             named_count: 3,
             busy_count: 1,
             ..baseline
@@ -704,7 +696,6 @@ fn file_input_state_alone_never_claims_page_attachment_readiness() {
     assert!(has_new_attachment_receipt(
         baseline,
         AttachmentReceipt {
-            file_count: 1,
             named_count: 3,
             ..baseline
         }
@@ -712,7 +703,6 @@ fn file_input_state_alone_never_claims_page_attachment_readiness() {
     assert!(has_new_attachment_receipt(
         baseline,
         AttachmentReceipt {
-            file_count: 1,
             preview_count: 2,
             ..baseline
         }

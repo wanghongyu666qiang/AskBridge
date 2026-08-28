@@ -120,33 +120,7 @@ impl GenericProviderAdapter {
                 }
                 file_input_result = prepare_file_input(&refreshed)?;
             }
-            match file_input_result {
-                FileInputResult::Prepared => true,
-                FileInputResult::NavigationChanged => {
-                    return Err(preparation_failed(
-                        PreparationFailureStage::NavigationChanged,
-                        PreparationRecovery::ReopenProviderPage,
-                        false,
-                        false,
-                    ));
-                }
-                FileInputResult::NotFound | FileInputResult::Ambiguous => {
-                    return Err(preparation_failed(
-                        PreparationFailureStage::AttachmentPreparation,
-                        PreparationRecovery::UseDedicatedChrome,
-                        false,
-                        false,
-                    ));
-                }
-                FileInputResult::VerificationFailed => {
-                    return Err(preparation_failed(
-                        PreparationFailureStage::Verification,
-                        PreparationRecovery::Retry,
-                        false,
-                        false,
-                    ));
-                }
-            }
+            attachment_prepared_or_error(file_input_result)?
         } else {
             false
         };
@@ -329,6 +303,30 @@ fn preparation_failed(
     }
 }
 
+fn attachment_prepared_or_error(result: FileInputResult) -> Result<bool> {
+    match result {
+        FileInputResult::Prepared => Ok(true),
+        FileInputResult::NavigationChanged => Err(preparation_failed(
+            PreparationFailureStage::NavigationChanged,
+            PreparationRecovery::ReopenProviderPage,
+            false,
+            false,
+        )),
+        FileInputResult::NotFound | FileInputResult::Ambiguous => Err(preparation_failed(
+            PreparationFailureStage::AttachmentPreparation,
+            PreparationRecovery::UseDedicatedChrome,
+            false,
+            false,
+        )),
+        FileInputResult::VerificationFailed => Err(preparation_failed(
+            PreparationFailureStage::Verification,
+            PreparationRecovery::Retry,
+            false,
+            true,
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -461,6 +459,21 @@ mod tests {
 
         assert_eq!(attempts, 1);
         assert!(matches!(result, FileInputResult::Ambiguous));
+    }
+
+    #[test]
+    fn unverified_attachment_receipt_never_claims_no_write_for_fallback() {
+        let error = attachment_prepared_or_error(FileInputResult::VerificationFailed)
+            .expect_err("missing receipt must fail closed");
+        assert!(matches!(
+            error,
+            AppError::PreparationFailed {
+                stage: PreparationFailureStage::Verification,
+                text_inserted: false,
+                attachment_prepared: true,
+                ..
+            }
+        ));
     }
 
     #[test]

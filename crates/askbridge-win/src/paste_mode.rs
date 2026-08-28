@@ -1,14 +1,21 @@
 // Clipboard-paste dispatch target: locate an AI website or desktop-client window, bring it to
 // the foreground, and synthesize exactly one Ctrl+V. Nothing is ever typed
 // beyond that shortcut, no page content is read, and sending stays with the
-// user. The result cannot be verified, so callers must say so honestly in
-// their notifications.
+// user. A provider-neutral UI Automation receipt verifies that the page added
+// attachment structure after the paste.
 
-use std::{path::Path, thread, time::Duration};
+use std::{
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+    time::{Duration, Instant},
+};
 
 use askbridge_core::{AppError, Result};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, HANDLE, HWND, LPARAM},
+    Foundation::{
+        CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, HANDLE, HWND, LPARAM, RECT,
+    },
     Storage::Packaging::Appx::GetPackageFamilyName,
     System::{
         Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize},
@@ -20,11 +27,11 @@ use windows_sys::Win32::{
     UI::{
         Input::KeyboardAndMouse::{
             INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_CONTROL,
-            VK_MENU,
+            VK_MENU, keybd_event,
         },
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
-            BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow,
+            BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect,
             GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
             IsWindowVisible, SW_RESTORE, SW_SHOWNORMAL, SetForegroundWindow, ShowWindow,
             SwitchToThisWindow,
@@ -32,10 +39,11 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::util::{last_error, wide};
+use crate::util::wide;
 
 const S_OK: i32 = 0;
 const S_FALSE: i32 = 1;
+const RPC_E_CHANGED_MODE: i32 = 0x8001_0106u32 as i32;
 
 /// Top-level window classes of the mainstream browsers AskBridge pastes into.
 const BROWSER_WINDOW_CLASSES: [&str; 2] = ["Chrome_WidgetWin_1", "MozillaWindowClass"];
@@ -43,6 +51,34 @@ const BROWSER_WINDOW_CLASSES: [&str; 2] = ["Chrome_WidgetWin_1", "MozillaWindowC
 const VK_V: u16 = 0x56;
 /// Time allowed for the target window to actually take the foreground.
 const FOCUS_SETTLE: Duration = Duration::from_millis(200);
+/// Time allowed for UI Automation focus state to settle after SetFocus.
+const EDITOR_FOCUS_SETTLE: Duration = Duration::from_millis(100);
+const PASTE_KEY_INTERVAL: Duration = Duration::from_millis(10);
+const PASTE_RECEIPT_PROBE_INTERVAL: Duration = Duration::from_millis(50);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PasteReceiptScope {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PasteAttachmentReceipt {
+    image_count: u32,
+    group_count: u32,
+    scope: PasteReceiptScope,
+}
+
+fn has_new_paste_attachment(
+    baseline: PasteAttachmentReceipt,
+    current: PasteAttachmentReceipt,
+) -> bool {
+    current.scope == baseline.scope
+        && current.image_count > baseline.image_count
+        && current.group_count > baseline.group_count
+}
 
 /// Title keywords used to recognize a provider website window. Built-in
 /// providers match their product names; custom providers fall back to their
@@ -332,6 +368,324 @@ pub(crate) fn activate(window: HWND) -> Result<()> {
     })
 }
 
+/// Makes a top-level target safe for a clipboard paste. Foreground ownership
+/// alone is insufficient: browser chrome or the page body can own keyboard
+/// focus, in which case Ctrl+V is accepted by SendInput but never reaches the
+/// composer. This second step uses Windows UI Automation to focus the lowest
+/// visible, enabled, non-password edit control in the content area.
+///
+/// The selector is provider-neutral and never reads control names, values, or
+/// page text. If an editable control cannot be located and focus cannot be
+/// verified, the paste is refused before any key is synthesized.
+pub(crate) fn prepare_paste_target(window: HWND) -> Result<()> {
+    activate(window)?;
+    // A newly launched Chromium app can report itself as the foreground
+    // window before its renderer accepts keyboard input. Reassert the app
+    // switch, verify it again, and only then focus the unique editor.
+    switch_to_this_window(window);
+    focus_verified(window)?;
+    focus_visible_editor(window)
+}
+
+pub(crate) fn paste_attachment_baseline(window: HWND) -> Result<PasteAttachmentReceipt> {
+    read_paste_attachment_receipt(window, None)
+}
+
+pub(crate) fn wait_for_paste_attachment(
+    window: HWND,
+    baseline: PasteAttachmentReceipt,
+    timeout: Duration,
+    cancelled: &AtomicBool,
+) -> Result<bool> {
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        AppError::InvalidPreparation("paste receipt timeout is too large".to_owned())
+    })?;
+    let mut consecutive_receipts = 0u8;
+    let mut transient_probe_errors = 0u32;
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(AppError::BrowserCancelled);
+        }
+        let current = match read_paste_attachment_receipt(window, Some(baseline.scope)) {
+            Ok(receipt) => receipt,
+            Err(_) => {
+                transient_probe_errors = transient_probe_errors.saturating_add(1);
+                if Instant::now() >= deadline {
+                    tracing::warn!(
+                        stage = "paste_attachment_receipt",
+                        completed = false,
+                        transient_probe_errors,
+                        "clipboard paste receipt remained unavailable until timeout"
+                    );
+                    return Ok(false);
+                }
+                thread::sleep(PASTE_RECEIPT_PROBE_INTERVAL);
+                continue;
+            }
+        };
+        if has_new_paste_attachment(baseline, current) {
+            consecutive_receipts = consecutive_receipts.saturating_add(1);
+            if consecutive_receipts >= 2 {
+                tracing::info!(
+                    stage = "paste_attachment_receipt",
+                    completed = true,
+                    "clipboard paste produced new attachment structure"
+                );
+                return Ok(true);
+            }
+        } else {
+            consecutive_receipts = 0;
+        }
+        if Instant::now() >= deadline {
+            tracing::warn!(
+                stage = "paste_attachment_receipt",
+                completed = false,
+                "clipboard paste produced no verifiable attachment structure"
+            );
+            return Ok(false);
+        }
+        thread::sleep(PASTE_RECEIPT_PROBE_INTERVAL);
+    }
+}
+
+fn read_paste_attachment_receipt(
+    window: HWND,
+    scope: Option<PasteReceiptScope>,
+) -> Result<PasteAttachmentReceipt> {
+    // SAFETY: This initializes COM only for the current browser worker/test
+    // thread. A different existing apartment remains usable by UI Automation.
+    let com_status =
+        unsafe { CoInitializeEx(std::ptr::null_mut(), COINIT_APARTMENTTHREADED as u32) };
+    let should_uninitialize = com_status == S_OK || com_status == S_FALSE;
+    if !should_uninitialize && com_status != RPC_E_CHANGED_MODE {
+        return Err(AppError::PasteTargetUnavailable);
+    }
+    let result = read_paste_attachment_receipt_with_uia(window, scope);
+    if should_uninitialize {
+        // SAFETY: Balances the successful CoInitializeEx call above.
+        unsafe { CoUninitialize() };
+    }
+    result
+}
+
+fn read_paste_attachment_receipt_with_uia(
+    window: HWND,
+    scope: Option<PasteReceiptScope>,
+) -> Result<PasteAttachmentReceipt> {
+    use windows::Win32::{
+        Foundation::HWND as AutomationHwnd,
+        System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
+        UI::Accessibility::{
+            CUIAutomation, IUIAutomation, TreeScope_Descendants, UIA_EditControlTypeId,
+            UIA_GroupControlTypeId, UIA_ImageControlTypeId,
+        },
+    };
+
+    let mut window_rect = RECT::default();
+    // SAFETY: window is a live top-level window and window_rect is writable.
+    if unsafe { GetWindowRect(window, &mut window_rect) } == 0 {
+        return Err(AppError::PasteTargetUnavailable);
+    }
+    let window_height = window_rect.bottom.saturating_sub(window_rect.top);
+    if window_height <= 0 {
+        return Err(AppError::PasteTargetUnavailable);
+    }
+    let result = (|| -> windows::core::Result<PasteAttachmentReceipt> {
+        // SAFETY: CUIAutomation is an in-process COM server and COM is
+        // initialized on this thread by the caller.
+        let automation: IUIAutomation =
+            unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)? };
+        let root = unsafe { automation.ElementFromHandle(AutomationHwnd(window))? };
+        let scope = match scope {
+            Some(scope) => scope,
+            None => {
+                // prepare_paste_target focused exactly one eligible editor.
+                // Anchor the receipt to that editor's local composer band so
+                // unrelated page rendering cannot satisfy the attachment check.
+                let editor = unsafe { automation.GetFocusedElement()? };
+                if unsafe { editor.CurrentControlType()? } != UIA_EditControlTypeId
+                    || !unsafe { editor.CurrentIsKeyboardFocusable()? }.as_bool()
+                    || !unsafe { editor.CurrentIsEnabled()? }.as_bool()
+                    || unsafe { editor.CurrentIsPassword()? }.as_bool()
+                    || unsafe { editor.CurrentIsOffscreen()? }.as_bool()
+                {
+                    return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                        0x8000_4005u32 as i32,
+                    )));
+                }
+                let rect = unsafe { editor.CurrentBoundingRectangle()? };
+                let width = rect.right.saturating_sub(rect.left);
+                let height = rect.bottom.saturating_sub(rect.top);
+                if width < 20 || height < 10 {
+                    return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                        0x8000_4005u32 as i32,
+                    )));
+                }
+                PasteReceiptScope {
+                    left: rect.left.saturating_sub(64).max(window_rect.left),
+                    top: rect.top.saturating_sub(320).max(window_rect.top),
+                    right: rect.right.saturating_add(64).min(window_rect.right),
+                    bottom: rect.bottom.saturating_add(96).min(window_rect.bottom),
+                }
+            }
+        };
+        let condition = unsafe { automation.CreateTrueCondition()? };
+        let elements = unsafe { root.FindAll(TreeScope_Descendants, &condition)? };
+        let length = unsafe { elements.Length()? };
+        let mut receipt = PasteAttachmentReceipt {
+            image_count: 0,
+            group_count: 0,
+            scope,
+        };
+        for index in 0..length {
+            let element = unsafe { elements.GetElement(index)? };
+            if unsafe { element.CurrentIsOffscreen()? }.as_bool() {
+                continue;
+            }
+            let rect = unsafe { element.CurrentBoundingRectangle()? };
+            let intersects_content = rect.right > scope.left
+                && rect.left < scope.right
+                && rect.bottom > scope.top
+                && rect.top < scope.bottom
+                && rect.right > rect.left
+                && rect.bottom > rect.top;
+            if !intersects_content {
+                continue;
+            }
+            let control_type = unsafe { element.CurrentControlType()? };
+            if control_type == UIA_ImageControlTypeId {
+                receipt.image_count = receipt.image_count.saturating_add(1);
+            } else if control_type == UIA_GroupControlTypeId {
+                receipt.group_count = receipt.group_count.saturating_add(1);
+            }
+        }
+        Ok(receipt)
+    })();
+    result.map_err(|_| AppError::PasteTargetUnavailable)
+}
+
+fn focus_visible_editor(window: HWND) -> Result<()> {
+    // SAFETY: This initializes COM only for the current browser worker/test
+    // thread. An existing apartment with a different model is still usable by
+    // UI Automation and must not be uninitialized here.
+    let com_status =
+        unsafe { CoInitializeEx(std::ptr::null_mut(), COINIT_APARTMENTTHREADED as u32) };
+    let should_uninitialize = com_status == S_OK || com_status == S_FALSE;
+    if !should_uninitialize && com_status != RPC_E_CHANGED_MODE {
+        tracing::warn!(
+            stage = "paste_editor_focus",
+            completed = false,
+            hresult = format_args!("0x{:08X}", com_status as u32),
+            "COM initialization failed before editor discovery"
+        );
+        return Err(AppError::PasteTargetUnavailable);
+    }
+
+    let result = focus_visible_editor_with_uia(window);
+    if should_uninitialize {
+        // SAFETY: Balances the successful CoInitializeEx call above.
+        unsafe { CoUninitialize() };
+    }
+    result
+}
+
+fn focus_visible_editor_with_uia(window: HWND) -> Result<()> {
+    use windows::Win32::{
+        Foundation::HWND as AutomationHwnd,
+        System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
+        UI::Accessibility::{
+            CUIAutomation, IUIAutomation, IUIAutomationElement, TreeScope_Descendants,
+            UIA_EditControlTypeId,
+        },
+    };
+
+    let mut window_rect = RECT::default();
+    // SAFETY: window is a live top-level window and window_rect is writable.
+    if unsafe { GetWindowRect(window, &mut window_rect) } == 0 {
+        return Err(AppError::PasteTargetUnavailable);
+    }
+    let window_height = window_rect.bottom.saturating_sub(window_rect.top);
+    if window_height <= 0 {
+        return Err(AppError::PasteTargetUnavailable);
+    }
+    // Ignore browser chrome (address/search bars) without relying on a
+    // provider, title, DOM selector, locale, or executable-specific rule.
+    let content_top = window_rect.top.saturating_add(window_height / 4);
+
+    let result = (|| -> windows::core::Result<()> {
+        // SAFETY: CUIAutomation is an in-process COM server and COM has been
+        // initialized on this thread by the caller.
+        let automation: IUIAutomation =
+            unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)? };
+        let root = unsafe { automation.ElementFromHandle(AutomationHwnd(window))? };
+        let condition = unsafe { automation.CreateTrueCondition()? };
+        let elements = unsafe { root.FindAll(TreeScope_Descendants, &condition)? };
+        let length = unsafe { elements.Length()? };
+
+        let mut selected: Option<IUIAutomationElement> = None;
+        let mut eligible_count = 0u32;
+        for index in 0..length {
+            let element = unsafe { elements.GetElement(index)? };
+            if unsafe { element.CurrentControlType()? } != UIA_EditControlTypeId
+                || !unsafe { element.CurrentIsKeyboardFocusable()? }.as_bool()
+                || !unsafe { element.CurrentIsEnabled()? }.as_bool()
+                || unsafe { element.CurrentIsPassword()? }.as_bool()
+                || unsafe { element.CurrentIsOffscreen()? }.as_bool()
+            {
+                continue;
+            }
+            let rect = unsafe { element.CurrentBoundingRectangle()? };
+            let width = rect.right.saturating_sub(rect.left);
+            let height = rect.bottom.saturating_sub(rect.top);
+            let center_y = rect.top.saturating_add(height / 2);
+            let intersects_window = rect.right > window_rect.left
+                && rect.left < window_rect.right
+                && rect.bottom > window_rect.top
+                && rect.top < window_rect.bottom;
+            if width < 20 || height < 10 || !intersects_window || center_y < content_top {
+                continue;
+            }
+            eligible_count = eligible_count.saturating_add(1);
+            selected = Some(element);
+        }
+
+        if eligible_count != 1 {
+            return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                0x8000_4005u32 as i32,
+            )));
+        }
+        let Some(editor) = selected else {
+            unreachable!("exactly one eligible editor must have been selected")
+        };
+        unsafe { editor.SetFocus()? };
+        thread::sleep(EDITOR_FOCUS_SETTLE);
+        let focused = unsafe { automation.GetFocusedElement()? };
+        if !unsafe { automation.CompareElements(&editor, &focused)? }.as_bool()
+            && !unsafe { editor.CurrentHasKeyboardFocus()? }.as_bool()
+        {
+            return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                0x8000_4005u32 as i32,
+            )));
+        }
+        tracing::info!(
+            stage = "paste_editor_focus",
+            completed = true,
+            "visible editable control focused for clipboard paste"
+        );
+        Ok(())
+    })();
+
+    result.map_err(|error| {
+        tracing::warn!(
+            stage = "paste_editor_focus",
+            completed = false,
+            hresult = format_args!("0x{:08X}", error.code().0 as u32),
+            "no safe editable control could be focused; clipboard paste refused"
+        );
+        AppError::PasteTargetUnavailable
+    })
+}
+
 /// Legacy forced window switch used as the last activation resort.
 fn switch_to_this_window(window: HWND) {
     // SAFETY: window is a live top-level window; the call is synchronous and
@@ -418,41 +772,16 @@ fn try_focus(window: HWND) {
 /// Synthesizes one Ctrl+V keystroke sequence.
 pub(crate) fn send_paste() -> Result<()> {
     let inputs = paste_inputs();
-    // SAFETY: inputs is a plain array valid for this synchronous call.
-    let sent = unsafe {
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_ptr(),
-            size_of::<INPUT>() as i32,
-        )
-    };
-    if sent != inputs.len() as u32 {
-        let win32_code = last_error();
-        tracing::warn!(
-            stage = "paste_input_injection",
-            completed = false,
-            sent,
-            expected = inputs.len() as u32,
-            win32_code,
-            "clipboard paste input sequence was incomplete"
-        );
-        let releases = [
-            keyboard_input(VK_V, KEYEVENTF_KEYUP),
-            keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP),
-        ];
-        // SAFETY: Best-effort release prevents a partial SendInput from
-        // leaving Ctrl or V held down. The original failure is still returned.
-        unsafe {
-            SendInput(
-                releases.len() as u32,
-                releases.as_ptr(),
-                size_of::<INPUT>() as i32,
-            );
+    for (index, input) in inputs.iter().enumerate() {
+        // Chromium PWAs can acknowledge SendInput while dropping its batched
+        // shortcut during renderer startup. keybd_event queues the same trusted
+        // system key transitions one by one; the attachment receipt remains the
+        // authority for whether the paste actually reached the page.
+        let keyboard = unsafe { input.Anonymous.ki };
+        unsafe { keybd_event(keyboard.wVk as u8, 0, keyboard.dwFlags, 0) };
+        if index + 1 < inputs.len() {
+            thread::sleep(PASTE_KEY_INTERVAL);
         }
-        return Err(AppError::Windows {
-            operation: "SendInput(clipboard paste)",
-            win32_code,
-        });
     }
     Ok(())
 }
@@ -605,5 +934,51 @@ mod tests {
         assert_eq!(virtual_keys, [VK_CONTROL, VK_V, VK_V, VK_CONTROL]);
         assert_eq!(unsafe { inputs[0].Anonymous.ki.dwFlags }, 0);
         assert_eq!(unsafe { inputs[3].Anonymous.ki.dwFlags }, KEYEVENTF_KEYUP);
+    }
+
+    #[test]
+    fn paste_receipt_requires_an_image_and_group_in_the_same_scope() {
+        let scope = PasteReceiptScope {
+            left: 10,
+            top: 20,
+            right: 300,
+            bottom: 400,
+        };
+        let baseline = PasteAttachmentReceipt {
+            image_count: 2,
+            group_count: 3,
+            scope,
+        };
+        assert!(!has_new_paste_attachment(baseline, baseline));
+        assert!(!has_new_paste_attachment(
+            baseline,
+            PasteAttachmentReceipt {
+                image_count: 3,
+                ..baseline
+            }
+        ));
+        assert!(!has_new_paste_attachment(
+            baseline,
+            PasteAttachmentReceipt {
+                group_count: 4,
+                ..baseline
+            }
+        ));
+        assert!(has_new_paste_attachment(
+            baseline,
+            PasteAttachmentReceipt {
+                image_count: 3,
+                group_count: 4,
+                ..baseline
+            }
+        ));
+        assert!(!has_new_paste_attachment(
+            baseline,
+            PasteAttachmentReceipt {
+                image_count: 3,
+                group_count: 4,
+                scope: PasteReceiptScope { left: 11, ..scope },
+            }
+        ));
     }
 }
