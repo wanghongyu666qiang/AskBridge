@@ -32,9 +32,9 @@ use crate::util::last_error;
 
 pub const WM_BROWSER_EVENT: u32 = WM_APP + 5;
 const COLD_OPEN_EDITOR_STABILITY_TIMEOUT: Duration = Duration::from_secs(7);
-const COLD_OPEN_EDITOR_MIN_SETTLE: Duration = Duration::from_secs(5);
+const COLD_OPEN_EDITOR_MIN_SETTLE: Duration = Duration::from_secs(2);
 const COLD_OPEN_EDITOR_STABILITY_INTERVAL: Duration = Duration::from_millis(100);
-const COLD_OPEN_EDITOR_STABILITY_SAMPLES: u8 = 3;
+const COLD_OPEN_EDITOR_STABILITY_SAMPLES: u8 = 2;
 
 #[derive(Debug, Clone)]
 pub struct BrowserJob {
@@ -720,6 +720,17 @@ fn prepare_clipboard_paste_job(
 
     let deadline = Instant::now() + job.locate_timeout;
     let mut page_opened = false;
+    if let ClipboardPasteOpenTarget::DesktopPwa {
+        provider_id,
+        configured_shortcut,
+    } = &job.open_target
+    {
+        // An explicit PWA preference must bring that app to the front before
+        // enumerating title matches. Otherwise an already-open provider tab
+        // in a normal browser can win the Z-order search and receive Ctrl+V.
+        DesktopPwaLauncher::open(provider_id, configured_shortcut.as_deref())?;
+        page_opened = true;
+    }
     let mut cold_open_editor_settled = false;
     let mut activation_error = None;
     'locate: loop {

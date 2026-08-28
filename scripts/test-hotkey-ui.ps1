@@ -164,6 +164,20 @@ function Wait-Window {
     throw "Window class '$ClassName' did not reach present=$Present."
 }
 
+function Wait-LogPattern {
+    param([string]$Path, [string]$Pattern, [int]$TimeoutSeconds = 15)
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            $match = Select-String -LiteralPath $Path -Pattern $Pattern -Encoding UTF8 | Select-Object -Last 1
+            if ($null -ne $match) { return $match.Line }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Log '$Path' did not match '$Pattern' before the timeout."
+}
+
 function Send-Hotkey {
     param([byte]$VirtualKey, [bool]$Shift = $false)
 
@@ -237,17 +251,12 @@ try {
     Assert-HotkeyAlreadyRegistered 0x7F01 0x4005 0x51
     Assert-HotkeyAlreadyRegistered 0x7F02 0x4001 0x57
 
-    $textPromptTimer = [Diagnostics.Stopwatch]::StartNew()
+    $logPath = Join-Path $dataRoot "logs\askbridge.log"
+    $textHandoffTimer = [Diagnostics.Stopwatch]::StartNew()
     Send-AppHotkey $mainWindow 0x102
-    $prompt = Wait-AutomationWindow $promptTitle
-    $textPromptTimer.Stop()
-    [AskBridgeHotkeyNative]::PostMessage(
-        [IntPtr]$prompt.Current.NativeWindowHandle,
-        0x0010,
-        [IntPtr]::Zero,
-        [IntPtr]::Zero
-    ) | Out-Null
-    Wait-AutomationWindow $promptTitle $false | Out-Null
+    Wait-LogPattern $logPath 'page preparation completed.*attachment_prepared=false' | Out-Null
+    $textHandoffTimer.Stop()
+    Wait-AutomationWindow $promptTitle $false 1 | Out-Null
 
     $captureOverlayTimer = [Diagnostics.Stopwatch]::StartNew()
     Send-AppHotkey $mainWindow 0x100
@@ -273,15 +282,11 @@ try {
     }
     $capturePromptTimer = [Diagnostics.Stopwatch]::StartNew()
     [AskBridgeHotkeyNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-    $prompt = Wait-AutomationWindow $promptTitle
+    Wait-Window "AskBridge.CaptureOverlay.Window.v1" | Out-Null
+    Send-Key 0x0D
+    Wait-LogPattern $logPath 'page preparation completed.*attachment_prepared=true' 45 | Out-Null
     $capturePromptTimer.Stop()
-    [AskBridgeHotkeyNative]::PostMessage(
-        [IntPtr]$prompt.Current.NativeWindowHandle,
-        0x0010,
-        [IntPtr]::Zero,
-        [IntPtr]::Zero
-    ) | Out-Null
-    Wait-AutomationWindow $promptTitle $false | Out-Null
+    Wait-AutomationWindow $promptTitle $false 1 | Out-Null
 
     $cancelOverlayTimer = [Diagnostics.Stopwatch]::StartNew()
     Send-AppHotkey $mainWindow 0x101
@@ -291,12 +296,11 @@ try {
     Wait-Window "AskBridge.CaptureOverlay.Window.v1" $false | Out-Null
     Wait-AutomationWindow $promptTitle $false | Out-Null
 
-    $logPath = Join-Path $dataRoot "logs\askbridge.log"
     if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) { throw "Structured log was not created." }
-    Write-Host "Alt+W prompt, Alt+Q capture-to-prompt, and Alt+Shift+Q cancel acceptance passed."
-    Write-Host ("WM_HOTKEY-to-text-prompt latency: {0} ms" -f $textPromptTimer.ElapsedMilliseconds)
+    Write-Host "Alt+W direct provider handoff, Alt+Q capture-to-provider, and Alt+Shift+Q cancel acceptance passed."
+    Write-Host ("WM_HOTKEY-to-text-handoff latency: {0} ms" -f $textHandoffTimer.ElapsedMilliseconds)
     Write-Host ("WM_HOTKEY-to-capture-overlay latency: {0} ms" -f $captureOverlayTimer.ElapsedMilliseconds)
-    Write-Host ("Mouse-up-to-image-prompt latency: {0} ms" -f $capturePromptTimer.ElapsedMilliseconds)
+    Write-Host ("Mouse-up-to-verified-image-attachment latency: {0} ms" -f $capturePromptTimer.ElapsedMilliseconds)
     Write-Host ("WM_HOTKEY-to-cancel-overlay latency: {0} ms" -f $cancelOverlayTimer.ElapsedMilliseconds)
 }
 catch {

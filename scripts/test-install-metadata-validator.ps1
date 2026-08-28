@@ -45,11 +45,11 @@ function New-InstallerFixture {
         "README.md" = "readme"
         "PRIVACY.md" = "privacy"
         "TROUBLESHOOTING.md" = "troubleshooting"
-        "Uninstall-AskBridge.ps1" = "uninstall"
     }
     $payload.GetEnumerator() | ForEach-Object {
         Set-Content -LiteralPath (Join-Path $PackageRoot $_.Key) -Encoding ASCII -Value $_.Value
     }
+    Copy-Item -LiteralPath (Join-Path $repoRoot "scripts\Uninstall-AskBridge.ps1") -Destination (Join-Path $PackageRoot "Uninstall-AskBridge.ps1")
     Copy-Item -LiteralPath (Join-Path $repoRoot "scripts\Install-AskBridge.ps1") -Destination (Join-Path $PackageRoot "Install-AskBridge.ps1")
 }
 
@@ -83,6 +83,15 @@ try {
     $manifest = Get-Content -LiteralPath (Join-Path $installRoot "install-manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]$manifest.version -ne "0.9.0-acceptance") {
         throw "Safe package install did not write the expected manifest version."
+    }
+    New-Item -ItemType Directory -Path (Join-Path $installRoot "data") -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $installRoot "data\preserve.txt") -Encoding ASCII -Value "preserve"
+    & (Join-Path $installRoot "Uninstall-AskBridge.ps1") -InstallRoot $installRoot -PreserveData
+    if (Test-Path -LiteralPath (Join-Path $installRoot "askbridge.exe")) {
+        throw "Safe package uninstall left the application executable behind."
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $installRoot "data") -PathType Container)) {
+        throw "PreserveData uninstall removed the data directory."
     }
     Remove-Item -LiteralPath $installRoot -Recurse -Force
 

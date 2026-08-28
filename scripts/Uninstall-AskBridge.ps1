@@ -64,6 +64,30 @@ function Assert-ManifestNullableStringProperty {
     return [string]$value
 }
 
+function Assert-ManifestTimestampProperty {
+    param([psobject]$Manifest, [string]$Name)
+
+    $value = Get-ManifestPropertyValue $Manifest $Name
+    if ($value -is [string]) {
+        $timestamp = [string]$value
+    }
+    elseif ($value -is [DateTime]) {
+        # PowerShell 7 automatically converts ISO JSON strings to DateTime.
+        # Windows PowerShell keeps the same JSON value as a string.
+        $timestamp = $value.ToString("o", [Globalization.CultureInfo]::InvariantCulture)
+    }
+    elseif ($value -is [DateTimeOffset]) {
+        $timestamp = $value.ToString("o", [Globalization.CultureInfo]::InvariantCulture)
+    }
+    else {
+        throw "The install manifest property '$Name' must be a JSON timestamp string."
+    }
+    if ([string]::IsNullOrWhiteSpace($timestamp)) {
+        throw "The install manifest property '$Name' must be non-empty."
+    }
+    return $timestamp
+}
+
 function Assert-ManifestFileList {
     param([psobject]$Manifest)
 
@@ -115,7 +139,7 @@ if (-not $manifestProduct.Equals("AskBridge", [StringComparison]::Ordinal)) {
     throw "The install manifest does not identify AskBridge."
 }
 $manifestVersion = Assert-ManifestStringProperty $manifest "version"
-$manifestInstalledAt = Assert-ManifestStringProperty $manifest "installed_at"
+$manifestInstalledAt = Assert-ManifestTimestampProperty $manifest "installed_at"
 $manifestInstallRoot = Assert-ManifestStringProperty $manifest "install_root"
 $manifestDataRoot = Assert-ManifestStringProperty $manifest "data_directory"
 $manifestShortcut = Assert-ManifestNullableStringProperty $manifest "start_menu_shortcut"
