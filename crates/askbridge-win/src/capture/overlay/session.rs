@@ -448,6 +448,9 @@ pub(super) unsafe extern "system" fn overlay_window_proc(
     // SAFETY: Window messages are dispatched serially on the creating thread.
     let state = unsafe { &mut *state_ptr };
 
+    if closes_open_provider_menu(message, wparam, window, state) {
+        return 0;
+    }
     if let Some(reason) = cancellation_reason(message, wparam) {
         cancel_selection(window, state, reason);
         return 0;
@@ -522,6 +525,37 @@ const fn asks_with_enter(message: u32, wparam: WPARAM) -> bool {
     message == WM_KEYDOWN && wparam as u16 == VK_RETURN
 }
 
+fn closes_open_provider_menu(
+    message: u32,
+    wparam: WPARAM,
+    window: HWND,
+    state: &mut OverlayState,
+) -> bool {
+    if message != WM_KEYDOWN || wparam as u16 != VK_ESCAPE {
+        return false;
+    }
+    let Some(toolbar) = &mut state.toolbar else {
+        return false;
+    };
+    if !toolbar.dropdown_open {
+        return false;
+    }
+    toolbar.dropdown_open = false;
+    if let Some(web_toolbar) = &state.web_toolbar
+        && let Err(error) = web_toolbar.set_menu_open(false)
+    {
+        warn!(
+            error_kind = error.kind(),
+            "capture toolbar provider menu resize failed"
+        );
+    }
+    // SAFETY: window is the live capture overlay and repaint is deferred by Windows.
+    unsafe {
+        InvalidateRect(window, ptr::null(), 0);
+    }
+    true
+}
+
 fn cancel_selection(window: HWND, state: &mut OverlayState, reason: CancelReason) {
     state.outcome = OverlayOutcome::Cancelled(reason);
     state.web_toolbar = None;
@@ -539,9 +573,12 @@ fn handle_web_toolbar_action(
     value: LPARAM,
 ) {
     if action == toolbar_webview::ACTION_MENU_OPEN || action == toolbar_webview::ACTION_MENU_CLOSE {
+        let open = action == toolbar_webview::ACTION_MENU_OPEN;
+        if let Some(toolbar) = &mut state.toolbar {
+            toolbar.dropdown_open = open;
+        }
         if let Some(web_toolbar) = &state.web_toolbar
-            && let Err(error) =
-                web_toolbar.set_menu_open(action == toolbar_webview::ACTION_MENU_OPEN)
+            && let Err(error) = web_toolbar.set_menu_open(open)
         {
             warn!(
                 error_kind = error.kind(),
@@ -617,6 +654,20 @@ fn handle_toolbar_click(window: HWND, state: &mut OverlayState, point: (i32, i32
     let Some(toolbar) = &mut state.toolbar else {
         return false;
     };
+    // The expanded WebView receives clicks inside its own bounds. Any click that reaches the
+    // overlay while its menu is open is therefore a light-dismiss click outside the flyout.
+    if toolbar.dropdown_open && state.web_toolbar.is_some() {
+        toolbar.dropdown_open = false;
+        if let Some(web_toolbar) = &state.web_toolbar
+            && let Err(error) = web_toolbar.set_menu_open(false)
+        {
+            warn!(
+                error_kind = error.kind(),
+                "capture toolbar provider menu resize failed"
+            );
+        }
+        return true;
+    }
     let mut client = RECT::default();
     // SAFETY: window is live and client points to writable storage.
     unsafe {

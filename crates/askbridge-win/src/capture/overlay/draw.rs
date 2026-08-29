@@ -34,18 +34,20 @@ pub(super) const COLOR_KEY: COLORREF = rgb(255, 0, 255);
 const COLOR_OVERLAY: COLORREF = rgb(0, 0, 0);
 const COLOR_BORDER: COLORREF = rgb(255, 255, 255);
 const COLOR_LABEL: COLORREF = rgb(15, 23, 42);
-const COLOR_TOOLBAR: COLORREF = rgb(248, 250, 252);
-const COLOR_TOOLBAR_BORDER: COLORREF = rgb(203, 213, 225);
-const COLOR_TOOLBAR_TEXT: COLORREF = rgb(15, 23, 42);
-const COLOR_TOOLBAR_HOVER: COLORREF = rgb(241, 245, 249);
-const COLOR_DROPDOWN_SELECTED: COLORREF = rgb(229, 231, 235);
+const COLOR_TOOLBAR: COLORREF = rgb(28, 28, 31);
+const COLOR_TOOLBAR_BORDER: COLORREF = rgb(75, 75, 80);
+const COLOR_TOOLBAR_TEXT: COLORREF = rgb(245, 245, 247);
+const COLOR_TOOLBAR_HOVER: COLORREF = rgb(43, 43, 47);
+const COLOR_DROPDOWN_SELECTED: COLORREF = rgb(55, 55, 60);
+const COLOR_TOOLBAR_ACCENT: COLORREF = rgb(153, 60, 29);
 const ARGB_BORDER: u32 = argb(255, 255, 255, 255);
 const ARGB_LABEL: u32 = argb(255, 15, 23, 42);
-const ARGB_TOOLBAR: u32 = argb(255, 248, 250, 252);
-const ARGB_TOOLBAR_BORDER: u32 = argb(255, 203, 213, 225);
-const ARGB_TOOLBAR_TEXT: u32 = argb(255, 15, 23, 42);
-const ARGB_TOOLBAR_HOVER: u32 = argb(255, 241, 245, 249);
-const ARGB_DROPDOWN_SELECTED: u32 = argb(255, 229, 231, 235);
+const ARGB_TOOLBAR: u32 = argb(255, 28, 28, 31);
+const ARGB_TOOLBAR_BORDER: u32 = argb(255, 75, 75, 80);
+const ARGB_TOOLBAR_TEXT: u32 = argb(255, 245, 245, 247);
+const ARGB_TOOLBAR_HOVER: u32 = argb(255, 43, 43, 47);
+const ARGB_DROPDOWN_SELECTED: u32 = argb(255, 55, 55, 60);
+const ARGB_TOOLBAR_ACCENT: u32 = argb(255, 153, 60, 29);
 pub(super) const OVERLAY_ALPHA: u8 = 145;
 const TOOLBAR_RADIUS: i32 = 18;
 const HANDLE_RADIUS: i32 = 5;
@@ -194,7 +196,7 @@ impl PaintCache {
             let face = wide("Microsoft YaHei UI");
             // SAFETY: face is nul-terminated and valid for this synchronous call.
             self.font =
-                unsafe { CreateFontW(-16, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr()) };
+                unsafe { CreateFontW(-16, 0, 0, 0, 500, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr()) };
         }
         self.font
     }
@@ -467,22 +469,6 @@ unsafe fn draw_toolbar(
         );
         draw_toolbar_item(
             device_context,
-            &layout.more,
-            "更多",
-            ToolbarIcon::More,
-            false,
-            cache,
-        );
-        draw_toolbar_item(
-            device_context,
-            &layout.provider,
-            &selected.display_name,
-            ToolbarIcon::Provider,
-            true,
-            cache,
-        );
-        draw_toolbar_item(
-            device_context,
             &layout.copy,
             "复制",
             ToolbarIcon::Copy,
@@ -499,8 +485,24 @@ unsafe fn draw_toolbar(
         );
         draw_toolbar_item(
             device_context,
+            &layout.provider,
+            &selected.display_name,
+            ToolbarIcon::Provider,
+            true,
+            cache,
+        );
+        rounded_rect(
+            device_context,
             &layout.ask,
-            &format!("问问 {}", selected.display_name),
+            COLOR_TOOLBAR_ACCENT,
+            COLOR_TOOLBAR_ACCENT,
+            10,
+            cache,
+        );
+        draw_toolbar_item(
+            device_context,
+            &layout.ask,
+            "问问",
             ToolbarIcon::Ask,
             false,
             cache,
@@ -554,10 +556,16 @@ fn draw_toolbar_antialiased(
         ARGB_TOOLBAR_HOVER,
         1.0,
     );
-    draw_toolbar_icon_antialiased(gdi, &layout.more, ToolbarIcon::More);
-    draw_toolbar_icon_antialiased(gdi, &layout.provider, ToolbarIcon::Provider);
+    gdi.rounded_rect_rect(
+        &layout.ask,
+        10.0,
+        ARGB_TOOLBAR_ACCENT,
+        ARGB_TOOLBAR_ACCENT,
+        1.0,
+    );
     draw_toolbar_icon_antialiased(gdi, &layout.copy, ToolbarIcon::Copy);
     draw_toolbar_icon_antialiased(gdi, &layout.cancel, ToolbarIcon::Cancel);
+    draw_toolbar_icon_antialiased(gdi, &layout.provider, ToolbarIcon::Provider);
     draw_toolbar_icon_antialiased(gdi, &layout.ask, ToolbarIcon::Ask);
     if toolbar.dropdown_open {
         gdi.rounded_rect_rect(
@@ -588,8 +596,9 @@ unsafe fn draw_toolbar_labels(
     cache: &mut PaintCache,
 ) {
     unsafe {
-        draw_toolbar_label(device_context, &layout.more, "更多", cache);
         let selected = toolbar.providers.get(toolbar.selected_index);
+        draw_toolbar_label(device_context, &layout.copy, "复制", cache);
+        draw_toolbar_label(device_context, &layout.cancel, "取消", cache);
         if let Some(selected) = selected {
             draw_toolbar_label(
                 device_context,
@@ -598,16 +607,7 @@ unsafe fn draw_toolbar_labels(
                 cache,
             );
         }
-        draw_toolbar_label(device_context, &layout.copy, "复制", cache);
-        draw_toolbar_label(device_context, &layout.cancel, "取消", cache);
-        if let Some(selected) = selected {
-            draw_toolbar_label(
-                device_context,
-                &layout.ask,
-                &format!("问问 {}", selected.display_name),
-                cache,
-            );
-        }
+        draw_toolbar_label(device_context, &layout.ask, "问问", cache);
         if toolbar.dropdown_open {
             for (index, rect) in layout.dropdown_rects.iter().enumerate() {
                 let Some(provider) = toolbar.providers.get(index) else {
@@ -796,7 +796,6 @@ unsafe fn alpha_fill(
 
 #[derive(Debug, Clone, Copy)]
 enum ToolbarIcon {
-    More,
     Provider,
     Copy,
     Cancel,
@@ -896,15 +895,6 @@ unsafe fn draw_toolbar_icon(
             SelectObject(device_context, pen)
         };
         match icon {
-            ToolbarIcon::More => {
-                for (x, y) in [(cx - 7, cy - 7), (cx + 1, cy - 7), (cx - 7, cy + 1)] {
-                    Rectangle(device_context, x, y, x + 5, y + 5);
-                }
-                MoveToEx(device_context, cx + 4, cy + 5, ptr::null_mut());
-                LineTo(device_context, cx + 8, cy + 5);
-                MoveToEx(device_context, cx + 6, cy + 3, ptr::null_mut());
-                LineTo(device_context, cx + 6, cy + 7);
-            }
             ToolbarIcon::Provider => {
                 Rectangle(device_context, cx - 7, cy - 7, cx + 7, cy + 7);
                 MoveToEx(device_context, cx - 4, cy - 2, ptr::null_mut());
@@ -940,31 +930,6 @@ fn draw_toolbar_icon_antialiased(gdi: &GdiPlusSession, rect: &RECT, icon: Toolba
     let cx = rect.left as f32 + 18.0;
     let cy = rect.top as f32 + (rect.bottom - rect.top) as f32 / 2.0;
     match icon {
-        ToolbarIcon::More => {
-            for (x, y) in [
-                (cx - 7.0, cy - 7.0),
-                (cx + 1.0, cy - 7.0),
-                (cx - 7.0, cy + 1.0),
-            ] {
-                gdi.rounded_rect(x, y, 5.0, 5.0, 1.4, 0, ARGB_TOOLBAR_TEXT, 1.6);
-            }
-            gdi.line(
-                cx + 4.0,
-                cy + 5.0,
-                cx + 8.0,
-                cy + 5.0,
-                ARGB_TOOLBAR_TEXT,
-                1.8,
-            );
-            gdi.line(
-                cx + 6.0,
-                cy + 3.0,
-                cx + 6.0,
-                cy + 7.0,
-                ARGB_TOOLBAR_TEXT,
-                1.8,
-            );
-        }
         ToolbarIcon::Provider => {
             gdi.rounded_rect(
                 cx - 7.0,

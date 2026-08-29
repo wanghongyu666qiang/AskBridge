@@ -7,13 +7,13 @@ use crate::capture::toolbar_webview;
 
 const TOOLBAR_GAP: i32 = 12;
 const DROPDOWN_ROW_HEIGHT: i32 = 34;
-const MORE_WIDTH: i32 = 82;
-const PROVIDER_WIDTH: i32 = 202;
-const COPY_WIDTH: i32 = 86;
-const CANCEL_WIDTH: i32 = 86;
-const ASK_WIDTH: i32 = 188;
-const BUTTON_GAP: i32 = 4;
-const TOOLBAR_PADDING: i32 = 10;
+const MORE_WIDTH: i32 = 0;
+const PROVIDER_WIDTH: i32 = 188;
+const COPY_WIDTH: i32 = 88;
+const CANCEL_WIDTH: i32 = 84;
+const ASK_WIDTH: i32 = 112;
+const BUTTON_GAP: i32 = 6;
+const TOOLBAR_PADDING: i32 = 20;
 
 pub(super) struct ToolbarLayout {
     pub(super) outer: RECT,
@@ -64,18 +64,26 @@ pub(super) fn toolbar_layout(
         right: left + total_width,
         bottom: top + toolbar_height,
     };
-    let button_top = top + 7;
-    let button_height = 32;
-    let more = RECT {
+    let button_top = top + 14;
+    let button_height = 40;
+    let copy = RECT {
         left: left + TOOLBAR_PADDING,
         top: button_top,
-        right: left + TOOLBAR_PADDING + MORE_WIDTH,
+        right: left + TOOLBAR_PADDING + COPY_WIDTH,
         bottom: button_top + button_height,
     };
-    let provider = offset_rect(&more, MORE_WIDTH + BUTTON_GAP, PROVIDER_WIDTH);
-    let copy = offset_rect(&provider, PROVIDER_WIDTH + BUTTON_GAP, COPY_WIDTH);
     let cancel = offset_rect(&copy, COPY_WIDTH + BUTTON_GAP, CANCEL_WIDTH);
-    let ask = offset_rect(&cancel, CANCEL_WIDTH + BUTTON_GAP, ASK_WIDTH);
+    let provider = offset_rect(&cancel, CANCEL_WIDTH + BUTTON_GAP * 2, PROVIDER_WIDTH);
+    let ask = offset_rect(&provider, PROVIDER_WIDTH + BUTTON_GAP, ASK_WIDTH);
+    // The former fallback-only "More" placeholder had no action. Keep an
+    // empty rect so the shared hit-testing shape stays stable without
+    // spending visible space on a dead control.
+    let more = RECT {
+        left,
+        top: button_top,
+        right: left + MORE_WIDTH,
+        bottom: button_top + button_height,
+    };
     let dropdown_top =
         if outer.bottom + DROPDOWN_ROW_HEIGHT * provider_count as i32 <= client.bottom - 8 {
             outer.bottom + 4
@@ -135,16 +143,10 @@ pub(super) fn point_in_rect(point: (i32, i32), rect: &RECT) -> bool {
 }
 
 pub(super) fn fallback_toolbar_size() -> (i32, i32) {
-    (
-        TOOLBAR_PADDING * 2
-            + MORE_WIDTH
-            + PROVIDER_WIDTH
-            + COPY_WIDTH
-            + CANCEL_WIDTH
-            + ASK_WIDTH
-            + BUTTON_GAP * 4,
-        toolbar_webview::preferred_size().1,
-    )
+    // The fallback is a rendering substitution, not a separate toolbar.
+    // Keep its outer frame identical to the WebView surface so placement and
+    // hit testing cannot jump when WebView2 is unavailable.
+    toolbar_webview::preferred_size()
 }
 
 pub(super) fn selection_handle_points(rect: &RECT) -> [(i32, i32); 8] {
@@ -245,5 +247,29 @@ mod tests {
         let layout = toolbar_layout(&client, &selection, 2, (680, 46));
 
         assert_eq!(layout.outer.left, client.left + 8);
+    }
+
+    #[test]
+    fn fallback_toolbar_matches_the_dark_web_toolbar_action_order() {
+        let client = RECT {
+            left: 0,
+            top: 0,
+            right: 1280,
+            bottom: 720,
+        };
+        let selection = RECT {
+            left: 100,
+            top: 100,
+            right: 1000,
+            bottom: 500,
+        };
+
+        let layout = toolbar_layout(&client, &selection, 3, fallback_toolbar_size());
+
+        assert!(layout.copy.right < layout.cancel.left);
+        assert!(layout.cancel.right < layout.provider.left);
+        assert!(layout.provider.right < layout.ask.left);
+        assert_eq!(layout.more.left, layout.more.right);
+        assert_eq!(fallback_toolbar_size(), toolbar_webview::preferred_size());
     }
 }
