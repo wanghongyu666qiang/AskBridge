@@ -120,3 +120,6 @@ cargo xtask gen-update-key --output <绝对路径>
 ## 许可证
 
 本项目基于 [Apache License 2.0](LICENSE) 开源。
+
+## 合作伙伴
+推广合作伙伴:[BizBot-AI自动推广系统](https://bizbot.zvo.cn/)(雷鸣云有限公司）
