@@ -29,7 +29,7 @@ function Get-ManifestPropertyValue {
 function Assert-InstallManifestShape {
     param([psobject]$Manifest)
 
-    $expectedProperties = @("data_directory", "files", "install_root", "installed_at", "product", "start_menu_shortcut", "version")
+    $expectedProperties = @("data_directory", "desktop_shortcut", "files", "install_root", "installed_at", "product", "start_menu_shortcut", "version")
     $actualProperties = @($Manifest.PSObject.Properties.Name | Sort-Object)
     $missingProperties = @($expectedProperties | Where-Object { $_ -notin $actualProperties })
     $unexpectedProperties = @($actualProperties | Where-Object { $_ -notin $expectedProperties })
@@ -88,6 +88,30 @@ function Assert-ManifestTimestampProperty {
     return $timestamp
 }
 
+function Remove-ShortcutOwnedByInstall {
+    param(
+        [string]$ShortcutPath,
+        [string]$ExecutablePath
+    )
+
+    if (-not (Test-Path -LiteralPath $ShortcutPath -PathType Leaf)) {
+        return
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($ShortcutPath)
+    if ([string]::IsNullOrWhiteSpace([string]$shortcut.TargetPath)) {
+        Write-Warning "The recorded AskBridge shortcut has no target and was preserved: $ShortcutPath"
+        return
+    }
+    $actualTarget = [IO.Path]::GetFullPath([string]$shortcut.TargetPath)
+    $expectedTarget = [IO.Path]::GetFullPath($ExecutablePath)
+    if (-not $actualTarget.Equals($expectedTarget, [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Warning "The recorded AskBridge shortcut now targets another program and was preserved: $ShortcutPath"
+        return
+    }
+    Remove-Item -LiteralPath $ShortcutPath -Force
+}
+
 function Assert-ManifestFileList {
     param([psobject]$Manifest)
 
@@ -142,7 +166,8 @@ $manifestVersion = Assert-ManifestStringProperty $manifest "version"
 $manifestInstalledAt = Assert-ManifestTimestampProperty $manifest "installed_at"
 $manifestInstallRoot = Assert-ManifestStringProperty $manifest "install_root"
 $manifestDataRoot = Assert-ManifestStringProperty $manifest "data_directory"
-$manifestShortcut = Assert-ManifestNullableStringProperty $manifest "start_menu_shortcut"
+$manifestDesktopShortcut = Assert-ManifestNullableStringProperty $manifest "desktop_shortcut"
+$manifestStartMenuShortcut = Assert-ManifestNullableStringProperty $manifest "start_menu_shortcut"
 $manifestFiles = Assert-ManifestFileList $manifest
 if (-not ([IO.Path]::GetFullPath($manifestInstallRoot).TrimEnd('\')).Equals($resolvedInstallRoot, [StringComparison]::OrdinalIgnoreCase)) {
     throw "The install manifest belongs to a different directory."
@@ -168,20 +193,38 @@ foreach ($file in $manifestFiles) {
     }
     $filesToRemove += $candidate
 }
-$shortcutToRemove = $null
-if ($null -ne $manifestShortcut) {
-    $shortcutToRemove = [IO.Path]::GetFullPath($manifestShortcut)
+$startMenuShortcutToRemove = $null
+if ($null -ne $manifestStartMenuShortcut) {
+    $startMenuShortcutToRemove = [IO.Path]::GetFullPath($manifestStartMenuShortcut)
     $programsRoot = [IO.Path]::GetFullPath((Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs")).TrimEnd('\')
+    if ([string]$env:ASKBRIDGE_INSTALLER_TEST_MODE -eq "1" -and -not [string]::IsNullOrWhiteSpace([string]$env:ASKBRIDGE_INSTALLER_TEST_SHORTCUT_ROOT)) {
+        $programsRoot = [IO.Path]::GetFullPath((Join-Path $env:ASKBRIDGE_INSTALLER_TEST_SHORTCUT_ROOT "StartMenuPrograms")).TrimEnd('\')
+    }
     $expectedShortcut = [IO.Path]::GetFullPath((Join-Path $programsRoot "AskBridge.lnk"))
-    if (-not $shortcutToRemove.Equals($expectedShortcut, [StringComparison]::OrdinalIgnoreCase)) {
+    if (-not $startMenuShortcutToRemove.Equals($expectedShortcut, [StringComparison]::OrdinalIgnoreCase)) {
         throw "The install manifest contains an out-of-scope start menu shortcut path."
+    }
+}
+$desktopShortcutToRemove = $null
+if ($null -ne $manifestDesktopShortcut) {
+    $desktopShortcutToRemove = [IO.Path]::GetFullPath($manifestDesktopShortcut)
+    $desktopRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+    if ([string]$env:ASKBRIDGE_INSTALLER_TEST_MODE -eq "1" -and -not [string]::IsNullOrWhiteSpace([string]$env:ASKBRIDGE_INSTALLER_TEST_SHORTCUT_ROOT)) {
+        $desktopRoot = Join-Path $env:ASKBRIDGE_INSTALLER_TEST_SHORTCUT_ROOT "Desktop"
+    }
+    $expectedShortcut = [IO.Path]::GetFullPath((Join-Path $desktopRoot "AskBridge.lnk"))
+    if (-not $desktopShortcutToRemove.Equals($expectedShortcut, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "The install manifest contains an out-of-scope desktop shortcut path."
     }
 }
 
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 Remove-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction SilentlyContinue
-if ($null -ne $shortcutToRemove) {
-    Remove-Item -LiteralPath $shortcutToRemove -Force -ErrorAction SilentlyContinue
+if ($null -ne $startMenuShortcutToRemove) {
+    Remove-ShortcutOwnedByInstall $startMenuShortcutToRemove $targetExecutable
+}
+if ($null -ne $desktopShortcutToRemove) {
+    Remove-ShortcutOwnedByInstall $desktopShortcutToRemove $targetExecutable
 }
 
 $deleteData = $RemoveData

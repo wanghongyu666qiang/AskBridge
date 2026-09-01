@@ -39,6 +39,13 @@ $previousDataEnvironment = $env:ASKBRIDGE_DATA_DIR
 $previousUpdateParent = $env:ASKBRIDGE_UPDATE_PARENT_PID
 $previousRestartAfterInstall = $env:ASKBRIDGE_RESTART_AFTER_INSTALL
 $previousSetupNoDialog = $env:ASKBRIDGE_SETUP_NO_DIALOG
+$previousCreateDesktopShortcut = $env:ASKBRIDGE_CREATE_DESKTOP_SHORTCUT
+$previousCreateStartMenuShortcut = $env:ASKBRIDGE_CREATE_START_MENU_SHORTCUT
+$previousInstallerTestMode = $env:ASKBRIDGE_INSTALLER_TEST_MODE
+$previousShortcutRoot = $env:ASKBRIDGE_INSTALLER_TEST_SHORTCUT_ROOT
+$shortcutRoot = Join-Path $root "shortcuts"
+$desktopShortcut = Join-Path $shortcutRoot "Desktop\AskBridge.lnk"
+$startMenuShortcut = Join-Path $shortcutRoot "StartMenuPrograms\AskBridge.lnk"
 $setupProcess = $null
 $installedProcess = $null
 $updateParentProcess = $null
@@ -89,6 +96,10 @@ try {
     $env:ASKBRIDGE_UPDATE_PARENT_PID = $null
     $env:ASKBRIDGE_RESTART_AFTER_INSTALL = $null
     $env:ASKBRIDGE_SETUP_NO_DIALOG = "1"
+    $env:ASKBRIDGE_CREATE_DESKTOP_SHORTCUT = "1"
+    $env:ASKBRIDGE_CREATE_START_MENU_SHORTCUT = "1"
+    $env:ASKBRIDGE_INSTALLER_TEST_MODE = "1"
+    $env:ASKBRIDGE_INSTALLER_TEST_SHORTCUT_ROOT = $shortcutRoot
     $initialSetupStdout = Join-Path $root "setup-install.stdout.log"
     $initialSetupStderr = Join-Path $root "setup-install.stderr.log"
     $setupProcess = Start-Process -FilePath $setup[0].FullName -PassThru -WindowStyle Hidden `
@@ -117,6 +128,20 @@ try {
         if (-not (Test-Path -LiteralPath (Join-Path $installRoot $file) -PathType Leaf)) {
             throw "Setup.exe install is missing $file."
         }
+    }
+    foreach ($shortcutPath in @($desktopShortcut, $startMenuShortcut)) {
+        if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
+            throw "Setup.exe did not create shortcut $shortcutPath."
+        }
+        $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
+        if (-not ([IO.Path]::GetFullPath([string]$shortcut.TargetPath)).Equals((Join-Path $installRoot "askbridge.exe"), [StringComparison]::OrdinalIgnoreCase) -or
+            -not ([IO.Path]::GetFullPath([string]$shortcut.WorkingDirectory)).Equals($installRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Setup.exe created a shortcut with an incorrect target or working directory."
+        }
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$manifest.desktop_shortcut -ne $desktopShortcut -or [string]$manifest.start_menu_shortcut -ne $startMenuShortcut) {
+        throw "Setup.exe manifest did not record both shortcut paths."
     }
 
     Write-Host "[3/5] Run Setup.exe in update mode and restart the installed application"
@@ -161,6 +186,13 @@ try {
     if (-not (Test-Path -LiteralPath $updateSentinel -PathType Leaf)) {
         throw "Setup.exe update mode removed user data."
     }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$manifest.desktop_shortcut -ne $desktopShortcut -or
+        [string]$manifest.start_menu_shortcut -ne $startMenuShortcut -or
+        -not (Test-Path -LiteralPath $desktopShortcut -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $startMenuShortcut -PathType Leaf)) {
+        throw "Setup.exe update mode did not preserve the shortcut contract."
+    }
     $targetExecutable = [IO.Path]::GetFullPath((Join-Path $installRoot "askbridge.exe"))
     $restartDeadline = [DateTime]::UtcNow.AddSeconds(10)
     do {
@@ -202,6 +234,9 @@ try {
     if (Test-Path -LiteralPath (Join-Path $installRoot "askbridge.exe")) {
         throw "Setup smoke uninstall left askbridge.exe behind."
     }
+    if ((Test-Path -LiteralPath $desktopShortcut -PathType Leaf) -or (Test-Path -LiteralPath $startMenuShortcut -PathType Leaf)) {
+        throw "Setup smoke uninstall left an AskBridge shortcut behind."
+    }
     Write-Host "Setup.exe version, hashes, Release EXE identity, extraction, install, update wait/restart, clean exit, first launch, and uninstall acceptance passed."
 }
 finally {
@@ -224,6 +259,10 @@ finally {
     $env:ASKBRIDGE_UPDATE_PARENT_PID = $previousUpdateParent
     $env:ASKBRIDGE_RESTART_AFTER_INSTALL = $previousRestartAfterInstall
     $env:ASKBRIDGE_SETUP_NO_DIALOG = $previousSetupNoDialog
+    $env:ASKBRIDGE_CREATE_DESKTOP_SHORTCUT = $previousCreateDesktopShortcut
+    $env:ASKBRIDGE_CREATE_START_MENU_SHORTCUT = $previousCreateStartMenuShortcut
+    $env:ASKBRIDGE_INSTALLER_TEST_MODE = $previousInstallerTestMode
+    $env:ASKBRIDGE_INSTALLER_TEST_SHORTCUT_ROOT = $previousShortcutRoot
     if ($null -eq $previousRunValue) {
         Remove-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction SilentlyContinue
     }

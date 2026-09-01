@@ -29,6 +29,13 @@ $previousDataEnvironment = $env:ASKBRIDGE_DATA_DIR
 $previousUpdateParent = $env:ASKBRIDGE_UPDATE_PARENT_PID
 $previousRestartAfterInstall = $env:ASKBRIDGE_RESTART_AFTER_INSTALL
 $previousTestFailure = $env:ASKBRIDGE_TEST_FAIL_AFTER_UPDATE_FILE
+$previousInstallerTestMode = $env:ASKBRIDGE_INSTALLER_TEST_MODE
+$previousShortcutRoot = $env:ASKBRIDGE_INSTALLER_TEST_SHORTCUT_ROOT
+$shortcutRoot = Join-Path $root "shortcuts"
+$desktopShortcut = Join-Path $shortcutRoot "Desktop\AskBridge.lnk"
+$startMenuShortcut = Join-Path $shortcutRoot "StartMenuPrograms\AskBridge.lnk"
+$env:ASKBRIDGE_INSTALLER_TEST_MODE = "1"
+$env:ASKBRIDGE_INSTALLER_TEST_SHORTCUT_ROOT = $shortcutRoot
 $updateParentProcess = $null
 $updateRestartedProcess = $null
 $updateStopper = $null
@@ -59,7 +66,7 @@ try {
         version = "0.9.0-acceptance"
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture "package.json") -Encoding UTF8
 
-    Write-Host "[1/12] Reject unsafe package metadata"
+    Write-Host "[1/13] Reject unsafe package metadata"
     [ordered]@{
         product = "AskBridge"
         version = "0.9.0-acceptance"
@@ -86,8 +93,8 @@ try {
         chrome_bundled = $false
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture "package.json") -Encoding UTF8
 
-    Write-Host "[2/12] Fresh user-level install with persistent startup"
-    & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot -StartOnLogin
+    Write-Host "[2/13] Fresh user-level install with shortcuts and persistent startup"
+    & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot -StartOnLogin -CreateDesktopShortcut -CreateStartMenuShortcut
     foreach ($file in @("askbridge.exe", "WebView2Loader.dll", "install-manifest.json", "Uninstall-AskBridge.ps1")) {
         if (-not (Test-Path -LiteralPath (Join-Path $installRoot $file) -PathType Leaf)) {
             throw "Fresh install did not create $file."
@@ -99,8 +106,22 @@ try {
     if (-not $installedConfig.general.start_on_login -or $installedRunValue -ne $expectedRunValue) {
         throw "StartOnLogin did not update both config.json and the current-user Run value."
     }
+    foreach ($shortcutPath in @($desktopShortcut, $startMenuShortcut)) {
+        if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
+            throw "Fresh install did not create shortcut $shortcutPath."
+        }
+        $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
+        if (-not ([IO.Path]::GetFullPath([string]$shortcut.TargetPath)).Equals((Join-Path $installRoot "askbridge.exe"), [StringComparison]::OrdinalIgnoreCase) -or
+            -not ([IO.Path]::GetFullPath([string]$shortcut.WorkingDirectory)).Equals($installRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Installed shortcut does not target the installed AskBridge executable."
+        }
+    }
+    $manifest = Get-Content -LiteralPath (Join-Path $installRoot "install-manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$manifest.desktop_shortcut -ne $desktopShortcut -or [string]$manifest.start_menu_shortcut -ne $startMenuShortcut) {
+        throw "Install manifest did not record both shortcut paths."
+    }
 
-    Write-Host "[3/12] First launch preserves installer-selected startup"
+    Write-Host "[3/13] First launch preserves installer-selected startup"
     # This acceptance install lives below the repository's target directory. Explicitly select
     # the installed data directory so the development-tree detector cannot redirect the child to
     # the repository's normal data directory.
@@ -123,7 +144,7 @@ try {
         $env:ASKBRIDGE_DATA_DIR = $previousDataEnvironment
     }
 
-    Write-Host "[4/12] In-place upgrade preserves data"
+    Write-Host "[4/13] In-place upgrade preserves data and selected shortcuts"
     $dataRoot = Join-Path $installRoot "data"
     New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
     $sentinel = Join-Path $dataRoot "upgrade-preservation.txt"
@@ -135,13 +156,16 @@ try {
         auto_submit = $false
         chrome_bundled = $false
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture "package.json") -Encoding UTF8
-    & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
+    & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot -CreateDesktopShortcut -CreateStartMenuShortcut
     $manifest = Get-Content -LiteralPath (Join-Path $installRoot "install-manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]$manifest.version -ne "0.9.1-acceptance" -or -not (Test-Path -LiteralPath $sentinel)) {
         throw "Upgrade did not update the version while preserving data."
     }
+    if (-not (Test-Path -LiteralPath $desktopShortcut -PathType Leaf) -or -not (Test-Path -LiteralPath $startMenuShortcut -PathType Leaf)) {
+        throw "In-place upgrade did not preserve selected shortcuts."
+    }
 
-    Write-Host "[5/12] Update waits for the owning process, preserves data, and restarts AskBridge"
+    Write-Host "[5/13] Update waits for the owning process, preserves data and shortcuts, and restarts AskBridge"
     [ordered]@{
         product = "AskBridge"
         version = "0.9.2-acceptance"
@@ -171,6 +195,12 @@ try {
         $manifest = Get-Content -LiteralPath (Join-Path $installRoot "install-manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
         if ([string]$manifest.version -ne "0.9.2-acceptance" -or -not (Test-Path -LiteralPath $sentinel)) {
             throw "Updater did not preserve user data while replacing the application files."
+        }
+        if ([string]$manifest.desktop_shortcut -ne $desktopShortcut -or
+            [string]$manifest.start_menu_shortcut -ne $startMenuShortcut -or
+            -not (Test-Path -LiteralPath $desktopShortcut -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $startMenuShortcut -PathType Leaf)) {
+            throw "Updater did not preserve the installed shortcut contract."
         }
         $targetExecutable = [IO.Path]::GetFullPath((Join-Path $installRoot "askbridge.exe"))
         $restartDeadline = [DateTime]::UtcNow.AddSeconds(10)
@@ -211,7 +241,7 @@ try {
         $updateRestartedProcess = $null
     }
 
-    Write-Host "[6/12] Reject invalid updater parent PID"
+    Write-Host "[6/13] Reject invalid updater parent PID"
     $env:ASKBRIDGE_UPDATE_PARENT_PID = "not-a-pid"
     $env:ASKBRIDGE_RESTART_AFTER_INSTALL = "1"
     try {
@@ -230,7 +260,7 @@ try {
         throw "Invalid updater PID changed the installed package."
     }
 
-    Write-Host "[7/12] Failed update restores old program files and manifest"
+    Write-Host "[7/13] Failed update restores old program files and manifest"
     $rollbackFiles = @(
         "askbridge.exe",
         "WebView2Loader.dll",
@@ -288,7 +318,7 @@ try {
         throw "Failed update left a temporary rollback backup behind."
     }
 
-    Write-Host "[8/12] Default-safe uninstall preserves data"
+    Write-Host "[8/13] Default-safe uninstall preserves data and removes shortcuts"
     & (Join-Path $installRoot "Uninstall-AskBridge.ps1") -InstallRoot $installRoot -PreserveData
     if (Test-Path -LiteralPath (Join-Path $installRoot "askbridge.exe")) {
         throw "Uninstall left the application executable behind."
@@ -296,8 +326,14 @@ try {
     if (-not (Test-Path -LiteralPath $sentinel)) {
         throw "PreserveData uninstall removed user data."
     }
+    if (Test-Path -LiteralPath $desktopShortcut -PathType Leaf) {
+        throw "Uninstall left the desktop shortcut behind."
+    }
+    if (Test-Path -LiteralPath $startMenuShortcut -PathType Leaf) {
+        throw "Uninstall left the Start menu shortcut behind."
+    }
 
-    Write-Host "[9/12] Reject malformed uninstall manifest shape"
+    Write-Host "[9/13] Reject malformed uninstall manifest shape"
     & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
     $manifestPath = Join-Path $installRoot "install-manifest.json"
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -316,7 +352,7 @@ try {
     }
     Remove-Item -LiteralPath $manifestPath -Force
 
-    Write-Host "[10/12] Reject unexpected uninstall manifest file list"
+    Write-Host "[10/13] Reject unexpected uninstall manifest file list"
     & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
     $outsideSentinel = Join-Path $root "outside-sentinel.txt"
     Set-Content -LiteralPath $outsideSentinel -Encoding ASCII -Value "must-not-delete"
@@ -340,7 +376,7 @@ try {
     }
     Remove-Item -LiteralPath $manifestPath -Force
 
-    Write-Host "[11/12] Reject out-of-scope start menu shortcut manifest entry"
+    Write-Host "[11/13] Reject out-of-scope start menu shortcut manifest entry"
     & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
     $shortcutSentinel = Join-Path $root "shortcut-sentinel.lnk"
     Set-Content -LiteralPath $shortcutSentinel -Encoding ASCII -Value "must-not-delete"
@@ -364,7 +400,31 @@ try {
     }
     Remove-Item -LiteralPath $manifestPath -Force
 
-    Write-Host "[12/12] Explicit data-removal uninstall"
+    Write-Host "[12/13] Reject out-of-scope desktop shortcut manifest entry"
+    & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
+    $shortcutSentinel = Join-Path $root "desktop-shortcut-sentinel.lnk"
+    Set-Content -LiteralPath $shortcutSentinel -Encoding ASCII -Value "must-not-delete"
+    $manifestPath = Join-Path $installRoot "install-manifest.json"
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $manifest.desktop_shortcut = $shortcutSentinel
+    $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    try {
+        & (Join-Path $installRoot "Uninstall-AskBridge.ps1") -InstallRoot $installRoot -PreserveData
+    }
+    catch {
+        if (-not $_.Exception.Message.StartsWith("The install manifest contains an out-of-scope desktop shortcut path.", [StringComparison]::Ordinal)) {
+            throw
+        }
+    }
+    if (-not (Test-Path -LiteralPath $shortcutSentinel -PathType Leaf)) {
+        throw "Out-of-scope desktop shortcut manifest entry removed a file outside the allowed shortcut path."
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $installRoot "askbridge.exe") -PathType Leaf)) {
+        throw "Out-of-scope desktop shortcut manifest entry partially removed the installed executable."
+    }
+    Remove-Item -LiteralPath $manifestPath -Force
+
+    Write-Host "[13/13] Explicit data-removal uninstall"
     & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
     & (Join-Path $installRoot "Uninstall-AskBridge.ps1") -InstallRoot $installRoot -RemoveData
     if (Test-Path -LiteralPath (Join-Path $installRoot "data")) {
@@ -380,6 +440,8 @@ finally {
     $env:ASKBRIDGE_UPDATE_PARENT_PID = $previousUpdateParent
     $env:ASKBRIDGE_RESTART_AFTER_INSTALL = $previousRestartAfterInstall
     $env:ASKBRIDGE_TEST_FAIL_AFTER_UPDATE_FILE = $previousTestFailure
+    $env:ASKBRIDGE_INSTALLER_TEST_MODE = $previousInstallerTestMode
+    $env:ASKBRIDGE_INSTALLER_TEST_SHORTCUT_ROOT = $previousShortcutRoot
     foreach ($ownedProcess in @($updateParentProcess, $updateRestartedProcess, $updateStopper)) {
         if ($null -ne $ownedProcess) {
             $ownedProcess.Refresh()

@@ -2,11 +2,241 @@
 param(
     [string]$InstallRoot,
     [switch]$StartOnLogin,
-    [switch]$CreateStartMenuShortcut
+    [switch]$CreateStartMenuShortcut,
+    [switch]$CreateDesktopShortcut
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+function ConvertFrom-Utf8Base64 {
+    param([string]$Value)
+
+    return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Value))
+}
+
+function Test-EnabledEnvironmentFlag {
+    param([string]$Name)
+
+    $value = [Environment]::GetEnvironmentVariable($Name)
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return $false
+    }
+    if ($value -notin @("0", "1")) {
+        throw "$Name must be 0 or 1 when set."
+    }
+    return $value -eq "1"
+}
+
+function Show-InstallOptionsDialog {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    [Windows.Forms.Application]::EnableVisualStyles()
+
+    $form = New-Object Windows.Forms.Form
+    $form.Text = ConvertFrom-Utf8Base64 "5a6J6KOFIEFza0JyaWRnZQ=="
+    $form.ClientSize = New-Object Drawing.Size(560, 270)
+    $form.FormBorderStyle = [Windows.Forms.FormBorderStyle]::FixedDialog
+    $form.StartPosition = [Windows.Forms.FormStartPosition]::CenterScreen
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+    $form.ShowIcon = $true
+
+    $title = New-Object Windows.Forms.Label
+    $title.Text = ConvertFrom-Utf8Base64 "5a6J6KOFIEFza0JyaWRnZQ=="
+    $title.Font = New-Object Drawing.Font($form.Font.FontFamily, 14, [Drawing.FontStyle]::Bold)
+    $title.AutoSize = $true
+    $title.Location = New-Object Drawing.Point(24, 20)
+    $form.Controls.Add($title)
+
+    $description = New-Object Windows.Forms.Label
+    $description.Text = ConvertFrom-Utf8Base64 "6K+36YCJ5oup54us56uL55qE5a6J6KOF55uu5b2V77yM5bm25Yaz5a6a5piv5ZCm5Yib5bu65b+r5o235pa55byP44CC5LiN5Lya6buY6K6k5YaZ5YWlIEMg55uY44CC"
+    $description.AutoSize = $true
+    $description.Location = New-Object Drawing.Point(26, 58)
+    $form.Controls.Add($description)
+
+    $pathLabel = New-Object Windows.Forms.Label
+    $pathLabel.Text = ConvertFrom-Utf8Base64 "5a6J6KOF55uu5b2V77ya"
+    $pathLabel.AutoSize = $true
+    $pathLabel.Location = New-Object Drawing.Point(26, 94)
+    $form.Controls.Add($pathLabel)
+
+    $pathText = New-Object Windows.Forms.TextBox
+    $pathText.Location = New-Object Drawing.Point(26, 116)
+    $pathText.Size = New-Object Drawing.Size(405, 24)
+    $form.Controls.Add($pathText)
+
+    $browseButton = New-Object Windows.Forms.Button
+    $browseButton.Text = ConvertFrom-Utf8Base64 "5rWP6KeILi4u"
+    $browseButton.Location = New-Object Drawing.Point(443, 114)
+    $browseButton.Size = New-Object Drawing.Size(88, 28)
+    $browseButton.Add_Click({
+        $folderDialog = New-Object Windows.Forms.FolderBrowserDialog
+        $folderDialog.Description = ConvertFrom-Utf8Base64 "6YCJ5oupIEFza0JyaWRnZSDlronoo4Xnm67lvZU="
+        $folderDialog.ShowNewFolderButton = $true
+        if ($folderDialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK) {
+            $pathText.Text = $folderDialog.SelectedPath
+        }
+        $folderDialog.Dispose()
+    })
+    $form.Controls.Add($browseButton)
+
+    $desktopCheck = New-Object Windows.Forms.CheckBox
+    $desktopCheck.Text = ConvertFrom-Utf8Base64 "5Yib5bu65qGM6Z2i5b+r5o235pa55byP"
+    $desktopCheck.Checked = $true
+    $desktopCheck.AutoSize = $true
+    $desktopCheck.Location = New-Object Drawing.Point(28, 157)
+    $form.Controls.Add($desktopCheck)
+
+    $startMenuCheck = New-Object Windows.Forms.CheckBox
+    $startMenuCheck.Text = ConvertFrom-Utf8Base64 "5Yib5bu65byA5aeL6I+c5Y2V5b+r5o235pa55byP"
+    $startMenuCheck.Checked = $true
+    $startMenuCheck.AutoSize = $true
+    $startMenuCheck.Location = New-Object Drawing.Point(205, 157)
+    $form.Controls.Add($startMenuCheck)
+
+    $startupCheck = New-Object Windows.Forms.CheckBox
+    $startupCheck.Text = ConvertFrom-Utf8Base64 "55m75b2VIFdpbmRvd3Mg5ZCO6Ieq5Yqo5ZCv5Yqo"
+    $startupCheck.Checked = $false
+    $startupCheck.AutoSize = $true
+    $startupCheck.Location = New-Object Drawing.Point(28, 187)
+    $form.Controls.Add($startupCheck)
+
+    $installButton = New-Object Windows.Forms.Button
+    $installButton.Text = ConvertFrom-Utf8Base64 "5a6J6KOF"
+    $installButton.Location = New-Object Drawing.Point(350, 224)
+    $installButton.Size = New-Object Drawing.Size(86, 30)
+    $installButton.Add_Click({
+        $candidate = $pathText.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($candidate) -or -not [IO.Path]::IsPathRooted($candidate)) {
+            [Windows.Forms.MessageBox]::Show(
+                $form,
+                (ConvertFrom-Utf8Base64 "6K+36YCJ5oup5LiA5Liq57ud5a+55a6J6KOF6Lev5b6E77yM5L6L5aaCIEQ6XEFwcHNcQXNrQnJpZGdl44CC"),
+                (ConvertFrom-Utf8Base64 "5a6J6KOF55uu5b2V5peg5pWI"),
+                [Windows.Forms.MessageBoxButtons]::OK,
+                [Windows.Forms.MessageBoxIcon]::Warning
+            ) | Out-Null
+            return
+        }
+        $form.DialogResult = [Windows.Forms.DialogResult]::OK
+        $form.Close()
+    })
+    $form.Controls.Add($installButton)
+
+    $cancelButton = New-Object Windows.Forms.Button
+    $cancelButton.Text = ConvertFrom-Utf8Base64 "5Y+W5raI"
+    $cancelButton.Location = New-Object Drawing.Point(445, 224)
+    $cancelButton.Size = New-Object Drawing.Size(86, 30)
+    $cancelButton.DialogResult = [Windows.Forms.DialogResult]::Cancel
+    $form.Controls.Add($cancelButton)
+
+    $form.AcceptButton = $installButton
+    $form.CancelButton = $cancelButton
+    $pathText.Select()
+
+    try {
+        if ($form.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) {
+            return $null
+        }
+        return [pscustomobject]@{
+            InstallRoot = $pathText.Text.Trim()
+            CreateDesktopShortcut = [bool]$desktopCheck.Checked
+            CreateStartMenuShortcut = [bool]$startMenuCheck.Checked
+            StartOnLogin = [bool]$startupCheck.Checked
+        }
+    }
+    finally {
+        $form.Dispose()
+    }
+}
+
+function Get-ShortcutDirectory {
+    param([ValidateSet("Desktop", "StartMenu")][string]$Kind)
+
+    $testRoot = [string]$env:ASKBRIDGE_INSTALLER_TEST_SHORTCUT_ROOT
+    if (-not [string]::IsNullOrWhiteSpace($testRoot)) {
+        if ([string]$env:ASKBRIDGE_INSTALLER_TEST_MODE -ne "1" -or -not [IO.Path]::IsPathRooted($testRoot)) {
+            throw "ASKBRIDGE_INSTALLER_TEST_SHORTCUT_ROOT requires test mode and an absolute path."
+        }
+        $leaf = if ($Kind -eq "Desktop") { "Desktop" } else { "StartMenuPrograms" }
+        return [IO.Path]::GetFullPath((Join-Path $testRoot $leaf))
+    }
+
+    if ($Kind -eq "Desktop") {
+        $directory = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+    }
+    else {
+        $directory = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+    }
+    if ([string]::IsNullOrWhiteSpace($directory) -or -not [IO.Path]::IsPathRooted($directory)) {
+        throw "Windows did not provide a valid $Kind shortcut directory."
+    }
+    return [IO.Path]::GetFullPath($directory).TrimEnd('\')
+}
+
+function New-AskBridgeShortcut {
+    param(
+        [string]$ShortcutPath,
+        [string]$ExecutablePath,
+        [string]$WorkingDirectory
+    )
+
+    $parent = Split-Path -Parent $ShortcutPath
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    $shell = New-Object -ComObject WScript.Shell
+    if (Test-Path -LiteralPath $ShortcutPath -PathType Leaf) {
+        $existing = $shell.CreateShortcut($ShortcutPath)
+        if ([string]::IsNullOrWhiteSpace([string]$existing.TargetPath) -or
+            -not ([IO.Path]::GetFullPath([string]$existing.TargetPath)).Equals([IO.Path]::GetFullPath($ExecutablePath), [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to overwrite an existing shortcut that does not belong to this AskBridge installation: $ShortcutPath"
+        }
+    }
+    $shortcut = $shell.CreateShortcut($ShortcutPath)
+    $shortcut.TargetPath = $ExecutablePath
+    $shortcut.WorkingDirectory = $WorkingDirectory
+    $shortcut.IconLocation = "$ExecutablePath,0"
+    $shortcut.Description = "AskBridge"
+    $shortcut.Save()
+}
+
+function Remove-ShortcutOwnedByInstall {
+    param(
+        [string]$ShortcutPath,
+        [string]$ExecutablePath
+    )
+
+    if (-not (Test-Path -LiteralPath $ShortcutPath -PathType Leaf)) {
+        return
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($ShortcutPath)
+    $target = [IO.Path]::GetFullPath([string]$shortcut.TargetPath)
+    if ($target.Equals([IO.Path]::GetFullPath($ExecutablePath), [StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $ShortcutPath -Force
+    }
+}
+
+function Get-ValidatedManifestShortcut {
+    param(
+        [psobject]$Manifest,
+        [string]$PropertyName,
+        [ValidateSet("Desktop", "StartMenu")][string]$Kind
+    )
+
+    $property = $Manifest.PSObject.Properties[$PropertyName]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        return $null
+    }
+    if ($property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+        throw "The existing install manifest property '$PropertyName' must be null or a non-empty string."
+    }
+    $actual = [IO.Path]::GetFullPath([string]$property.Value)
+    $expected = [IO.Path]::GetFullPath((Join-Path (Get-ShortcutDirectory $Kind) "AskBridge.lnk"))
+    if (-not $actual.Equals($expected, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "The existing install manifest contains an out-of-scope $Kind shortcut path."
+    }
+    return $actual
+}
 
 function Resolve-SafeInstallRoot {
     param([string]$RequestedPath, [string]$PackageRoot)
@@ -15,7 +245,7 @@ function Resolve-SafeInstallRoot {
         $RequestedPath = $env:ASKBRIDGE_INSTALL_ROOT
     }
     if ([string]::IsNullOrWhiteSpace($RequestedPath)) {
-        $RequestedPath = Read-Host "请输入 AskBridge 安装目录的绝对路径（不会默认写入 C 盘）"
+        $RequestedPath = Read-Host (ConvertFrom-Utf8Base64 "6K+36L6T5YWlIEFza0JyaWRnZSDlronoo4Xnm67lvZXnmoTnu53lr7not6/lvoTvvIjkuI3kvJrpu5jorqTlhpnlhaUgQyDnm5jvvIk=")
     }
     if ([string]::IsNullOrWhiteSpace($RequestedPath) -or -not [IO.Path]::IsPathRooted($RequestedPath)) {
         throw "InstallRoot must be a non-empty absolute path."
@@ -414,10 +644,40 @@ $updateRequested = Test-UpdateRequested
 if ($updateRequested -and [string]::IsNullOrWhiteSpace([string]$env:ASKBRIDGE_UPDATE_PARENT_PID)) {
     throw "ASKBRIDGE_UPDATE_PARENT_PID is required for an update install."
 }
+$requestedInstallRoot = $InstallRoot
+if ([string]::IsNullOrWhiteSpace($requestedInstallRoot)) {
+    $requestedInstallRoot = [string]$env:ASKBRIDGE_INSTALL_ROOT
+}
+if (-not $updateRequested -and [string]::IsNullOrWhiteSpace($requestedInstallRoot)) {
+    $options = Show-InstallOptionsDialog
+    if ($null -eq $options) {
+        Write-Host "AskBridge installation cancelled."
+        return
+    }
+    $InstallRoot = [string]$options.InstallRoot
+    $CreateDesktopShortcut = [bool]$options.CreateDesktopShortcut
+    $CreateStartMenuShortcut = [bool]$options.CreateStartMenuShortcut
+    $StartOnLogin = [bool]$options.StartOnLogin
+}
+elseif (-not $updateRequested) {
+    if (Test-EnabledEnvironmentFlag "ASKBRIDGE_CREATE_DESKTOP_SHORTCUT") {
+        $CreateDesktopShortcut = $true
+    }
+    if (Test-EnabledEnvironmentFlag "ASKBRIDGE_CREATE_START_MENU_SHORTCUT") {
+        $CreateStartMenuShortcut = $true
+    }
+    if (Test-EnabledEnvironmentFlag "ASKBRIDGE_START_ON_LOGIN") {
+        $StartOnLogin = $true
+    }
+}
 $resolvedInstallRoot = Resolve-SafeInstallRoot $InstallRoot $packageRoot
 $targetExecutable = Join-Path $resolvedInstallRoot "askbridge.exe"
+$existingManifest = $null
 if ($updateRequested) {
     Assert-ExistingUpdateInstall $resolvedInstallRoot $targetExecutable
+    $existingManifest = Get-Content -LiteralPath (Join-Path $resolvedInstallRoot "install-manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+    $existingStartMenuShortcut = Get-ValidatedManifestShortcut $existingManifest "start_menu_shortcut" "StartMenu"
+    $existingDesktopShortcut = Get-ValidatedManifestShortcut $existingManifest "desktop_shortcut" "Desktop"
     Wait-ForUpdateParentExit $targetExecutable ([string]$env:ASKBRIDGE_UPDATE_PARENT_PID)
 }
 $running = @(Get-RunningInstalledProcess $targetExecutable)
@@ -447,15 +707,36 @@ try {
         New-ItemProperty -Path $runKey -Name "AskBridge" -Value ('"' + $targetExecutable + '"') -PropertyType String -Force | Out-Null
     }
 
-    $shortcutPath = $null
-    if ($CreateStartMenuShortcut) {
-        $shortcutPath = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\AskBridge.lnk"
-        $shell = New-Object -ComObject WScript.Shell
-        $shortcut = $shell.CreateShortcut($shortcutPath)
-        $shortcut.TargetPath = $targetExecutable
-        $shortcut.WorkingDirectory = $resolvedInstallRoot
-        $shortcut.Description = "AskBridge"
-        $shortcut.Save()
+    $startMenuShortcutPath = $null
+    $desktopShortcutPath = $null
+    if ($updateRequested) {
+        $startMenuShortcutPath = $existingStartMenuShortcut
+        $desktopShortcutPath = $existingDesktopShortcut
+        if (-not [string]::IsNullOrWhiteSpace($startMenuShortcutPath)) {
+            New-AskBridgeShortcut $startMenuShortcutPath $targetExecutable $resolvedInstallRoot
+        }
+        if (-not [string]::IsNullOrWhiteSpace($desktopShortcutPath)) {
+            New-AskBridgeShortcut $desktopShortcutPath $targetExecutable $resolvedInstallRoot
+        }
+    }
+    else {
+        $startMenuShortcutPath = Join-Path (Get-ShortcutDirectory "StartMenu") "AskBridge.lnk"
+        if ($CreateStartMenuShortcut) {
+            New-AskBridgeShortcut $startMenuShortcutPath $targetExecutable $resolvedInstallRoot
+        }
+        else {
+            Remove-ShortcutOwnedByInstall $startMenuShortcutPath $targetExecutable
+            $startMenuShortcutPath = $null
+        }
+
+        $desktopShortcutPath = Join-Path (Get-ShortcutDirectory "Desktop") "AskBridge.lnk"
+        if ($CreateDesktopShortcut) {
+            New-AskBridgeShortcut $desktopShortcutPath $targetExecutable $resolvedInstallRoot
+        }
+        else {
+            Remove-ShortcutOwnedByInstall $desktopShortcutPath $targetExecutable
+            $desktopShortcutPath = $null
+        }
     }
 
     $installManifest = [ordered]@{
@@ -465,7 +746,8 @@ try {
         installed_at = [DateTimeOffset]::Now.ToString("o")
         files = $requiredFiles
         data_directory = (Join-Path $resolvedInstallRoot "data")
-        start_menu_shortcut = $shortcutPath
+        desktop_shortcut = $desktopShortcutPath
+        start_menu_shortcut = $startMenuShortcutPath
     }
     $manifestPath = Join-Path $resolvedInstallRoot "install-manifest.json"
     $installManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding UTF8

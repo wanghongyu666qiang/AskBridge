@@ -6,6 +6,7 @@ compile_error!("askbridge-setup supports Windows only");
 use std::{
     env, fs,
     io::{self, Read, Seek, SeekFrom, Write},
+    os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
@@ -16,6 +17,7 @@ const FOOTER_LEN: u64 = 24;
 const INSTALL_ROOT_ENV: &str = "ASKBRIDGE_INSTALL_ROOT";
 const UPDATE_PARENT_PID_ENV: &str = "ASKBRIDGE_UPDATE_PARENT_PID";
 const RESTART_AFTER_INSTALL_ENV: &str = "ASKBRIDGE_RESTART_AFTER_INSTALL";
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug)]
 struct PayloadEntry {
@@ -60,6 +62,7 @@ fn run() -> io::Result<()> {
             .arg("Bypass")
             .arg("-File")
             .arg(&install_script)
+            .creation_flags(CREATE_NO_WINDOW)
             .current_dir(&extraction_root);
         if let Some(update) = &update_launch {
             // Normalize and explicitly forward the update contract. This prevents a malformed
@@ -344,6 +347,7 @@ fn show_error(title: &str, message: &str) {
             "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show({:?}, {:?}) | Out-Null",
             message, title
         ))
+        .creation_flags(CREATE_NO_WINDOW)
         .status();
 }
 

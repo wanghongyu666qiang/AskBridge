@@ -11,8 +11,8 @@ AskBridge is a Windows screenshot-to-AI tool. After selecting an area of the scr
 ## Download and Setup
 
 1. Go to [GitHub Releases](https://github.com/wanghongyu666qiang/AskBridge/releases) and download the latest `AskBridge-<version>-Setup.exe`.
-2. Double-click the installer and choose an install location.
-3. After installation, run `askbridge.exe`. The program lives in the Windows tray; right-click the tray icon to open settings or exit.
+2. Run the installer, choose a dedicated installation directory, and select whether to create Desktop and Start menu shortcuts or start AskBridge after sign-in. The installer does not choose a C-drive directory by default.
+3. Select Install, then launch AskBridge from the shortcut you selected. The program lives in the Windows tray; right-click the tray icon to open settings or exit.
 
 AskBridge checks GitHub Releases in the background after startup and then once every 24 hours. When a new version is available, it shows a tray notification; you can also choose "Check for updates" from the tray menu. Builds installed through `Setup.exe` download the official installer into `data/Updates` only after you confirm (with progress shown in the settings window), verify its release SHA-256 plus the maintainer's offline Ed25519 signature, exit cleanly, upgrade in place, and restart. If launching the installer fails, choose "Install" from the tray menu again to reuse the verified download without re-downloading. Updates preserve all files under `data`, and a failed update restores the previous program files. Portable builds notify you about new versions but must be replaced manually from the official Release.
 
