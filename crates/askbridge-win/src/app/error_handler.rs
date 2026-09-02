@@ -77,7 +77,7 @@ pub(super) fn user_facing_error(error: &AppError) -> String {
             stage: PreparationFailureStage::Verification,
             attachment_prepared: true,
             ..
-        } => "已经执行一次截图粘贴，但无法确认附件状态。请先检查页面并移除可能存在的图片，不要直接重试。"
+        } => "已经执行一次截图粘贴，但无法确认附件状态。请先检查页面并移除可能存在的图片，不要直接重试；需要补救时可从托盘复制上次截图，再手动 Ctrl+V。"
             .to_owned(),
         AppError::PreparationFailed { recovery, .. } => match recovery {
             PreparationRecovery::LoginInBrowser => {
@@ -214,5 +214,6 @@ mod tests {
         });
         assert!(message.contains("无法确认附件状态"));
         assert!(message.contains("不要直接重试"));
+        assert!(message.contains("复制上次截图"));
     }
 }

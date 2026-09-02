@@ -8,8 +8,8 @@ use crate::{
         CONTROL_OPEN_BROWSER, CONTROL_OPEN_LOGIN, CONTROL_RESTORE_DEFAULTS,
     },
     tray::{
-        MENU_CAPTURE_QUICK, MENU_CAPTURE_WITH_PROMPT, MENU_CHECK_UPDATES, MENU_EXIT,
-        MENU_INSTALL_UPDATE, MENU_PAUSE, MENU_SETTINGS, MENU_TEXT_ONLY,
+        MENU_CAPTURE_QUICK, MENU_CAPTURE_WITH_PROMPT, MENU_CHECK_UPDATES, MENU_COPY_LAST_CAPTURE,
+        MENU_EXIT, MENU_INSTALL_UPDATE, MENU_PAUSE, MENU_SETTINGS, MENU_TEXT_ONLY,
     },
 };
 
@@ -21,6 +21,7 @@ impl Runtime {
             MENU_CAPTURE_WITH_PROMPT => self.route_command(AppCommand::CaptureWithPrompt),
             MENU_CAPTURE_QUICK => self.route_command(AppCommand::CaptureQuickDispatch),
             MENU_TEXT_ONLY => self.route_command(AppCommand::TextOnlyPrompt),
+            MENU_COPY_LAST_CAPTURE => self.copy_last_capture_to_clipboard(),
             MENU_PAUSE => self.toggle_paused(),
             MENU_SETTINGS => self.settings.show(),
             MENU_CHECK_UPDATES => self.check_for_updates(),

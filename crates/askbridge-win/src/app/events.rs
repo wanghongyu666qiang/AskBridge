@@ -91,6 +91,7 @@ impl Runtime {
                     TrayEvent::ContextMenu => {
                         if let Some(command) = self.tray.show_menu(
                             self.paused,
+                            self.last_capture.is_some(),
                             self.available_update
                                 .as_ref()
                                 .map(|update| update.version()),

@@ -30,7 +30,7 @@ When developing in this repository, the debug build is located at `target/debug/
 | `Esc` | Cancel in the capture overlay |
 | `Enter` | In the capture toolbar, confirm the currently selected model |
 
-After switching models in the capture toolbar, the new choice is saved as the default model for next time. The screenshot is only written to the clipboard when you click "Copy".
+After switching models in the capture toolbar, the new choice is saved as the default model for next time. A screenshot is written to the clipboard only when you click "Copy", explicitly choose "Copy last screenshot to clipboard" from the tray, or use a configured universal-paste path.
 
 ## Browser Selection
 
@@ -59,7 +59,7 @@ The managed Chrome uses a dedicated `BrowserProfile` and never connects to or mo
 - Installed or portable builds: the `data` directory next to `askbridge.exe`
 - Custom location: set the `ASKBRIDGE_DATA_DIR` environment variable to an absolute path
 
-Configuration, logs, the managed browser profile, and update downloads live at `data/config.json`, `data/logs`, `data/BrowserProfile`, and `data/Updates` respectively. Temporary screenshots used for web upload are deleted once the operation completes, fails, or is cancelled; used or stale update installers are cleaned on the next launch.
+Configuration, logs, the managed browser profile, and update downloads live at `data/config.json`, `data/logs`, `data/BrowserProfile`, and `data/Updates` respectively. Temporary screenshots used for web upload remain available for asynchronous page reads for up to 10 minutes and are then deleted; files left by an abnormal exit and used or stale update installers are cleaned on a later launch.
 
 See [Privacy Notes](docs/PRIVACY.md) and [Troubleshooting](docs/TROUBLESHOOTING.md) for more information.
 

@@ -29,6 +29,7 @@ pub const MENU_SETTINGS: u16 = 1005;
 pub const MENU_EXIT: u16 = 1006;
 pub const MENU_CHECK_UPDATES: u16 = 1007;
 pub const MENU_INSTALL_UPDATE: u16 = 1008;
+pub const MENU_COPY_LAST_CAPTURE: u16 = 1009;
 
 const TRAY_ICON_ID: u32 = 1;
 
@@ -99,6 +100,7 @@ impl TrayIcon {
     pub fn show_menu(
         &self,
         paused: bool,
+        has_last_capture: bool,
         available_update: Option<&str>,
         update_busy: bool,
     ) -> Result<Option<u16>> {
@@ -115,6 +117,12 @@ impl TrayIcon {
             append_item(menu, MENU_CAPTURE_WITH_PROMPT, "截图并提问", MF_STRING)?;
             append_item(menu, MENU_CAPTURE_QUICK, "截图快速投递", MF_STRING)?;
             append_item(menu, MENU_TEXT_ONLY, "直接文字提问", MF_STRING)?;
+            append_item(
+                menu,
+                MENU_COPY_LAST_CAPTURE,
+                "复制上次截图到剪贴板",
+                copy_last_capture_flags(has_last_capture),
+            )?;
             append_item(menu, 0, "", MF_SEPARATOR)?;
             append_item(
                 menu,
@@ -201,6 +209,10 @@ impl TrayIcon {
     }
 }
 
+const fn copy_last_capture_flags(has_last_capture: bool) -> u32 {
+    MF_STRING | if has_last_capture { 0 } else { MF_GRAYED }
+}
+
 impl Drop for TrayIcon {
     fn drop(&mut self) {
         if self.active {
@@ -246,6 +258,12 @@ fn copy_wide<const N: usize>(destination: &mut [u16; N], value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_last_capture_is_disabled_until_a_capture_exists() {
+        assert_ne!(copy_last_capture_flags(false) & MF_GRAYED, 0);
+        assert_eq!(copy_last_capture_flags(true) & MF_GRAYED, 0);
+    }
 
     #[test]
     fn decodes_legacy_context_menu_callback() {

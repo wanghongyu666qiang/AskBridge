@@ -1,7 +1,8 @@
 use std::{ptr, sync::atomic::AtomicU64, time::Duration};
 
 use askbridge_core::{
-    AppConfig, AppError, ConfigStore, DispatchRequest, HotkeyConfig, Result, WorkflowController,
+    AppConfig, AppError, CapturedImage, ConfigStore, DispatchRequest, HotkeyConfig, Result,
+    WorkflowController,
 };
 use tracing::{error, info, warn};
 use windows_sys::Win32::{
@@ -101,6 +102,7 @@ pub fn run() -> Result<()> {
         store,
         workflow: WorkflowController::default(),
         pending_dispatch: None,
+        last_capture: None,
         paused: false,
         _main_window: main_window,
     };
@@ -155,6 +157,7 @@ pub(super) struct Runtime {
     pub(super) store: ConfigStore,
     pub(super) workflow: WorkflowController,
     pub(super) pending_dispatch: Option<DispatchRequest>,
+    pub(super) last_capture: Option<CapturedImage>,
     pub(super) paused: bool,
     pub(super) _main_window: MainWindow,
 }

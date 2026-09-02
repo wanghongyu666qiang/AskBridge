@@ -268,9 +268,9 @@ impl Runtime {
                             "网页已打开；请在输入框中输入问题并手动发送。",
                             |request| {
                                 if request.expects_text() && request.image.is_some() {
-                                    "文字和附件已验证就绪；请在网页中确认后手动发送。"
+                                    "文字和附件已验证就绪；请在网页中确认后手动发送。若附件随后报错，可从托盘复制上次截图。"
                                 } else if request.image.is_some() {
-                                    "截图已放入网页输入区；请继续输入问题并手动发送。"
+                                    "截图已放入网页输入区；若网页随后报错，可从托盘复制上次截图后手动 Ctrl+V。"
                                 } else if request.expects_text() {
                                     "文字已放入网页输入区；请确认后手动发送。"
                                 } else {

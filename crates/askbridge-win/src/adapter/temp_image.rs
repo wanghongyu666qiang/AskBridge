@@ -1,14 +1,44 @@
 use std::{
+    cmp::Reverse,
+    collections::BinaryHeap,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{
+        OnceLock,
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    },
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use askbridge_core::{AppError, Result};
 
+pub(super) const PAGE_UPLOAD_RETENTION: Duration = Duration::from_secs(10 * 60);
+static TEMP_IMAGE_CLEANUP: OnceLock<Option<Sender<(Instant, PathBuf)>>> = OnceLock::new();
+
 pub(crate) fn cleanup_stale_temp_images(data_root: &Path) -> Result<()> {
-    cleanup_temp_images_older_than(data_root, Duration::from_secs(24 * 60 * 60))
+    cleanup_temp_images_older_than(data_root, PAGE_UPLOAD_RETENTION)
+}
+
+pub(super) fn create_retained_page_upload(
+    temp_root: &Path,
+    request_id: &str,
+    bytes: &[u8],
+) -> Result<PathBuf> {
+    create_retained_page_upload_for(temp_root, request_id, bytes, PAGE_UPLOAD_RETENTION)
+}
+
+fn create_retained_page_upload_for(
+    temp_root: &Path,
+    request_id: &str,
+    bytes: &[u8],
+    retention: Duration,
+) -> Result<PathBuf> {
+    let image = TempImage::create(temp_root, request_id, bytes)?;
+    let path = image.path().to_owned();
+    image.retain_for_page_read(retention);
+    Ok(path)
 }
 
 pub(super) fn cleanup_temp_images_older_than(
@@ -52,6 +82,7 @@ pub(super) fn cleanup_temp_images_older_than(
 
 pub(super) struct TempImage {
     path: PathBuf,
+    remove_on_drop: bool,
 }
 
 impl TempImage {
@@ -100,11 +131,69 @@ impl TempImage {
         write(&mut file, bytes)
             .map_err(|error| AppError::io("writing temporary image", &path, error))?;
         cleanup.disarm();
-        Ok(Self { path })
+        Ok(Self {
+            path,
+            remove_on_drop: true,
+        })
     }
 
     pub(super) fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Keeps the file available for a page that may read its `File` object
+    /// asynchronously after rendering a local attachment preview.
+    pub(super) fn retain_for_page_read(mut self, retention: Duration) {
+        self.remove_on_drop = !schedule_cleanup(self.path.clone(), retention);
+    }
+}
+
+fn schedule_cleanup(path: PathBuf, retention: Duration) -> bool {
+    let Some(deadline) = Instant::now().checked_add(retention) else {
+        return false;
+    };
+    TEMP_IMAGE_CLEANUP
+        .get_or_init(|| {
+            let (sender, receiver) = mpsc::channel();
+            thread::Builder::new()
+                .name("askbridge-temp-image-cleanup".to_owned())
+                .spawn(move || cleanup_worker(receiver))
+                .ok()
+                .map(|_| sender)
+        })
+        .as_ref()
+        .is_some_and(|sender| sender.send((deadline, path)).is_ok())
+}
+
+fn cleanup_worker(receiver: Receiver<(Instant, PathBuf)>) {
+    let mut pending: BinaryHeap<Reverse<(Instant, PathBuf)>> = BinaryHeap::new();
+    loop {
+        let now = Instant::now();
+        while pending
+            .peek()
+            .is_some_and(|Reverse((deadline, _))| *deadline <= now)
+        {
+            if let Some(Reverse((_, path))) = pending.pop() {
+                let _ = fs::remove_file(path);
+            }
+        }
+
+        let received = match pending.peek() {
+            Some(Reverse((deadline, _))) => {
+                match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(item) => Some(item),
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            None => match receiver.recv() {
+                Ok(item) => Some(item),
+                Err(_) => break,
+            },
+        };
+        if let Some(item) = received {
+            pending.push(Reverse(item));
+        }
     }
 }
 
@@ -137,7 +226,9 @@ impl Drop for TempImageCleanup {
 
 impl Drop for TempImage {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if self.remove_on_drop {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -173,5 +264,29 @@ mod tests {
 
         assert!(!temp.join("askbridge-old.png").exists());
         assert!(temp.join("other.png").exists());
+    }
+
+    #[test]
+    fn retained_image_survives_scope_then_expires() {
+        let root = tempdir().expect("temp root");
+        let path = create_retained_page_upload_for(
+            root.path(),
+            "request",
+            b"png",
+            Duration::from_millis(100),
+        )
+        .expect("retained page upload");
+        assert!(path.exists(), "retained image was deleted immediately");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while path.exists() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!path.exists(), "retained image did not expire");
+    }
+
+    #[test]
+    fn page_upload_retention_is_ten_minutes() {
+        assert_eq!(PAGE_UPLOAD_RETENTION, Duration::from_secs(10 * 60));
     }
 }

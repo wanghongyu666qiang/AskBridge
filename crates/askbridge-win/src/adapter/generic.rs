@@ -18,7 +18,7 @@ use super::{
     login::{current_target, verify_page_and_login},
     rules::{ProviderRule, load_rule},
     session::PageSession,
-    temp_image::TempImage,
+    temp_image::create_retained_page_upload,
     r#trait::ProviderAdapter,
 };
 
@@ -78,7 +78,12 @@ impl GenericProviderAdapter {
                     false,
                 ));
             }
-            let temp_image = TempImage::create(temp_root, &request.id, &encode_png(image)?)?;
+            // A page-visible preview does not prove that the provider has
+            // finished reading or uploading the file. Keep the backing PNG
+            // alive for a bounded grace period even if later verification is
+            // ambiguous or fails.
+            let temp_image_path =
+                create_retained_page_upload(temp_root, &request.id, &encode_png(image)?)?;
             let preferred_selectors = self
                 .rule
                 .as_ref()
@@ -88,7 +93,7 @@ impl GenericProviderAdapter {
                     client.set_file_input(
                         target,
                         &target.url,
-                        temp_image.path(),
+                        &temp_image_path,
                         preferred_selectors,
                         cancelled,
                         attempt_timeout,
