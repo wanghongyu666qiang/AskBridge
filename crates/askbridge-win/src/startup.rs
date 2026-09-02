@@ -36,7 +36,15 @@ pub fn restore(snapshot: &StartupSnapshot) -> Result<()> {
 }
 
 pub fn is_current_executable_registered() -> Result<bool> {
-    Ok(read_command()?.as_deref() == Some(current_executable_command()?.as_str()))
+    let expected = current_executable_command()?;
+    Ok(startup_command_matches(
+        &expected,
+        read_command()?.as_deref(),
+    ))
+}
+
+fn startup_command_matches(expected: &str, registered: Option<&str>) -> bool {
+    registered.is_some_and(|value| value.eq_ignore_ascii_case(expected))
 }
 
 fn current_executable_command() -> Result<String> {
@@ -57,30 +65,33 @@ fn current_executable_command() -> Result<String> {
 }
 
 fn read_command() -> Result<Option<String>> {
+    let Some(key) = open_run_key(KEY_QUERY_VALUE)? else {
+        return Ok(None);
+    };
+    read_command_value(key.0)
+}
+
+fn open_run_key(access: u32) -> Result<Option<OwnedRegistryKey>> {
     let run_key = wide(RUN_KEY);
     let mut raw_key: HKEY = ptr::null_mut();
     // SAFETY: The key path is a valid nul-terminated UTF-16 string and raw_key is writable.
-    let status = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            run_key.as_ptr(),
-            0,
-            KEY_QUERY_VALUE,
-            &mut raw_key,
-        )
-    };
+    let status =
+        unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, run_key.as_ptr(), 0, access, &mut raw_key) };
     if status == ERROR_FILE_NOT_FOUND {
         return Ok(None);
     }
     check_status("opening startup registry key", status)?;
-    let key = OwnedRegistryKey(raw_key);
+    Ok(Some(OwnedRegistryKey(raw_key)))
+}
+
+fn read_command_value(key: HKEY) -> Result<Option<String>> {
     let value_name = wide(VALUE_NAME);
     let mut value_type = 0;
     let mut bytes = 0;
     // SAFETY: Query uses a live key and writable size/type outputs; no data is requested yet.
     let status = unsafe {
         RegQueryValueExW(
-            key.0,
+            key,
             value_name.as_ptr(),
             ptr::null_mut(),
             &mut value_type,
@@ -101,7 +112,7 @@ fn read_command() -> Result<Option<String>> {
     // SAFETY: buffer has exactly the byte capacity reported by the first query.
     let status = unsafe {
         RegQueryValueExW(
-            key.0,
+            key,
             value_name.as_ptr(),
             ptr::null_mut(),
             &mut value_type,
@@ -117,6 +128,9 @@ fn read_command() -> Result<Option<String>> {
 }
 
 fn write_command(command: Option<&str>) -> Result<()> {
+    let Some(command) = command else {
+        return remove_current_command();
+    };
     let run_key = wide(RUN_KEY);
     let mut raw_key: HKEY = ptr::null_mut();
     let mut disposition = 0;
@@ -137,34 +151,38 @@ fn write_command(command: Option<&str>) -> Result<()> {
     check_status("opening startup registry key for update", status)?;
     let key = OwnedRegistryKey(raw_key);
     let value_name = wide(VALUE_NAME);
-    match command {
-        Some(command) => {
-            let encoded = wide(command);
-            let byte_len = u32::try_from(encoded.len() * size_of::<u16>()).map_err(|_| {
-                AppError::ConfigurationInvalid("startup command is too long".to_owned())
-            })?;
-            // SAFETY: encoded is a nul-terminated UTF-16 string and byte_len covers it.
-            let status = unsafe {
-                RegSetValueExW(
-                    key.0,
-                    value_name.as_ptr(),
-                    0,
-                    REG_SZ,
-                    encoded.as_ptr().cast(),
-                    byte_len,
-                )
-            };
-            check_status("writing startup registry value", status)
-        }
-        None => {
-            // SAFETY: key and value name are valid for this call.
-            let status = unsafe { RegDeleteValueW(key.0, value_name.as_ptr()) };
-            if status == ERROR_FILE_NOT_FOUND {
-                Ok(())
-            } else {
-                check_status("removing startup registry value", status)
-            }
-        }
+    let encoded = wide(command);
+    let byte_len = u32::try_from(encoded.len() * size_of::<u16>())
+        .map_err(|_| AppError::ConfigurationInvalid("startup command is too long".to_owned()))?;
+    // SAFETY: encoded is a nul-terminated UTF-16 string and byte_len covers it.
+    let status = unsafe {
+        RegSetValueExW(
+            key.0,
+            value_name.as_ptr(),
+            0,
+            REG_SZ,
+            encoded.as_ptr().cast(),
+            byte_len,
+        )
+    };
+    check_status("writing startup registry value", status)
+}
+
+fn remove_current_command() -> Result<()> {
+    let expected = current_executable_command()?;
+    let Some(key) = open_run_key(KEY_QUERY_VALUE | KEY_SET_VALUE)? else {
+        return Ok(());
+    };
+    if !startup_command_matches(&expected, read_command_value(key.0)?.as_deref()) {
+        return Ok(());
+    }
+    let value_name = wide(VALUE_NAME);
+    // SAFETY: key and value name are valid for this call.
+    let status = unsafe { RegDeleteValueW(key.0, value_name.as_ptr()) };
+    if status == ERROR_FILE_NOT_FOUND {
+        Ok(())
+    } else {
+        check_status("removing startup registry value", status)
     }
 }
 
@@ -202,5 +220,24 @@ mod tests {
         assert!(command.starts_with('"'));
         assert!(command.ends_with('"'));
         assert!(command.to_ascii_lowercase().contains("askbridge"));
+    }
+
+    #[test]
+    fn startup_disable_requires_exact_current_command() {
+        let expected = r#""C:\Program Files\AskBridge\askbridge.exe""#;
+        assert!(startup_command_matches(expected, Some(expected)));
+        assert!(startup_command_matches(
+            expected,
+            Some(r#""c:\program files\askbridge\askbridge.exe""#)
+        ));
+        assert!(!startup_command_matches(
+            expected,
+            Some(r#""C:\Program Files\Other\askbridge.exe""#)
+        ));
+        assert!(!startup_command_matches(
+            expected,
+            Some(r#""C:\Program Files\AskBridge\askbridge.exe" --argument"#)
+        ));
+        assert!(!startup_command_matches(expected, None));
     }
 }

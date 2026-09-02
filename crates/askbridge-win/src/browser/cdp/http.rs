@@ -1,4 +1,8 @@
-use std::{io::Read, net::TcpStream};
+use std::{
+    io::Read,
+    net::TcpStream,
+    time::{Duration, Instant},
+};
 
 use askbridge_core::{AppError, Result};
 
@@ -45,10 +49,19 @@ pub(super) fn parse_http_response(response: &[u8]) -> Result<Vec<u8>> {
     Ok(body.to_vec())
 }
 
-pub(super) fn read_http_response(stream: &mut TcpStream) -> Result<Vec<u8>> {
+pub(super) fn read_http_response(stream: &mut TcpStream, deadline: Instant) -> Result<Vec<u8>> {
     let mut response = Vec::new();
     let mut buffer = [0u8; 8192];
     loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(AppError::TargetTimeout);
+        }
+        stream
+            .set_read_timeout(Some(remaining.min(Duration::from_millis(250))))
+            .map_err(|_| {
+                AppError::BrowserConnectionFailed("local debugging timeout setup failed".to_owned())
+            })?;
         match stream.read(&mut buffer) {
             Ok(0) => break,
             Ok(read) => {
@@ -66,9 +79,14 @@ pub(super) fn read_http_response(stream: &mut TcpStream) -> Result<Vec<u8>> {
                 if matches!(
                     error.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) && response_is_complete(&response)? =>
+                ) =>
             {
-                break;
+                if response_is_complete(&response)? {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err(AppError::TargetTimeout);
+                }
             }
             Err(_) => {
                 return Err(AppError::BrowserConnectionFailed(

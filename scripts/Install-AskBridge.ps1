@@ -8,6 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$startOnLoginConfigured = $PSBoundParameters.ContainsKey("StartOnLogin")
 
 function ConvertFrom-Utf8Base64 {
     param([string]$Value)
@@ -560,8 +561,11 @@ function Assert-StringProperty {
     }
 }
 
-function Enable-StartOnLoginInConfig {
-    param([string]$InstallDirectory)
+function Set-StartOnLoginInConfig {
+    param(
+        [string]$InstallDirectory,
+        [bool]$Enabled
+    )
 
     $dataDirectory = Join-Path $InstallDirectory "data"
     $configPath = Join-Path $dataDirectory "config.json"
@@ -572,10 +576,10 @@ function Enable-StartOnLoginInConfig {
             $config | Add-Member -MemberType NoteProperty -Name general -Value ([PSCustomObject]@{})
         }
         if ($null -eq $config.general.PSObject.Properties["start_on_login"]) {
-            $config.general | Add-Member -MemberType NoteProperty -Name start_on_login -Value $true
+            $config.general | Add-Member -MemberType NoteProperty -Name start_on_login -Value $Enabled
         }
         else {
-            $config.general.start_on_login = $true
+            $config.general.start_on_login = $Enabled
         }
         if ($null -ne $config.general.PSObject.Properties["auto_submit"]) {
             $config.general.auto_submit = $false
@@ -585,7 +589,7 @@ function Enable-StartOnLoginInConfig {
         $config = [ordered]@{
             schema_version = 3
             general = [ordered]@{
-                start_on_login = $true
+                start_on_login = $Enabled
                 auto_submit = $false
             }
         }
@@ -596,7 +600,15 @@ function Enable-StartOnLoginInConfig {
     [IO.File]::WriteAllText($temporary, $json, (New-Object Text.UTF8Encoding($false)))
     try {
         if (Test-Path -LiteralPath $configPath -PathType Leaf) {
-            [IO.File]::Replace($temporary, $configPath, $null, $true)
+            $backup = "$configPath.install-backup-$PID"
+            try {
+                [IO.File]::Replace($temporary, $configPath, $backup, $true)
+            }
+            finally {
+                if (Test-Path -LiteralPath $backup) {
+                    Remove-Item -LiteralPath $backup -Force
+                }
+            }
         }
         else {
             Move-Item -LiteralPath $temporary -Destination $configPath
@@ -606,6 +618,23 @@ function Enable-StartOnLoginInConfig {
         if (Test-Path -LiteralPath $temporary) {
             Remove-Item -LiteralPath $temporary -Force
         }
+    }
+}
+
+function Remove-StartOnLoginOwnedByInstall {
+    param(
+        [string]$RunKey,
+        [string]$ExecutablePath
+    )
+
+    $entry = Get-ItemProperty -Path $RunKey -Name "AskBridge" -ErrorAction SilentlyContinue
+    if ($null -eq $entry) {
+        return
+    }
+    $actualValue = [string]$entry.AskBridge
+    $expectedValue = '"' + [IO.Path]::GetFullPath($ExecutablePath) + '"'
+    if ($actualValue.Equals($expectedValue, [StringComparison]::OrdinalIgnoreCase)) {
+        Remove-ItemProperty -Path $RunKey -Name "AskBridge" -Force
     }
 }
 
@@ -658,6 +687,7 @@ if (-not $updateRequested -and [string]::IsNullOrWhiteSpace($requestedInstallRoo
     $CreateDesktopShortcut = [bool]$options.CreateDesktopShortcut
     $CreateStartMenuShortcut = [bool]$options.CreateStartMenuShortcut
     $StartOnLogin = [bool]$options.StartOnLogin
+    $startOnLoginConfigured = $true
 }
 elseif (-not $updateRequested) {
     if (Test-EnabledEnvironmentFlag "ASKBRIDGE_CREATE_DESKTOP_SHORTCUT") {
@@ -666,8 +696,12 @@ elseif (-not $updateRequested) {
     if (Test-EnabledEnvironmentFlag "ASKBRIDGE_CREATE_START_MENU_SHORTCUT") {
         $CreateStartMenuShortcut = $true
     }
-    if (Test-EnabledEnvironmentFlag "ASKBRIDGE_START_ON_LOGIN") {
-        $StartOnLogin = $true
+    if (-not $startOnLoginConfigured) {
+        $startOnLoginEnvironment = [Environment]::GetEnvironmentVariable("ASKBRIDGE_START_ON_LOGIN")
+        if (-not [string]::IsNullOrWhiteSpace($startOnLoginEnvironment)) {
+            $StartOnLogin = Test-EnabledEnvironmentFlag "ASKBRIDGE_START_ON_LOGIN"
+            $startOnLoginConfigured = $true
+        }
     }
 }
 $resolvedInstallRoot = Resolve-SafeInstallRoot $InstallRoot $packageRoot
@@ -701,10 +735,15 @@ try {
     }
 
     $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-    if ($StartOnLogin) {
-        Enable-StartOnLoginInConfig $resolvedInstallRoot
-        New-Item -Path $runKey -Force | Out-Null
-        New-ItemProperty -Path $runKey -Name "AskBridge" -Value ('"' + $targetExecutable + '"') -PropertyType String -Force | Out-Null
+    if (-not $updateRequested -and $startOnLoginConfigured) {
+        Set-StartOnLoginInConfig $resolvedInstallRoot ([bool]$StartOnLogin)
+        if ($StartOnLogin) {
+            New-Item -Path $runKey -Force | Out-Null
+            New-ItemProperty -Path $runKey -Name "AskBridge" -Value ('"' + $targetExecutable + '"') -PropertyType String -Force | Out-Null
+        }
+        else {
+            Remove-StartOnLoginOwnedByInstall $runKey $targetExecutable
+        }
     }
 
     $startMenuShortcutPath = $null

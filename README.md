@@ -68,9 +68,10 @@ ChatGPT 可以在“设置 > 浏览器”中选择四种打开方式：
 需要 stable Rust、Windows GNU 或 MSVC 构建链，以及 Microsoft Edge WebView2 Runtime。
 
 ```powershell
-cargo test --workspace
-cargo build --workspace --release
-cargo xtask help
+cargo fetch --locked
+cargo test --workspace --locked --offline
+cargo build --workspace --release --locked --offline
+cargo run --package xtask --locked --offline -- help
 ```
 
 `scripts` 目录是项目维护自动化，不是用户操作步骤：
@@ -88,8 +89,10 @@ cargo xtask help
 完整本地发布验收：
 
 ```powershell
-./scripts/test-release-local.ps1 -AcceptanceRoot D:/你选择的验收目录/target/release-local-acceptance
+./scripts/test-release-local.ps1 -AcceptanceRoot D:/AskBridge/target/release-local-acceptance-20260902
 ```
+
+`AcceptanceRoot` 必须替换为当前仓库 `target` 目录下尚不存在的新绝对路径。
 
 生成安装包和便携包时必须显式指定一个空目录：
 

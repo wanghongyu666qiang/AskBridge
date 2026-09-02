@@ -85,9 +85,9 @@ try {
     Invoke-Step "[3/10] Validate performance report xtask and CLI failure paths" {
         Push-Location $repoRoot
         try {
-            cargo xtask help
+            cargo run --package xtask --locked --offline -- help
             if ($LASTEXITCODE -ne 0) {
-                throw "cargo xtask alias check failed with exit code $LASTEXITCODE."
+                throw "xtask help check failed with exit code $LASTEXITCODE."
             }
             cargo test -p xtask performance_report --locked --offline
             if ($LASTEXITCODE -ne 0) {

@@ -19,7 +19,7 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    capture::monitor::DesktopLayout,
+    capture::{monitor::DesktopLayout, screen::RawBgraImage},
     util::{last_error, wide},
 };
 
@@ -41,9 +41,16 @@ pub enum SelectionAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedRegion {
+    pub rect: ScreenRect,
+    pub frozen_pixels: Option<RawBgraImage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectionResult {
     pub rect: ScreenRect,
     pub action: SelectionAction,
+    pub frozen_pixels: Option<RawBgraImage>,
 }
 
 pub fn register_class(instance: HINSTANCE) -> Result<()> {
@@ -82,10 +89,13 @@ pub fn select_region(
     instance: HINSTANCE,
     owner: HWND,
     layout: &DesktopLayout,
-) -> Result<Option<ScreenRect>> {
+) -> Result<Option<SelectedRegion>> {
     select_region_internal(instance, owner, layout, None).map(|outcome| match outcome {
-        Some(SelectionOutcome::Quick(rect)) => Some(rect),
-        Some(SelectionOutcome::Action(result)) => Some(result.rect),
+        Some(SelectionOutcome::Quick(selection)) => Some(selection),
+        Some(SelectionOutcome::Action(result)) => Some(SelectedRegion {
+            rect: result.rect,
+            frozen_pixels: result.frozen_pixels,
+        }),
         None => None,
     })
 }
@@ -98,11 +108,12 @@ pub fn select_region_with_toolbar(
 ) -> Result<Option<SelectionResult>> {
     select_region_internal(instance, owner, layout, Some(providers)).map(|outcome| match outcome {
         Some(SelectionOutcome::Action(result)) => Some(result),
-        Some(SelectionOutcome::Quick(rect)) => Some(SelectionResult {
-            rect,
+        Some(SelectionOutcome::Quick(selection)) => Some(SelectionResult {
+            rect: selection.rect,
             action: SelectionAction::Ask {
                 provider_id: String::new(),
             },
+            frozen_pixels: selection.frozen_pixels,
         }),
         None => None,
     })

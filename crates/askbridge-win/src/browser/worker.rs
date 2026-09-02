@@ -119,9 +119,60 @@ pub struct DedicatedChromeJob {
     pub profile_dir: String,
     pub connect_timeout: Duration,
     pub page_timeout: Duration,
+    /// Optional end-to-end budget for this managed-browser attempt. This is
+    /// used by the screenshot clipboard-fallback route so every CDP stage
+    /// shares one short deadline instead of receiving a fresh timeout.
+    pub attempt_timeout: Option<Duration>,
     pub lifecycle: BrowserLifecycle,
     pub start_url: String,
     pub url_patterns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AttemptDeadline {
+    deadline: Option<Instant>,
+}
+
+impl AttemptDeadline {
+    fn new(timeout: Option<Duration>) -> Result<Self> {
+        let deadline = timeout
+            .map(|timeout| {
+                if timeout.is_zero() {
+                    return Err(AppError::TargetTimeout);
+                }
+                Instant::now().checked_add(timeout).ok_or_else(|| {
+                    AppError::InvalidPreparation(
+                        "dedicated browser attempt timeout is too large".to_owned(),
+                    )
+                })
+            })
+            .transpose()?;
+        Ok(Self { deadline })
+    }
+
+    fn remaining(self, configured_timeout: Duration) -> Result<Duration> {
+        let Some(deadline) = self.deadline else {
+            return Ok(configured_timeout);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            Err(AppError::TargetTimeout)
+        } else {
+            Ok(remaining.min(configured_timeout))
+        }
+    }
+
+    fn preparation_policy(self, configured: &PreparationPolicy) -> Result<PreparationPolicy> {
+        let Some(_) = self.deadline else {
+            return Ok(configured.clone());
+        };
+        let remaining = self.remaining(Duration::from_millis(configured.timeout_ms))?;
+        let timeout_ms = u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX);
+        if timeout_ms == 0 {
+            return Err(AppError::TargetTimeout);
+        }
+        PreparationPolicy::new(timeout_ms)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -903,8 +954,12 @@ fn prepare_dedicated_browser_job(
     job: &DedicatedChromeJob,
 ) -> std::result::Result<CdpClient, BrowserAttemptFailure> {
     let request = &dispatch.request;
-    let policy = &dispatch.policy;
     let request_id = &request.id;
+    let deadline =
+        AttemptDeadline::new(job.attempt_timeout).map_err(|error| BrowserAttemptFailure {
+            error,
+            provider_preparation_started: false,
+        })?;
     let before_preparation = (|| -> Result<(CdpClient, CdpTarget, GenericProviderAdapter)> {
         if manager.is_none() {
             let installation = ChromeInstallation::discover(job.configured_chrome_path.as_deref())?;
@@ -914,7 +969,8 @@ fn prepare_dedicated_browser_job(
         let manager = manager.as_mut().ok_or_else(|| {
             AppError::BrowserConnectionFailed("browser manager initialization failed".to_owned())
         })?;
-        let endpoint = manager.launch_and_wait(job.connect_timeout, cancelled)?;
+        let endpoint =
+            manager.launch_and_wait(deadline.remaining(job.connect_timeout)?, cancelled)?;
         if manager.managed_process_id().is_none() {
             return Err(AppError::BrowserConnectionFailed(
                 "browser process ownership could not be confirmed".to_owned(),
@@ -922,10 +978,14 @@ fn prepare_dedicated_browser_job(
         }
         send_stage(owner, events, request_id, BrowserStage::Started);
 
-        let client = connect_with_one_retry(endpoint, job.connect_timeout, cancelled)?;
+        let client = connect_with_one_retry(
+            endpoint,
+            deadline.remaining(job.connect_timeout)?,
+            cancelled,
+        )?;
         send_stage(owner, events, request_id, BrowserStage::Connected);
 
-        let targets = client.list_targets()?;
+        let targets = client.list_targets_with_timeout(deadline.remaining(job.page_timeout)?)?;
         let page_targets: Vec<CdpTarget> = targets
             .into_iter()
             .filter(|target| target.kind == "page")
@@ -943,11 +1003,14 @@ fn prepare_dedicated_browser_job(
                 .into_iter()
                 .find(|target| target.id == target_id)
                 .ok_or(AppError::TargetNotFound)?,
-            TargetDecision::CreateNew => client.create_target(&job.start_url)?,
+            TargetDecision::CreateNew => client.create_target_with_timeout(
+                &job.start_url,
+                deadline.remaining(job.page_timeout)?,
+            )?,
         };
-        client.activate_target(&target.id)?;
+        client.activate_target_with_timeout(&target.id, deadline.remaining(job.page_timeout)?)?;
         send_stage(owner, events, request_id, BrowserStage::TargetResolved);
-        client.wait_until_ready(&target, job.page_timeout, cancelled)?;
+        client.wait_until_ready(&target, deadline.remaining(job.page_timeout)?, cancelled)?;
         let adapter = GenericProviderAdapter::for_provider(
             &request.provider_id,
             dispatch.adapter_override.as_deref(),
@@ -961,6 +1024,12 @@ fn prepare_dedicated_browser_job(
     })?;
 
     let (client, target, adapter) = before_preparation;
+    let policy = deadline
+        .preparation_policy(&dispatch.policy)
+        .map_err(|error| BrowserAttemptFailure {
+            error,
+            provider_preparation_started: false,
+        })?;
     let temp_root = data_root.join("Temp");
     (|| -> Result<CdpClient> {
         let mut page = PageSession::DedicatedChrome {
@@ -969,7 +1038,7 @@ fn prepare_dedicated_browser_job(
             temp_root: &temp_root,
             cancelled,
         };
-        let outcome = adapter.prepare(&mut page, request, policy)?;
+        let outcome = adapter.prepare(&mut page, request, &policy)?;
         outcome.validate_for(request)?;
         send_event(
             owner,
@@ -1041,14 +1110,29 @@ fn connect_with_one_retry(
     timeout: Duration,
     cancelled: &AtomicBool,
 ) -> Result<CdpClient> {
-    match CdpClient::connect(endpoint.clone(), timeout, cancelled) {
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        AppError::BrowserConnectionFailed("CDP retry timeout is too large".to_owned())
+    })?;
+    match CdpClient::connect(
+        endpoint.clone(),
+        deadline.saturating_duration_since(Instant::now()),
+        cancelled,
+    ) {
         Ok(client) => Ok(client),
         Err(first_error) => {
             if cancelled.load(Ordering::Acquire) {
                 return Err(AppError::BrowserCancelled);
             }
-            thread::sleep(Duration::from_millis(50));
-            CdpClient::connect(endpoint, timeout, cancelled).map_err(|_| first_error)
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(first_error);
+            }
+            thread::sleep(remaining.min(Duration::from_millis(50)));
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(first_error);
+            }
+            CdpClient::connect(endpoint, remaining, cancelled).map_err(|_| first_error)
         }
     }
 }
@@ -1115,6 +1199,30 @@ mod tests {
         let second = cancellation.begin().expect("second token");
         assert!(first.load(Ordering::Acquire));
         assert!(!second.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn dedicated_attempt_deadline_caps_every_stage_and_policy() {
+        let uncapped = AttemptDeadline::new(None).expect("uncapped deadline");
+        assert_eq!(
+            uncapped
+                .remaining(Duration::from_secs(15))
+                .expect("configured timeout"),
+            Duration::from_secs(15)
+        );
+
+        let capped = AttemptDeadline::new(Some(Duration::from_secs(3))).expect("capped deadline");
+        let stage_timeout = capped
+            .remaining(Duration::from_secs(15))
+            .expect("remaining stage timeout");
+        assert!(stage_timeout > Duration::ZERO);
+        assert!(stage_timeout <= Duration::from_secs(3));
+
+        let configured = PreparationPolicy::new(15_000).expect("configured policy");
+        let policy = capped
+            .preparation_policy(&configured)
+            .expect("remaining preparation policy");
+        assert!((1..=3_000).contains(&policy.timeout_ms));
     }
 
     #[test]
@@ -1225,6 +1333,7 @@ mod tests {
                 profile_dir: "BrowserProfile".to_owned(),
                 connect_timeout: Duration::from_secs(1),
                 page_timeout: Duration::from_secs(1),
+                attempt_timeout: Some(Duration::from_secs(3)),
                 lifecycle: BrowserLifecycle::OnDemandKeepRunning,
                 start_url: "https://chatgpt.com/".to_owned(),
                 url_patterns: vec!["https://chatgpt.com/".to_owned()],

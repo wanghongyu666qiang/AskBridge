@@ -2,7 +2,7 @@
 // state, the window procedure, and all mouse/keyboard message handling.
 
 use std::{
-    mem::{replace, zeroed},
+    mem::{replace, take, zeroed},
     ptr,
 };
 
@@ -34,7 +34,7 @@ use crate::{
 };
 
 use super::{
-    OVERLAY_CLASS, OverlayProviderChoice, SelectionAction, SelectionResult,
+    OVERLAY_CLASS, OverlayProviderChoice, SelectedRegion, SelectionAction, SelectionResult,
     draw::{COLOR_KEY, OVERLAY_ALPHA, PaintCache, paint_overlay},
     gdiplus::GdiPlusRuntime,
     guards::{DesktopSnapshot, OverlayWindow},
@@ -190,22 +190,17 @@ pub(super) fn select_region_internal(
     }
 
     match outcome {
-        OverlayOutcome::Selected(local_rect) => local_rect
-            .translated(bounds.left, bounds.top)
-            .map(|rect| Some(SelectionOutcome::Quick(rect)))
-            .ok_or_else(|| {
-                AppError::CaptureFailed(
-                    "selection coordinates overflow the virtual desktop".to_owned(),
-                )
-            }),
-        OverlayOutcome::Action { rect, action } => rect
-            .translated(bounds.left, bounds.top)
-            .map(|rect| Some(SelectionOutcome::Action(SelectionResult { rect, action })))
-            .ok_or_else(|| {
-                AppError::CaptureFailed(
-                    "selection coordinates overflow the virtual desktop".to_owned(),
-                )
-            }),
+        OverlayOutcome::Selected(local_rect) => selected_region(&mut state, bounds, local_rect)
+            .map(|selection| Some(SelectionOutcome::Quick(selection))),
+        OverlayOutcome::Action { rect, action } => {
+            selected_region(&mut state, bounds, rect).map(|selection| {
+                Some(SelectionOutcome::Action(SelectionResult {
+                    rect: selection.rect,
+                    action,
+                    frozen_pixels: selection.frozen_pixels,
+                }))
+            })
+        }
         OverlayOutcome::Cancelled(reason) => {
             info!(reason = ?reason, "capture overlay cancelled");
             Ok(None)
@@ -214,8 +209,41 @@ pub(super) fn select_region_internal(
     }
 }
 
+fn selected_region(
+    state: &mut OverlayState,
+    bounds: ScreenRect,
+    local_rect: ScreenRect,
+) -> Result<SelectedRegion> {
+    let rect = local_rect
+        .translated(bounds.left, bounds.top)
+        .ok_or_else(|| {
+            AppError::CaptureFailed("selection coordinates overflow the virtual desktop".to_owned())
+        })?;
+
+    // The paint cache may still keep the snapshot bitmap selected in its own
+    // memory DC. Release it before selecting that bitmap for pixel extraction.
+    drop(take(&mut state.paint_cache));
+    let frozen_pixels = state.desktop_snapshot.as_ref().and_then(|snapshot| {
+        snapshot.capture_rect(rect).map_or_else(
+            |error| {
+                warn!(
+                    error_kind = error.kind(),
+                    "selected pixels unavailable from desktop snapshot; live capture will be used"
+                );
+                None
+            },
+            Some,
+        )
+    });
+
+    Ok(SelectedRegion {
+        rect,
+        frozen_pixels,
+    })
+}
+
 pub(super) enum SelectionOutcome {
-    Quick(ScreenRect),
+    Quick(SelectedRegion),
     Action(SelectionResult),
 }
 

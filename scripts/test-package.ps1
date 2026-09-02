@@ -34,7 +34,7 @@ $artifactRoot = Join-Path $root "package"
 function Get-AskBridgePackageVersion {
     Push-Location $repoRoot
     try {
-        $metadata = cargo metadata --offline --no-deps --format-version 1 | ConvertFrom-Json
+        $metadata = cargo metadata --locked --offline --no-deps --format-version 1 | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed with exit code $LASTEXITCODE." }
         $package = $metadata.packages | Where-Object { $_.name -eq "askbridge-win" } | Select-Object -First 1
         if ($null -eq $package) { throw "askbridge-win metadata was not found." }
@@ -54,7 +54,7 @@ try {
     $expectedVersion = Get-AskBridgePackageVersion
     Push-Location $repoRoot
     try {
-        cargo xtask validate-package-artifacts `
+        cargo run --package xtask --locked --offline -- validate-package-artifacts `
             --artifact-root $artifactRoot `
             --expected-version $expectedVersion `
             --expected-release-exe-path (Join-Path $repoRoot "target\release\askbridge.exe") `

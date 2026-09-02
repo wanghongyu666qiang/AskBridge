@@ -49,8 +49,26 @@ impl BrowserConnection {
         cancelled: &AtomicBool,
         timeout: Duration,
     ) -> Result<Value> {
-        let session_id = self.ensure_target_session(target, cancelled, timeout)?;
-        self.command_in_session(&target.id, &session_id, method, params, cancelled, timeout)
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            AppError::BrowserConnectionFailed("CDP target timeout is too large".to_owned())
+        })?;
+        let remaining = || {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                Err(AppError::TargetTimeout)
+            } else {
+                Ok(remaining)
+            }
+        };
+        let session_id = self.ensure_target_session(target, cancelled, remaining()?)?;
+        self.command_in_session(
+            &target.id,
+            &session_id,
+            method,
+            params,
+            cancelled,
+            remaining()?,
+        )
     }
 
     pub(super) fn ensure_target_session(

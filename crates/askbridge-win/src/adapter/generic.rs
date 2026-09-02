@@ -1,4 +1,8 @@
-use std::{path::Path, sync::atomic::AtomicBool, time::Duration};
+use std::{
+    path::Path,
+    sync::atomic::AtomicBool,
+    time::{Duration, Instant},
+};
 
 use askbridge_core::{
     AppError, DispatchRequest, PreparationFailureStage, PreparationOutcome, PreparationPolicy,
@@ -35,6 +39,36 @@ pub struct GenericProviderAdapter {
     rule: Option<ProviderRule>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PreparationDeadline {
+    deadline: Instant,
+}
+
+impl PreparationDeadline {
+    fn new(timeout: Duration) -> Result<Self> {
+        if timeout.is_zero() {
+            return Err(AppError::TargetTimeout);
+        }
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            AppError::InvalidPreparation("preparation timeout is too large".to_owned())
+        })?;
+        Ok(Self { deadline })
+    }
+
+    fn remaining(self) -> Result<Duration> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            Err(AppError::TargetTimeout)
+        } else {
+            Ok(remaining)
+        }
+    }
+
+    fn bounded(self, upper_bound: Duration) -> Result<Duration> {
+        self.remaining().map(|remaining| remaining.min(upper_bound))
+    }
+}
+
 impl GenericProviderAdapter {
     pub fn for_provider(
         provider_id: impl Into<String>,
@@ -60,17 +94,32 @@ impl GenericProviderAdapter {
         policy: &PreparationPolicy,
     ) -> Result<PreparationOutcome> {
         let timeout = Duration::from_millis(policy.timeout_ms);
+        let deadline = PreparationDeadline::new(timeout)?;
+        let login_timeout = deadline.remaining().map_err(|error| {
+            read_only_preparation_failure(error, PreparationFailureStage::PageReadiness)
+        })?;
         let current = verify_page_and_login(
             client,
             &target.id,
             self.rule.as_ref(),
             &self.url_patterns,
             cancelled,
-            timeout,
-        )?;
+            login_timeout,
+        )
+        .map_err(|error| {
+            read_only_preparation_failure(error, PreparationFailureStage::PageReadiness)
+        })?;
 
         let attachment_prepared = if let Some(image) = &request.image {
-            if !client.target_url_matches(&current, &current.url, cancelled, timeout)? {
+            let navigation_check_timeout = deadline.remaining().map_err(|error| {
+                read_only_preparation_failure(error, PreparationFailureStage::NavigationChanged)
+            })?;
+            let target_matches = client
+                .target_url_matches(&current, &current.url, cancelled, navigation_check_timeout)
+                .map_err(|error| {
+                    read_only_preparation_failure(error, PreparationFailureStage::NavigationChanged)
+                })?;
+            if !target_matches {
                 return Err(preparation_failed(
                     PreparationFailureStage::NavigationChanged,
                     PreparationRecovery::ReopenProviderPage,
@@ -89,7 +138,19 @@ impl GenericProviderAdapter {
                 .as_ref()
                 .map_or(&[][..], |rule| rule.file_input_selectors());
             let prepare_file_input = |target: &CdpTarget| {
-                poll_file_input_preparation(cancelled, timeout, |attempt_timeout| {
+                let poll_timeout = deadline.remaining().map_err(|error| {
+                    read_only_preparation_failure(
+                        error,
+                        PreparationFailureStage::AttachmentPreparation,
+                    )
+                })?;
+                poll_file_input_preparation(cancelled, poll_timeout, |attempt_timeout| {
+                    let attempt_timeout = deadline.bounded(attempt_timeout).map_err(|error| {
+                        read_only_preparation_failure(
+                            error,
+                            PreparationFailureStage::AttachmentPreparation,
+                        )
+                    })?;
                     client.set_file_input(
                         target,
                         &target.url,
@@ -102,7 +163,7 @@ impl GenericProviderAdapter {
             };
             let mut file_input_result = prepare_file_input(&current)?;
             if matches!(file_input_result, FileInputResult::NavigationChanged) {
-                let refreshed = current_target(client, &current.id)?;
+                let refreshed = current_target(client, &current.id, deadline.remaining()?)?;
                 if self
                     .rule
                     .as_ref()
@@ -130,7 +191,7 @@ impl GenericProviderAdapter {
             false
         };
 
-        let composer_target = current_target(client, &current.id)?;
+        let composer_target = current_target(client, &current.id, deadline.remaining()?)?;
         if self
             .rule
             .as_ref()
@@ -166,9 +227,15 @@ impl GenericProviderAdapter {
             login_selectors,
             &expected_url,
         )?;
-        let result = poll_composer_preparation(cancelled, timeout, |attempt_timeout| {
-            client.evaluate_in_target(&composer_target, &expression, cancelled, attempt_timeout)
-        })?;
+        let result =
+            poll_composer_preparation(cancelled, deadline.remaining()?, |attempt_timeout| {
+                client.evaluate_in_target(
+                    &composer_target,
+                    &expression,
+                    cancelled,
+                    deadline.bounded(attempt_timeout)?,
+                )
+            })?;
         let value = result.pointer("/result/value").ok_or_else(|| {
             AppError::BrowserProtocol("composer preparation returned no value".to_owned())
         })?;
@@ -176,7 +243,7 @@ impl GenericProviderAdapter {
             .get("url")
             .and_then(Value::as_str)
             .unwrap_or(&expected_url);
-        let verified_target = current_target(client, &composer_target.id)?;
+        let verified_target = current_target(client, &composer_target.id, deadline.remaining()?)?;
         if self.rule.as_ref().is_some_and(|rule| {
             rule.matches_login_url(target_url) || rule.matches_login_url(&verified_target.url)
         }) {
@@ -305,6 +372,13 @@ fn preparation_failed(
         recovery,
         text_inserted,
         attachment_prepared,
+    }
+}
+
+fn read_only_preparation_failure(error: AppError, stage: PreparationFailureStage) -> AppError {
+    match error {
+        AppError::BrowserCancelled | AppError::PreparationFailed { .. } => error,
+        _ => preparation_failed(stage, PreparationRecovery::Retry, false, false),
     }
 }
 
@@ -477,6 +551,23 @@ mod tests {
                 text_inserted: false,
                 attachment_prepared: true,
                 ..
+            }
+        ));
+    }
+
+    #[test]
+    fn read_only_timeout_records_explicit_no_write_evidence() {
+        let error = read_only_preparation_failure(
+            AppError::TargetTimeout,
+            PreparationFailureStage::PageReadiness,
+        );
+        assert!(matches!(
+            error,
+            AppError::PreparationFailed {
+                stage: PreparationFailureStage::PageReadiness,
+                recovery: PreparationRecovery::Retry,
+                text_inserted: false,
+                attachment_prepared: false,
             }
         ));
     }

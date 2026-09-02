@@ -1,4 +1,7 @@
-use std::{sync::atomic::AtomicBool, time::Duration};
+use std::{
+    sync::atomic::AtomicBool,
+    time::{Duration, Instant},
+};
 
 use askbridge_core::{
     AppError, PreparationFailureStage, PreparationRecovery, Result, matches_any_pattern,
@@ -9,9 +12,13 @@ use crate::browser::{CdpClient, CdpTarget};
 
 use super::{javascript::login_detection_expression, rules::ProviderRule};
 
-pub(super) fn current_target(client: &CdpClient, target_id: &str) -> Result<CdpTarget> {
+pub(super) fn current_target(
+    client: &CdpClient,
+    target_id: &str,
+    timeout: Duration,
+) -> Result<CdpTarget> {
     client
-        .list_targets()?
+        .list_targets_with_timeout(timeout)?
         .into_iter()
         .find(|candidate| candidate.id == target_id && candidate.kind == "page")
         .ok_or(AppError::TargetNotFound)
@@ -25,7 +32,18 @@ pub(super) fn verify_page_and_login(
     cancelled: &AtomicBool,
     timeout: Duration,
 ) -> Result<CdpTarget> {
-    let current = current_target(client, target_id)?;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| AppError::InvalidPreparation("login timeout is too large".to_owned()))?;
+    let remaining = || {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            Err(AppError::TargetTimeout)
+        } else {
+            Ok(remaining)
+        }
+    };
+    let current = current_target(client, target_id, remaining()?)?;
     if rule.is_some_and(|rule| rule.matches_login_url(&current.url)) {
         return Err(page_readiness_failure());
     }
@@ -37,7 +55,7 @@ pub(super) fn verify_page_and_login(
         return Ok(current);
     };
     let expression = login_detection_expression(rule.login_selectors())?;
-    let result = client.evaluate_in_target(&current, &expression, cancelled, timeout)?;
+    let result = client.evaluate_in_target(&current, &expression, cancelled, remaining()?)?;
     let value = result
         .pointer("/result/value")
         .ok_or_else(|| AppError::BrowserProtocol("login detection returned no value".to_owned()))?;

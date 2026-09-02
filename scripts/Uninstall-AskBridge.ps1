@@ -112,6 +112,21 @@ function Remove-ShortcutOwnedByInstall {
     Remove-Item -LiteralPath $ShortcutPath -Force
 }
 
+function Remove-StartOnLoginOwnedByInstall {
+    param([string]$ExecutablePath)
+
+    $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    $entry = Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction SilentlyContinue
+    if ($null -eq $entry) {
+        return
+    }
+    $actualValue = [string]$entry.AskBridge
+    $expectedValue = '"' + [IO.Path]::GetFullPath($ExecutablePath) + '"'
+    if ($actualValue.Equals($expectedValue, [StringComparison]::OrdinalIgnoreCase)) {
+        Remove-ItemProperty -Path $runKey -Name "AskBridge" -Force
+    }
+}
+
 function Assert-ManifestFileList {
     param([psobject]$Manifest)
 
@@ -218,8 +233,7 @@ if ($null -ne $manifestDesktopShortcut) {
     }
 }
 
-$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-Remove-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction SilentlyContinue
+Remove-StartOnLoginOwnedByInstall $targetExecutable
 if ($null -ne $startMenuShortcutToRemove) {
     Remove-ShortcutOwnedByInstall $startMenuShortcutToRemove $targetExecutable
 }

@@ -68,9 +68,10 @@ See [Privacy Notes](docs/PRIVACY.md) and [Troubleshooting](docs/TROUBLESHOOTING.
 Requires stable Rust with a Windows GNU or MSVC toolchain, plus the Microsoft Edge WebView2 Runtime.
 
 ```powershell
-cargo test --workspace
-cargo build --workspace --release
-cargo xtask help
+cargo fetch --locked
+cargo test --workspace --locked --offline
+cargo build --workspace --release --locked --offline
+cargo run --package xtask --locked --offline -- help
 ```
 
 The `scripts` directory contains project maintenance automation, not user-facing steps:
@@ -88,8 +89,10 @@ The `scripts` directory contains project maintenance automation, not user-facing
 Full local release acceptance:
 
 ```powershell
-./scripts/test-release-local.ps1 -AcceptanceRoot D:/your-chosen-acceptance-root/target/release-local-acceptance
+./scripts/test-release-local.ps1 -AcceptanceRoot D:/AskBridge/target/release-local-acceptance-20260902
 ```
+
+Replace `AcceptanceRoot` with a new, non-existent absolute path under the current repository's `target` directory.
 
 An explicit empty directory must be provided when generating installer and portable packages:
 

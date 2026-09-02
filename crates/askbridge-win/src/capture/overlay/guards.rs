@@ -13,7 +13,35 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::DestroyWindow,
 };
 
-use crate::util::last_error;
+use crate::{
+    capture::screen::{self, RawBgraImage},
+    util::last_error,
+};
+
+fn snapshot_relative_rect(bounds: ScreenRect, selection: ScreenRect) -> Result<ScreenRect> {
+    if selection.is_empty()
+        || selection.left < bounds.left
+        || selection.top < bounds.top
+        || selection.right() > bounds.right()
+        || selection.bottom() > bounds.bottom()
+    {
+        return Err(AppError::CaptureFailed(
+            "selected rectangle is outside the desktop snapshot".to_owned(),
+        ));
+    }
+    let left = i32::try_from(i64::from(selection.left) - i64::from(bounds.left)).map_err(|_| {
+        AppError::CaptureFailed("snapshot selection x offset exceeds Win32 limits".to_owned())
+    })?;
+    let top = i32::try_from(i64::from(selection.top) - i64::from(bounds.top)).map_err(|_| {
+        AppError::CaptureFailed("snapshot selection y offset exceeds Win32 limits".to_owned())
+    })?;
+    Ok(ScreenRect::new(
+        left,
+        top,
+        selection.width,
+        selection.height,
+    ))
+}
 
 pub(super) struct OverlayWindow(pub(super) HWND);
 
@@ -32,6 +60,7 @@ pub(super) struct DesktopSnapshot {
     pub(super) bitmap: HBITMAP,
     pub(super) width: i32,
     pub(super) height: i32,
+    bounds: ScreenRect,
 }
 
 impl DesktopSnapshot {
@@ -116,7 +145,13 @@ impl DesktopSnapshot {
             bitmap: bitmap.into_raw(),
             width,
             height,
+            bounds,
         })
+    }
+
+    pub(super) fn capture_rect(&self, selection: ScreenRect) -> Result<RawBgraImage> {
+        let relative = snapshot_relative_rect(self.bounds, selection)?;
+        screen::capture_bitmap_rect(self.bitmap, self.width, self.height, relative)
     }
 }
 
@@ -194,5 +229,44 @@ impl SelectedObject {
 impl Drop for SelectedObject {
     fn drop(&mut self) {
         self.restore();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_negative_desktop_selection_to_snapshot_offset() {
+        let bounds = ScreenRect::new(-1920, -200, 3840, 1280);
+        let selection = ScreenRect::new(-1850, -150, 320, 240);
+
+        assert_eq!(
+            snapshot_relative_rect(bounds, selection).expect("selection is inside snapshot"),
+            ScreenRect::new(70, 50, 320, 240)
+        );
+    }
+
+    #[test]
+    fn accepts_selection_on_snapshot_edges() {
+        let bounds = ScreenRect::new(-1920, -200, 3840, 1280);
+
+        assert_eq!(
+            snapshot_relative_rect(bounds, bounds).expect("full snapshot is a valid selection"),
+            ScreenRect::new(0, 0, 3840, 1280)
+        );
+        assert_eq!(
+            snapshot_relative_rect(bounds, ScreenRect::new(1919, 1079, 1, 1))
+                .expect("last pixel is inside snapshot"),
+            ScreenRect::new(3839, 1279, 1, 1)
+        );
+    }
+
+    #[test]
+    fn rejects_selection_crossing_snapshot_boundary() {
+        let bounds = ScreenRect::new(-1920, -200, 3840, 1280);
+
+        assert!(snapshot_relative_rect(bounds, ScreenRect::new(1919, 1079, 2, 1)).is_err());
+        assert!(snapshot_relative_rect(bounds, ScreenRect::new(-1921, -200, 1, 1)).is_err());
     }
 }

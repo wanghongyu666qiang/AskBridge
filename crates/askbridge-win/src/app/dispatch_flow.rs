@@ -15,6 +15,12 @@ use crate::browser::{
 
 use super::{controller::Runtime, error_handler::user_facing_error};
 
+const SCREENSHOT_FALLBACK_DEDICATED_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
+
+fn dedicated_attempt_timeout(has_image: bool, has_clipboard_fallback: bool) -> Option<Duration> {
+    (has_image && has_clipboard_fallback).then_some(SCREENSHOT_FALLBACK_DEDICATED_ATTEMPT_TIMEOUT)
+}
+
 impl Runtime {
     pub(super) fn prepare_request(
         &mut self,
@@ -81,11 +87,12 @@ impl Runtime {
             return;
         }
         let adapter_override = provider.adapter_override.clone();
-        let dedicated_job = || DedicatedChromeJob {
+        let dedicated_job = |attempt_timeout| DedicatedChromeJob {
             configured_chrome_path: self.config.browser.chrome_path.clone(),
             profile_dir: self.config.browser.profile_dir.clone(),
             connect_timeout: Duration::from_millis(self.config.browser.connect_timeout_ms),
             page_timeout: Duration::from_millis(self.config.browser.page_timeout_ms),
+            attempt_timeout,
             lifecycle: self.config.browser.lifecycle,
             start_url: provider.start_url.clone(),
             url_patterns: provider.url_patterns.clone(),
@@ -132,12 +139,14 @@ impl Runtime {
                 }
             }
             BrowserTargetPreference::DedicatedChrome => {
-                BrowserLaunchPlan::single(BrowserLaunch::DedicatedChrome(dedicated_job()))
+                BrowserLaunchPlan::single(BrowserLaunch::DedicatedChrome(dedicated_job(
+                    dedicated_attempt_timeout(request.image.is_some(), false),
+                )))
             }
             BrowserTargetPreference::DedicatedChromeThenClipboardPaste => {
                 if request.image.is_some() {
                     BrowserLaunchPlan::dedicated_then_clipboard(
-                        dedicated_job(),
+                        dedicated_job(dedicated_attempt_timeout(true, true)),
                         clipboard_job(ClipboardPasteOpenTarget::DefaultBrowser),
                     )
                 } else {
@@ -149,7 +158,9 @@ impl Runtime {
                         reason = "text_only_request",
                         "clipboard fallback is unavailable without a screenshot"
                     );
-                    BrowserLaunchPlan::single(BrowserLaunch::DedicatedChrome(dedicated_job()))
+                    BrowserLaunchPlan::single(BrowserLaunch::DedicatedChrome(dedicated_job(
+                        dedicated_attempt_timeout(false, true),
+                    )))
                 }
             }
             BrowserTargetPreference::ClipboardPaste => {
@@ -511,5 +522,15 @@ mod tests {
             clipboard_locate_timeout(120_000, 120_000, &desktop),
             Duration::from_secs(120)
         );
+    }
+
+    #[test]
+    fn only_screenshot_fallback_caps_the_primary_dedicated_attempt() {
+        assert_eq!(
+            dedicated_attempt_timeout(true, true),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(dedicated_attempt_timeout(false, true), None);
+        assert_eq!(dedicated_attempt_timeout(true, false), None);
     }
 }

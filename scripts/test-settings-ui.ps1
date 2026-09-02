@@ -45,6 +45,16 @@ using System.Runtime.InteropServices;
 using System.Text;
 public static class AskBridgeUiNative {
     private delegate bool EnumChildProc(IntPtr hWnd, IntPtr lParam);
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
@@ -86,6 +96,22 @@ public static class AskBridgeUiNative {
         StringBuilder className = new StringBuilder(256);
         GetClassName(window, className, className.Capacity);
         return className.ToString();
+    }
+
+    public static IntPtr FindTopLevelWindowForProcess(uint expectedProcessId, string expectedClassName) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr window, IntPtr _) {
+            uint processId;
+            GetWindowThreadProcessId(window, out processId);
+            StringBuilder className = new StringBuilder(256);
+            GetClassName(window, className, className.Capacity);
+            if (processId == expectedProcessId && className.ToString() == expectedClassName) {
+                found = window;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
     }
 
     public static IntPtr FindDescendantById(IntPtr parent, int controlId) {
@@ -473,6 +499,28 @@ try {
         throw "The current-user startup value remained after disabling it."
     }
 
+    Click-Element $startOnLogin
+    Click-Element (Find-ElementByName $window $uiText.Apply)
+    Start-Sleep -Milliseconds 300
+    $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $reEnabledRunValue = [string](Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction Stop).AskBridge
+    if (-not $config.general.start_on_login -or
+        $reEnabledRunValue.IndexOf("askbridge.exe", [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        throw "Startup was not re-enabled before the foreign Run ownership probe."
+    }
+
+    $foreignRunValue = '"C:\Windows\System32\notepad.exe"'
+    New-Item -Path $runKey -Force | Out-Null
+    New-ItemProperty -Path $runKey -Name "AskBridge" -Value $foreignRunValue -PropertyType String -Force | Out-Null
+    Click-Element $startOnLogin
+    Click-Element (Find-ElementByName $window $uiText.Apply)
+    Start-Sleep -Milliseconds 300
+    $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $preservedForeignRunValue = [string](Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction Stop).AskBridge
+    if ($config.general.start_on_login -or $preservedForeignRunValue -ne $foreignRunValue) {
+        throw "Disabling startup removed or changed a Run value owned by another program."
+    }
+
     Capture-Window $window $screenshot
     if (-not (Test-Path -LiteralPath $screenshot -PathType Leaf)) { throw "Settings screenshot was not created." }
     if (-not (Test-Path -LiteralPath (Join-Path $dataRoot "logs\askbridge.log") -PathType Leaf)) {
@@ -484,6 +532,21 @@ finally {
     if ($null -ne $secondary -and -not $secondary.HasExited) {
         Stop-Process -Id $secondary.Id -Force -ErrorAction SilentlyContinue
         Wait-Process -Id $secondary.Id -Timeout 5 -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $primary -and -not $primary.HasExited) {
+        $mainWindow = [AskBridgeUiNative]::FindTopLevelWindowForProcess(
+            [uint32]$primary.Id,
+            "AskBridge.Desktop.HiddenWindow.v1"
+        )
+        if ($mainWindow -ne [IntPtr]::Zero) {
+            [AskBridgeUiNative]::PostMessage(
+                $mainWindow,
+                0x0010,
+                [IntPtr]::Zero,
+                [IntPtr]::Zero
+            ) | Out-Null
+        }
+        Wait-Process -Id $primary.Id -Timeout 5 -ErrorAction SilentlyContinue
     }
     if ($null -ne $primary -and -not $primary.HasExited) {
         Stop-Process -Id $primary.Id -Force -ErrorAction SilentlyContinue

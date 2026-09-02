@@ -78,33 +78,63 @@ impl CdpClient {
             timeout,
             connection: Mutex::new(None),
         };
-        let version: VersionResponse = client.request_json("GET", "/json/version")?;
+        let deadline = operation_deadline(timeout, "CDP connection")?;
+        let version: VersionResponse = client.request_json_with_timeout(
+            "GET",
+            "/json/version",
+            remaining_timeout(deadline)?,
+        )?;
         client.verify_browser_websocket(&version.web_socket_debugger_url)?;
         let socket = ProtocolSocket::connect(
             &client.endpoint,
             &version.web_socket_debugger_url,
             cancelled,
-            timeout,
+            remaining_timeout(deadline)?,
         )?;
         *client.lock_connection()? = Some(BrowserConnection::new(socket));
-        client.browser_command("Browser.getVersion", None, cancelled)?;
+        client.browser_command_with_timeout(
+            "Browser.getVersion",
+            None,
+            cancelled,
+            remaining_timeout(deadline)?,
+        )?;
         Ok(client)
     }
 
     pub fn list_targets(&self) -> Result<Vec<CdpTarget>> {
-        self.request_json("GET", "/json/list")
+        self.list_targets_with_timeout(self.timeout)
+    }
+
+    pub(crate) fn list_targets_with_timeout(&self, timeout: Duration) -> Result<Vec<CdpTarget>> {
+        self.request_json_with_timeout("GET", "/json/list", timeout)
     }
 
     pub fn create_target(&self, url: &str) -> Result<CdpTarget> {
+        self.create_target_with_timeout(url, self.timeout)
+    }
+
+    pub(crate) fn create_target_with_timeout(
+        &self,
+        url: &str,
+        timeout: Duration,
+    ) -> Result<CdpTarget> {
         validate_page_url(url)?;
         let path = format!("/json/new?{}", percent_encode(url));
-        self.request_json("PUT", &path)
+        self.request_json_with_timeout("PUT", &path, timeout)
     }
 
     pub fn activate_target(&self, target_id: &str) -> Result<()> {
+        self.activate_target_with_timeout(target_id, self.timeout)
+    }
+
+    pub(crate) fn activate_target_with_timeout(
+        &self,
+        target_id: &str,
+        timeout: Duration,
+    ) -> Result<()> {
         validate_target_id(target_id)?;
         let path = format!("/json/activate/{}", percent_encode(target_id));
-        let _ = self.request("GET", &path)?;
+        let _ = self.request_with_timeout("GET", &path, timeout)?;
         Ok(())
     }
 
@@ -208,10 +238,16 @@ impl CdpClient {
         timeout: Duration,
     ) -> Result<FileInputResult> {
         self.validate_target(target)?;
+        let deadline = operation_deadline(timeout, "file input preparation")?;
         let mut connection = self.lock_active_connection()?;
-        let session_id = connection.ensure_target_session(target, cancelled, timeout)?;
-        let mut session =
-            TargetSession::new(&mut connection, target.id.clone(), session_id, timeout);
+        let session_id =
+            connection.ensure_target_session(target, cancelled, remaining_timeout(deadline)?)?;
+        let mut session = TargetSession::new(
+            &mut connection,
+            target.id.clone(),
+            session_id,
+            remaining_timeout(deadline)?,
+        );
         if !session.target_url_matches(expected_url, cancelled)? {
             return Ok(FileInputResult::NavigationChanged);
         }
@@ -287,7 +323,6 @@ impl CdpClient {
             cancelled,
         )?;
 
-        let deadline = Instant::now() + timeout;
         loop {
             if cancelled.load(Ordering::Acquire) {
                 return Err(AppError::BrowserCancelled);
@@ -334,34 +369,52 @@ impl CdpClient {
         params: Option<Value>,
         cancelled: &AtomicBool,
     ) -> Result<Value> {
+        self.browser_command_with_timeout(method, params, cancelled, self.timeout)
+    }
+
+    fn browser_command_with_timeout(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<Value> {
         let url = self.endpoint.browser_websocket_url();
         self.verify_browser_websocket(&url)?;
         self.lock_active_connection()?
-            .browser_command(method, params, cancelled, self.timeout)
+            .browser_command(method, params, cancelled, timeout)
     }
 
-    fn request_json<T: for<'de> Deserialize<'de>>(&self, method: &str, path: &str) -> Result<T> {
-        let body = self.request(method, path)?;
+    fn request_json_with_timeout<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        path: &str,
+        timeout: Duration,
+    ) -> Result<T> {
+        let body = self.request_with_timeout(method, path, timeout)?;
         serde_json::from_slice(&body)
             .map_err(|_| AppError::BrowserProtocol("invalid debugging JSON".to_owned()))
     }
 
-    fn request(&self, method: &str, path: &str) -> Result<Vec<u8>> {
+    fn request_with_timeout(&self, method: &str, path: &str, timeout: Duration) -> Result<Vec<u8>> {
         if !matches!(method, "GET" | "PUT") {
             return Err(AppError::BrowserProtocol(
                 "unsupported debugging request method".to_owned(),
             ));
         }
+        let deadline = operation_deadline(timeout, "debugging HTTP request")?;
         let path = self.endpoint.http_path(path)?;
-        let mut stream = TcpStream::connect_timeout(&self.endpoint.socket_addr(), self.timeout)
-            .map_err(|_| {
-                AppError::BrowserConnectionFailed(
-                    "local debugging endpoint did not accept a connection".to_owned(),
-                )
-            })?;
+        let mut stream =
+            TcpStream::connect_timeout(&self.endpoint.socket_addr(), remaining_timeout(deadline)?)
+                .map_err(|_| {
+                    AppError::BrowserConnectionFailed(
+                        "local debugging endpoint did not accept a connection".to_owned(),
+                    )
+                })?;
+        let io_timeout = remaining_timeout(deadline)?;
         stream
-            .set_read_timeout(Some(self.timeout))
-            .and_then(|_| stream.set_write_timeout(Some(self.timeout)))
+            .set_read_timeout(Some(io_timeout))
+            .and_then(|_| stream.set_write_timeout(Some(io_timeout)))
             .map_err(|_| {
                 AppError::BrowserConnectionFailed("local debugging timeout setup failed".to_owned())
             })?;
@@ -373,7 +426,7 @@ impl CdpClient {
         stream.write_all(request.as_bytes()).map_err(|_| {
             AppError::BrowserConnectionFailed("local debugging request failed".to_owned())
         })?;
-        let response = read_http_response(&mut stream)?;
+        let response = read_http_response(&mut stream, deadline)?;
         parse_http_response(&response)
     }
 
@@ -432,6 +485,24 @@ impl CdpClient {
             ));
         }
         Ok(ActiveConnectionGuard { guard })
+    }
+}
+
+fn operation_deadline(timeout: Duration, stage: &str) -> Result<Instant> {
+    if timeout.is_zero() {
+        return Err(AppError::TargetTimeout);
+    }
+    Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| AppError::BrowserConnectionFailed(format!("{stage} timeout is too large")))
+}
+
+fn remaining_timeout(deadline: Instant) -> Result<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        Err(AppError::TargetTimeout)
+    } else {
+        Ok(remaining)
     }
 }
 

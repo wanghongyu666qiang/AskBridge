@@ -121,6 +121,30 @@ try {
         throw "Install manifest did not record both shortcut paths."
     }
 
+    Write-Host "[2/13] Explicitly disable startup without removing foreign Run entries"
+    & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot -StartOnLogin:$false -CreateDesktopShortcut -CreateStartMenuShortcut
+    $disabledConfig = Get-Content -LiteralPath (Join-Path $installRoot "data\config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+    $disabledRunEntry = Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction SilentlyContinue
+    if ($disabledConfig.general.start_on_login -ne $false -or $null -ne $disabledRunEntry) {
+        throw "Explicit StartOnLogin=false did not disable config.json and remove the owned Run value."
+    }
+
+    New-Item -Path $runKey -Force | Out-Null
+    $foreignRunValue = '"C:\Windows\System32\notepad.exe"'
+    New-ItemProperty -Path $runKey -Name "AskBridge" -Value $foreignRunValue -PropertyType String -Force | Out-Null
+    & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot -StartOnLogin:$false -CreateDesktopShortcut -CreateStartMenuShortcut
+    $preservedForeignRunValue = [string](Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction Stop).AskBridge
+    if ($preservedForeignRunValue -ne $foreignRunValue) {
+        throw "Explicit StartOnLogin=false removed a Run value owned by another program."
+    }
+
+    & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot -StartOnLogin -CreateDesktopShortcut -CreateStartMenuShortcut
+    $reEnabledConfig = Get-Content -LiteralPath (Join-Path $installRoot "data\config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+    $reEnabledRunValue = [string](Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction Stop).AskBridge
+    if (-not $reEnabledConfig.general.start_on_login -or $reEnabledRunValue -ne $expectedRunValue) {
+        throw "Re-enabling StartOnLogin did not restore both config.json and the owned Run value."
+    }
+
     Write-Host "[3/13] First launch preserves installer-selected startup"
     # This acceptance install lives below the repository's target directory. Explicitly select
     # the installed data directory so the development-tree detector cannot redirect the child to
@@ -201,6 +225,11 @@ try {
             -not (Test-Path -LiteralPath $desktopShortcut -PathType Leaf) -or
             -not (Test-Path -LiteralPath $startMenuShortcut -PathType Leaf)) {
             throw "Updater did not preserve the installed shortcut contract."
+        }
+        $updatedConfig = Get-Content -LiteralPath (Join-Path $installRoot "data\config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+        $updatedRunValue = [string](Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction Stop).AskBridge
+        if (-not $updatedConfig.general.start_on_login -or $updatedRunValue -ne $expectedRunValue) {
+            throw "Silent update changed the existing startup configuration."
         }
         $targetExecutable = [IO.Path]::GetFullPath((Join-Path $installRoot "askbridge.exe"))
         $restartDeadline = [DateTime]::UtcNow.AddSeconds(10)
@@ -332,6 +361,9 @@ try {
     if (Test-Path -LiteralPath $startMenuShortcut -PathType Leaf) {
         throw "Uninstall left the Start menu shortcut behind."
     }
+    if ($null -ne (Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction SilentlyContinue)) {
+        throw "Uninstall left the owned startup entry behind."
+    }
 
     Write-Host "[9/13] Reject malformed uninstall manifest shape"
     & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
@@ -424,14 +456,21 @@ try {
     }
     Remove-Item -LiteralPath $manifestPath -Force
 
-    Write-Host "[13/13] Explicit data-removal uninstall"
+    Write-Host "[13/13] Explicit data-removal uninstall preserves a foreign startup entry"
     & (Join-Path $fixture "Install-AskBridge.ps1") -InstallRoot $installRoot
+    New-Item -Path $runKey -Force | Out-Null
+    $foreignRunValue = '"C:\Windows\System32\notepad.exe"'
+    New-ItemProperty -Path $runKey -Name "AskBridge" -Value $foreignRunValue -PropertyType String -Force | Out-Null
     & (Join-Path $installRoot "Uninstall-AskBridge.ps1") -InstallRoot $installRoot -RemoveData
     if (Test-Path -LiteralPath (Join-Path $installRoot "data")) {
         throw "RemoveData uninstall left user data behind."
     }
     if (Test-Path -LiteralPath (Join-Path $installRoot "askbridge.exe")) {
         throw "RemoveData uninstall left the application executable behind."
+    }
+    $remainingForeignRunValue = [string](Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction Stop).AskBridge
+    if ($remainingForeignRunValue -ne $foreignRunValue) {
+        throw "Uninstall removed a Run value owned by another program."
     }
     Write-Host "Installer acceptance passed."
 }
