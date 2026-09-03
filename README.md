@@ -126,3 +126,4 @@ cargo xtask gen-update-key --output <绝对路径>
 
 ## 合作伙伴
 推广合作伙伴:[BizBot-AI自动推广系统](https://bizbot.zvo.cn/)(雷鸣云有限公司）
+[![Powered by OrcaRouter](https://img.shields.io/badge/Powered_by-OrcaRouter-2563eb)](https://www.orcarouter.ai/ref/ref_3331abbb338d93b7f9c3)
