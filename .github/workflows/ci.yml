@@ -61,8 +61,19 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
+      - name: Check Microsoft Store build
+        run: |
+          cargo clippy --package askbridge-win --all-targets --features store --locked -- -D warnings
+          cargo test --package askbridge-win --features store --locked
+
       - name: Build release workspace
         run: cargo build --workspace --release --locked
+
+      - name: Pack Microsoft Store MSIX
+        shell: pwsh
+        run: |
+          $artifactRoot = Join-Path $env:RUNNER_TEMP "askbridge-msix-ci"
+          ./scripts/package-msix.ps1 -ArtifactRoot $artifactRoot
 
   windows-gnu:
     name: Windows (GNU)

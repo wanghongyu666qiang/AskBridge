@@ -132,23 +132,25 @@ impl TrayIcon {
             )?;
             append_item(menu, MENU_SETTINGS, "设置…", MF_STRING)?;
             append_item(menu, 0, "", MF_SEPARATOR)?;
-            append_item(
-                menu,
-                MENU_CHECK_UPDATES,
-                if update_busy {
-                    "正在检查或下载更新…"
-                } else {
-                    "检查更新…"
-                },
-                MF_STRING | if update_busy { MF_GRAYED } else { 0 },
-            )?;
-            if let Some(version) = available_update {
+            if !cfg!(feature = "store") {
                 append_item(
                     menu,
-                    MENU_INSTALL_UPDATE,
-                    &format!("安装 AskBridge {version}…"),
+                    MENU_CHECK_UPDATES,
+                    if update_busy {
+                        "正在检查或下载更新…"
+                    } else {
+                        "检查更新…"
+                    },
                     MF_STRING | if update_busy { MF_GRAYED } else { 0 },
                 )?;
+                if let Some(version) = available_update {
+                    append_item(
+                        menu,
+                        MENU_INSTALL_UPDATE,
+                        &format!("安装 AskBridge {version}…"),
+                        MF_STRING | if update_busy { MF_GRAYED } else { 0 },
+                    )?;
+                }
             }
             append_item(menu, 0, "", MF_SEPARATOR)?;
             append_item(menu, MENU_EXIT, "退出", MF_STRING)?;

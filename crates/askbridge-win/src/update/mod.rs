@@ -119,7 +119,8 @@ impl UpdateService {
         let current_version = ReleaseVersion::parse(current_version)?;
         let update_root = data_root.join(UPDATE_DIRECTORY);
         cleanup_stale_updates(&update_root);
-        let automatic_checks_enabled = std::env::var(DISABLE_AUTO_CHECK_ENV).as_deref() != Ok("1");
+        let automatic_checks_enabled =
+            !cfg!(feature = "store") && std::env::var(DISABLE_AUTO_CHECK_ENV).as_deref() != Ok("1");
         let (commands, receiver) = mpsc::channel();
         let events = Arc::new(Mutex::new(VecDeque::new()));
         let worker_events = Arc::clone(&events);
@@ -149,12 +150,22 @@ impl UpdateService {
     }
 
     pub fn check_now(&self) -> Result<()> {
+        if cfg!(feature = "store") {
+            return Err(update_error(
+                "Microsoft Store 版本由 Microsoft Store 管理更新",
+            ));
+        }
         self.commands
             .send(UpdateCommand::Check { manual: true })
             .map_err(|_| update_error("更新检查线程不可用"))
     }
 
     pub fn download(&self, release: AvailableUpdate) -> Result<()> {
+        if cfg!(feature = "store") {
+            return Err(update_error(
+                "Microsoft Store 版本不能下载 GitHub 安装器更新",
+            ));
+        }
         self.commands
             .send(UpdateCommand::Download(release))
             .map_err(|_| update_error("更新下载线程不可用"))
@@ -187,6 +198,9 @@ impl UpdateService {
     }
 
     pub fn supports_in_place_update(&self) -> bool {
+        if cfg!(feature = "store") {
+            return false;
+        }
         std::env::current_exe()
             .ok()
             .and_then(|executable| executable.parent().map(Path::to_path_buf))
@@ -194,6 +208,11 @@ impl UpdateService {
     }
 
     pub fn launch_installer(&self, setup_path: &Path) -> Result<()> {
+        if cfg!(feature = "store") {
+            return Err(update_error(
+                "Microsoft Store 版本不能启动 GitHub 安装器更新",
+            ));
+        }
         validate_downloaded_setup(&self.update_root, setup_path)?;
         verify_cached_hash(setup_path)?;
         let executable = std::env::current_exe().map_err(|source| {

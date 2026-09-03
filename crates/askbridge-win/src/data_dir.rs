@@ -6,6 +6,7 @@ use std::{
 use askbridge_core::{AppError, Result};
 
 const DATA_DIR_ENV: &str = "ASKBRIDGE_DATA_DIR";
+#[cfg(not(feature = "store"))]
 const DATA_DIR_NAME: &str = "data";
 
 pub fn resolve() -> Result<PathBuf> {
@@ -34,23 +35,65 @@ fn resolve_from(executable: &Path, configured: Option<&std::ffi::OsStr>) -> Resu
 }
 
 fn default_for_executable(executable: &Path) -> Result<PathBuf> {
-    let directory = executable.parent().ok_or_else(|| {
-        AppError::ConfigurationInvalid("AskBridge executable has no parent directory".to_owned())
-    })?;
-
-    for ancestor in directory.ancestors() {
-        if ancestor.join("Cargo.toml").is_file()
-            && ancestor
-                .join("crates")
-                .join("askbridge-win")
-                .join("Cargo.toml")
-                .is_file()
-        {
-            return Ok(ancestor.join(DATA_DIR_NAME));
-        }
+    #[cfg(feature = "store")]
+    {
+        let _ = executable;
+        store_local_state()
     }
 
-    Ok(directory.join(DATA_DIR_NAME))
+    #[cfg(not(feature = "store"))]
+    {
+        let directory = executable.parent().ok_or_else(|| {
+            AppError::ConfigurationInvalid(
+                "AskBridge executable has no parent directory".to_owned(),
+            )
+        })?;
+
+        for ancestor in directory.ancestors() {
+            if ancestor.join("Cargo.toml").is_file()
+                && ancestor
+                    .join("crates")
+                    .join("askbridge-win")
+                    .join("Cargo.toml")
+                    .is_file()
+            {
+                return Ok(ancestor.join(DATA_DIR_NAME));
+            }
+        }
+
+        Ok(directory.join(DATA_DIR_NAME))
+    }
+}
+
+#[cfg(feature = "store")]
+fn store_local_state() -> Result<PathBuf> {
+    use windows::Storage::ApplicationData;
+
+    let _apartment = crate::store_runtime::initialize_sta(
+        "initializing Windows Runtime for Store data directory failed",
+    )?;
+    let application_data = ApplicationData::Current().map_err(|error| {
+        AppError::ConfigurationInvalid(format!(
+            "resolving Microsoft Store application data failed: {error}"
+        ))
+    })?;
+    let local_folder = application_data.LocalFolder().map_err(|error| {
+        AppError::ConfigurationInvalid(format!(
+            "resolving Microsoft Store local data folder failed: {error}"
+        ))
+    })?;
+    let path = local_folder.Path().map_err(|error| {
+        AppError::ConfigurationInvalid(format!(
+            "reading Microsoft Store local data folder failed: {error}"
+        ))
+    })?;
+    let path = PathBuf::from(path.to_string());
+    if !path.is_absolute() {
+        return Err(AppError::ConfigurationInvalid(
+            "Microsoft Store local data folder is not absolute".to_owned(),
+        ));
+    }
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -78,6 +121,7 @@ mod tests {
         ));
     }
 
+    #[cfg(not(feature = "store"))]
     #[test]
     fn portable_build_uses_directory_next_to_executable() {
         let resolved = default_for_executable(Path::new(r"D:\Apps\AskBridge\askbridge.exe"))

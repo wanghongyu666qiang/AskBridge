@@ -15,7 +15,13 @@ mod logging;
 mod paste_mode;
 mod settings_v2;
 mod single_instance;
+#[cfg(not(feature = "store"))]
 mod startup;
+#[cfg(feature = "store")]
+#[path = "startup_store.rs"]
+mod startup;
+#[cfg(feature = "store")]
+mod store_runtime;
 mod tray;
 mod update;
 mod util;

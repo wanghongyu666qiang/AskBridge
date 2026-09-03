@@ -14,6 +14,13 @@ path = "src/main.rs"
 name = "askbridge-setup"
 path = "src/setup.rs"
 
+[features]
+default = []
+# Microsoft Store/MSIX distribution. The feature keeps the normal GitHub
+# installer build unchanged while selecting package-aware data, startup, and
+# update behavior for the Store binary.
+store = []
+
 [dependencies]
 askbridge-core = { path = "../askbridge-core" }
 ed25519-dalek.workspace = true
@@ -27,8 +34,12 @@ wry = { version = "0.56.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61.3", features = [
+    "ApplicationModel",
+    "Storage",
+    "Storage_Search",
     "Win32_Foundation",
     "Win32_System_Com",
+    "Win32_System_WinRT",
     "Win32_UI_Accessibility",
 ] }
 windows-sys = { workspace = true, features = [
