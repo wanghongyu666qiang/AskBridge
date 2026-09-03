@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "askbridge-core"
-version = "2.0.2"
+version = "2.0.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "askbridge-win"
-version = "2.0.2"
+version = "2.0.3"
 dependencies = [
  "askbridge-core",
  "ed25519-dalek",
@@ -2087,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "2.0.2"
+version = "2.0.3"
 dependencies = [
  "askbridge-core",
  "ed25519-dalek",
