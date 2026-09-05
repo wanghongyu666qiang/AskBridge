@@ -10,7 +10,7 @@ publish = false
 askbridge-core = { path = "../crates/askbridge-core" }
 ed25519-dalek.workspace = true
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
-getrandom = "0.3"
+getrandom = "0.4"
 serde_json.workspace = true
 zip = { version = "2.4.2", default-features = false, features = ["deflate-flate2", "flate2"] }
 zeroize = "1.8"
