@@ -8,6 +8,7 @@ use std::{
 };
 
 use askbridge_core::{AppError, Result};
+use tracing::warn;
 use windows_sys::Win32::{
     Foundation::GetLastError,
     Networking::WinHttp::{
@@ -56,13 +57,31 @@ pub(crate) fn refresh_rules_from_environment(data_root: &Path) -> Result<RuleUpd
         .ok()
         .filter(|value| !value.trim().is_empty());
 
-    if let Some(remote_url) = remote_url
-        && let Ok(source) = fetch_https_json(&remote_url)
-        && let Ok(rules) = parse_source(&source)
-        && persist_cache(&cache_path, &source).is_ok()
-    {
-        install_rules(Some(rules))?;
-        return Ok(RuleUpdateSource::Remote);
+    if let Some(remote_url) = remote_url {
+        let fetched = fetch_https_json(&remote_url).and_then(|source| {
+            let rules = parse_source(&source)?;
+            Ok((source, rules))
+        });
+        match fetched {
+            Ok((source, rules)) => match persist_cache(&cache_path, &source) {
+                Ok(()) => {
+                    install_rules(Some(rules))?;
+                    return Ok(RuleUpdateSource::Remote);
+                }
+                Err(error) => warn!(
+                    stage = "provider_rules",
+                    completed = false,
+                    error_kind = error.kind(),
+                    "fetched provider rules could not be cached; falling back"
+                ),
+            },
+            Err(error) => warn!(
+                stage = "provider_rules",
+                completed = false,
+                error_kind = error.kind(),
+                "remote provider rules were unusable; falling back to cache or built-ins"
+            ),
+        }
     }
 
     if let Ok(source) = fs::read(&cache_path)

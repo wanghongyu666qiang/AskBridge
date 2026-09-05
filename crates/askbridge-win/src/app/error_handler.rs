@@ -1,7 +1,7 @@
 use askbridge_core::{
     AppCommand, AppError, AppState, PreparationFailureStage, PreparationRecovery,
 };
-use tracing::error;
+use tracing::{error, warn};
 
 use super::controller::Runtime;
 
@@ -140,11 +140,26 @@ impl Runtime {
         self.pending_dispatch = None;
         self.tray
             .notify("AskBridge 无法打开目标页面", &user_facing_error(&error));
-        if !self.workflow.is_idle() && self.workflow.state() != AppState::Error {
-            let _ = self.workflow.fail();
+        if !self.workflow.is_idle()
+            && self.workflow.state() != AppState::Error
+            && let Err(rejected) = self.workflow.fail()
+        {
+            warn!(
+                stage = "workflow",
+                completed = false,
+                error_kind = rejected.kind(),
+                "workflow failure transition was rejected"
+            );
         }
-        if self.workflow.state() == AppState::Error {
-            let _ = self.workflow.recover();
+        if self.workflow.state() == AppState::Error
+            && let Err(rejected) = self.workflow.recover()
+        {
+            warn!(
+                stage = "workflow",
+                completed = false,
+                error_kind = rejected.kind(),
+                "workflow recovery transition was rejected"
+            );
         }
     }
 
@@ -167,11 +182,26 @@ impl Runtime {
         self.pending_dispatch = None;
         self.tray
             .notify("AskBridge 无法继续", &user_facing_error(&error));
-        if !self.workflow.is_idle() && self.workflow.state() != AppState::Error {
-            let _ = self.workflow.fail();
+        if !self.workflow.is_idle()
+            && self.workflow.state() != AppState::Error
+            && let Err(rejected) = self.workflow.fail()
+        {
+            warn!(
+                stage = "workflow",
+                completed = false,
+                error_kind = rejected.kind(),
+                "workflow failure transition was rejected"
+            );
         }
-        if self.workflow.state() == AppState::Error {
-            let _ = self.workflow.recover();
+        if self.workflow.state() == AppState::Error
+            && let Err(rejected) = self.workflow.recover()
+        {
+            warn!(
+                stage = "workflow",
+                completed = false,
+                error_kind = rejected.kind(),
+                "workflow recovery transition was rejected"
+            );
         }
     }
 }

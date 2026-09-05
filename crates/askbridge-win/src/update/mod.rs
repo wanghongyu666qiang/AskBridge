@@ -17,6 +17,7 @@ use std::{
 };
 
 use askbridge_core::{AppError, Result};
+use tracing::warn;
 use windows_sys::Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{PostMessageW, WM_APP},
@@ -166,6 +167,14 @@ impl UpdateService {
         validate_downloaded_setup(&self.update_root, &candidate)
             .and_then(|()| verify_cached_hash(&candidate))
             .map(|_| candidate)
+            .inspect_err(|error| {
+                warn!(
+                    stage = "update_cache_retry",
+                    completed = false,
+                    error_kind = error.kind(),
+                    "cached update installer failed verification; a fresh download is required"
+                );
+            })
             .ok()
     }
 

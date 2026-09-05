@@ -215,7 +215,14 @@ impl Runtime {
         if candidate.general.start_on_login
             && !startup::is_current_executable_registered().unwrap_or(false)
         {
-            let _ = startup::restore(&startup_snapshot);
+            if let Err(rollback_error) = startup::restore(&startup_snapshot) {
+                warn!(
+                    stage = "settings",
+                    completed = false,
+                    error_kind = rollback_error.kind(),
+                    "startup registration rollback failed"
+                );
+            }
             self.settings
                 .set_status("无法应用：开机启动项写入后未能通过校验。");
             return;
@@ -262,7 +269,14 @@ impl Runtime {
                 info!(stage = "settings", completed = true, "settings updated");
             }
             Err(error) => {
-                let _ = startup::restore(&startup_snapshot);
+                if let Err(rollback_error) = startup::restore(&startup_snapshot) {
+                    warn!(
+                        stage = "settings",
+                        completed = false,
+                        error_kind = rollback_error.kind(),
+                        "startup registration rollback failed"
+                    );
+                }
                 error!(
                     stage = "settings",
                     completed = false,
