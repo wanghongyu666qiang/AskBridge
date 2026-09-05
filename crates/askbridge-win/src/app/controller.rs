@@ -6,7 +6,7 @@ use askbridge_core::{
 };
 use tracing::{error, info, warn};
 use windows_sys::Win32::{
-    Foundation::HINSTANCE,
+    Foundation::{ERROR_ACCESS_DENIED, HINSTANCE},
     System::LibraryLoader::GetModuleHandleW,
     UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
 };
@@ -61,12 +61,18 @@ pub fn run() -> Result<()> {
     }
 
     // SAFETY: Process DPI awareness must be selected before any windows are created.
+    // The embedded manifest also declares Per-Monitor V2, in which case this call
+    // fails with ERROR_ACCESS_DENIED ("already set") and the manifest governs.
     if unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) } == 0 {
-        warn!(
-            stage = "startup",
-            completed = false,
-            "per-monitor V2 DPI awareness could not be enabled"
-        );
+        let win32_code = last_error();
+        if win32_code != ERROR_ACCESS_DENIED {
+            warn!(
+                stage = "startup",
+                completed = false,
+                win32_code,
+                "per-monitor V2 DPI awareness could not be enabled"
+            );
+        }
     }
 
     // SAFETY: A null module name requests the current process module.

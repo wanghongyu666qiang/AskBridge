@@ -195,7 +195,18 @@ impl UpdateService {
 
     pub fn launch_installer(&self, setup_path: &Path) -> Result<()> {
         validate_downloaded_setup(&self.update_root, setup_path)?;
-        verify_cached_hash(setup_path)?;
+        // Pin the file through verification and spawn so the bytes CreateProcess
+        // executes are the bytes the hash check verified (see hold_exclusive_read).
+        let pinned = hold_exclusive_read(setup_path)
+            .map_err(|source| AppError::io("pinning cached update", setup_path, source))?;
+        let expected = read_hash_record(setup_path)?;
+        let actual = hash_file_streaming(setup_path)?;
+        if !actual.eq_ignore_ascii_case(&expected) {
+            // The pin blocks deletion, so release it before cleanup.
+            drop(pinned);
+            remove_cached_setup(setup_path);
+            return Err(update_error("缓存更新安装包与校验记录不一致，请重新下载"));
+        }
         let executable = std::env::current_exe().map_err(|source| {
             update_error(format!("无法定位当前运行的 AskBridge 程序（{source}）"))
         })?;
@@ -613,6 +624,16 @@ fn validate_downloaded_setup(update_root: &Path, setup_path: &Path) -> Result<()
 /// was published. Anything that modified or replaced the file after download —
 /// corruption, another process — is rejected and removed instead of launched.
 fn verify_cached_hash(setup_path: &Path) -> Result<()> {
+    let expected = read_hash_record(setup_path)?;
+    let actual = hash_file_streaming(setup_path)?;
+    if !actual.eq_ignore_ascii_case(&expected) {
+        remove_cached_setup(setup_path);
+        return Err(update_error("缓存更新安装包与校验记录不一致，请重新下载"));
+    }
+    Ok(())
+}
+
+fn read_hash_record(setup_path: &Path) -> Result<String> {
     let Some(name) = setup_path.file_name().and_then(|name| name.to_str()) else {
         return Err(update_error("更新安装包路径不安全"));
     };
@@ -623,13 +644,29 @@ fn verify_cached_hash(setup_path: &Path) -> Result<()> {
     if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(update_error("缓存更新校验记录无效，请重新下载"));
     }
-    let actual = hash_file_streaming(setup_path)?;
-    if !actual.eq_ignore_ascii_case(expected) {
-        let _ = fs::remove_file(setup_path);
-        let _ = fs::remove_file(&hash_record);
-        return Err(update_error("缓存更新安装包与校验记录不一致，请重新下载"));
+    Ok(expected.to_owned())
+}
+
+fn remove_cached_setup(setup_path: &Path) {
+    let _ = fs::remove_file(setup_path);
+    if let Some(name) = setup_path.file_name().and_then(|name| name.to_str()) {
+        let _ = fs::remove_file(setup_path.with_file_name(format!("{name}.sha256")));
     }
-    Ok(())
+}
+
+/// Opens the setup with a handle that shares only read access. While it is
+/// held, Windows refuses other opens that request write or delete access, so
+/// the file cannot be swapped or modified between verification and launch;
+/// if another process already holds a writable handle, this open itself fails
+/// and the launch is refused.
+fn hold_exclusive_read(setup_path: &Path) -> std::io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(setup_path)
 }
 
 fn hash_file_streaming(path: &Path) -> Result<String> {
@@ -842,6 +879,22 @@ mod tests {
         // The tampered pair is removed so a retry forces a fresh download.
         assert!(!setup.exists());
         assert!(!record.exists());
+    }
+
+    #[test]
+    fn exclusive_read_pin_blocks_writers_until_released() {
+        let root = tempdir().expect("root");
+        let setup = root.path().join("AskBridge-1.2.3-Setup.exe");
+        fs::write(&setup, b"installer bytes").expect("setup");
+
+        let pin = hold_exclusive_read(&setup).expect("pin");
+        // Writers (and deleters) are refused while the pin is held, which is
+        // what keeps the verified bytes from being swapped before launch.
+        let writer = fs::OpenOptions::new().write(true).open(&setup);
+        assert!(writer.is_err(), "write access must be refused while pinned");
+        drop(pin);
+        let writer = fs::OpenOptions::new().write(true).open(&setup);
+        assert!(writer.is_ok(), "write access must work again after release");
     }
 
     #[test]
