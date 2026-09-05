@@ -63,6 +63,83 @@ pub(super) fn create_check(
     Ok(check)
 }
 
+/// Decorative group frame with a caption; create before the controls that
+/// live inside it so they paint on top of the frame.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn create_group(
+    parent: HWND,
+    instance: HINSTANCE,
+    scale: UiScale,
+    fonts: &UiFonts,
+    title: &str,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Result<HWND> {
+    let group = create_control(
+        parent,
+        instance,
+        scale,
+        "BUTTON",
+        title,
+        WS_CHILD | WS_VISIBLE | BS_GROUPBOX as u32,
+        x,
+        y,
+        width,
+        height,
+        0,
+        0,
+    )?;
+    set_font(group, fonts.label.handle());
+    Ok(group)
+}
+
+/// Single-line or multiline edit inside a flat 1px decorative frame
+/// (`CONTROL_DECORATION` static) instead of the sunken classic border.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn create_framed_edit(
+    parent: HWND,
+    instance: HINSTANCE,
+    scale: UiScale,
+    text: &str,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    extra_styles: u32,
+    id: u16,
+) -> Result<HWND> {
+    create_control(
+        parent,
+        instance,
+        scale,
+        "STATIC",
+        "",
+        WS_CHILD | WS_VISIBLE,
+        x - 1,
+        y - 1,
+        width + 2,
+        height + 2,
+        0,
+        CONTROL_DECORATION,
+    )?;
+    create_control(
+        parent,
+        instance,
+        scale,
+        "EDIT",
+        text,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32 | extra_styles,
+        x,
+        y,
+        width,
+        height,
+        0,
+        id,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn create_button(
     parent: HWND,

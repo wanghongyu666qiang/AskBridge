@@ -10,14 +10,14 @@ use windows_sys::Win32::{
     UI::{
         Controls::{BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SETLIMITTEXT, EM_SETMARGINS},
         WindowsAndMessaging::{
-            BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_OWNERDRAW,
-            CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL, CBS_DROPDOWNLIST,
-            CreateWindowExW, DefWindowProcW, DestroyWindow, EC_LEFTMARGIN, EC_RIGHTMARGIN,
-            ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN, FindWindowW,
-            GetDlgItem, GetWindowTextLengthW, IsChild, IsWindowVisible, PostMessageW, SW_HIDE,
-            SW_SHOW, SendMessageW, SetForegroundWindow, SetWindowTextW, ShowWindow, WM_CLOSE,
-            WM_COMMAND, WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_SETFONT, WS_BORDER, WS_CAPTION,
-            WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED,
+            BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_GROUPBOX,
+            BS_OWNERDRAW, CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL,
+            CBS_DROPDOWNLIST, CreateWindowExW, DefWindowProcW, DestroyWindow, EC_LEFTMARGIN,
+            EC_RIGHTMARGIN, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY,
+            ES_WANTRETURN, FindWindowW, GetDlgItem, GetWindowTextLengthW, IsChild, IsWindowVisible,
+            PostMessageW, SW_HIDE, SW_SHOW, SendMessageW, SetForegroundWindow, SetWindowTextW,
+            ShowWindow, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_SETFONT,
+            WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED,
             WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
         },
     },
@@ -67,6 +67,9 @@ pub const CONTROL_OPEN_LOGIN: u16 = 2056;
 pub const CONTROL_CHECK_PROVIDERS: u16 = 2057;
 
 const STATUS_LABEL: u16 = 2060;
+const CONTROL_SEPARATOR: u16 = 2061;
+/// Decorative frame statics behind framed edits; never looked up by ID.
+pub(super) const CONTROL_DECORATION: u16 = 2062;
 const EDIT_CAPTURE: u16 = 2101;
 const CHECK_CAPTURE: u16 = 2102;
 const EDIT_QUICK: u16 = 2103;
@@ -215,8 +218,8 @@ impl SettingsWindow {
                     | WS_TABSTOP
                     | if index == 0 { WS_GROUP } else { 0 }
                     | BS_OWNERDRAW as u32,
-                282 + index as i32 * 122,
-                34,
+                24 + index as i32 * 118,
+                62,
                 112,
                 30,
                 0,
@@ -224,6 +227,21 @@ impl SettingsWindow {
             )?;
             set_font(tab, fonts.label.handle());
         }
+
+        create_control(
+            window,
+            instance,
+            scale,
+            "STATIC",
+            "",
+            WS_CHILD | WS_VISIBLE,
+            24,
+            97,
+            792,
+            2,
+            0,
+            CONTROL_SEPARATOR,
+        )?;
 
         let hotkey_page = create_page(window, instance, scale, PAGE_HOTKEYS)?;
         let provider_page = create_page(window, instance, scale, PAGE_PROVIDERS)?;
@@ -250,9 +268,9 @@ impl SettingsWindow {
             scale,
             &fonts,
             "应用更改",
-            494,
-            604,
-            104,
+            630,
+            606,
+            108,
             CONTROL_APPLY,
         )?;
         create_button(
@@ -260,21 +278,10 @@ impl SettingsWindow {
             instance,
             scale,
             &fonts,
-            "恢复默认快捷键",
-            610,
-            604,
-            132,
-            CONTROL_RESTORE_DEFAULTS,
-        )?;
-        create_button(
-            window,
-            instance,
-            scale,
-            &fonts,
             "关闭",
-            754,
-            604,
-            64,
+            750,
+            606,
+            66,
             CONTROL_CLOSE,
         )?;
         let status = create_control(
@@ -285,8 +292,8 @@ impl SettingsWindow {
             "准备就绪。所有设置在校验后统一应用。",
             WS_CHILD | WS_VISIBLE,
             24,
-            660,
-            794,
+            612,
+            580,
             28,
             0,
             STATUS_LABEL,

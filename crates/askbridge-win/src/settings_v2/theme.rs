@@ -1,4 +1,4 @@
-use std::ffi::c_void;
+use std::{ffi::c_void, sync::OnceLock};
 
 use askbridge_core::{AppError, Result};
 use windows_sys::Win32::{
@@ -22,9 +22,9 @@ use windows_sys::Win32::{
 use crate::util::{last_error, wide};
 
 use super::{
-    CONTROL_APPLY, CONTROL_OPEN_BROWSER, CONTROL_OPEN_LOGIN, PAGE_BROWSER, PAGE_GENERAL,
-    PAGE_HOTKEYS, PAGE_PROVIDERS, STATUS_LABEL, SUBTITLE_LABEL, TAB_BROWSER, TAB_GENERAL,
-    TAB_HOTKEYS, TAB_PROVIDERS,
+    CONTROL_APPLY, CONTROL_DECORATION, CONTROL_OPEN_BROWSER, CONTROL_OPEN_LOGIN, CONTROL_SEPARATOR,
+    PAGE_BROWSER, PAGE_GENERAL, PAGE_HOTKEYS, PAGE_PROVIDERS, STATUS_LABEL, SUBTITLE_LABEL,
+    TAB_BROWSER, TAB_GENERAL, TAB_HOTKEYS, TAB_PROVIDERS,
 };
 
 // Neutral grays and the orange accent reuse the capture toolbar's palette
@@ -276,11 +276,22 @@ pub(super) fn static_control_color(window: HWND, device_context: *mut c_void) ->
     unsafe {
         SetBkMode(device_context, TRANSPARENT as i32);
         let id = GetDlgCtrlID(window);
-        let color = match id as u16 {
-            SUBTITLE_LABEL | STATUS_LABEL => COLOR_MUTED,
-            _ => COLOR_TEXT,
-        };
-        SetTextColor(device_context, color);
+        match id as u16 {
+            SUBTITLE_LABEL | STATUS_LABEL => {
+                SetTextColor(device_context, COLOR_MUTED);
+            }
+            CONTROL_DECORATION | CONTROL_SEPARATOR => {
+                // Paint decorative frames and separators with the border
+                // color; the brush is process-cached like the system ones.
+                static BORDER_BRUSH: OnceLock<usize> = OnceLock::new();
+                let brush = *BORDER_BRUSH.get_or_init(|| CreateSolidBrush(COLOR_BORDER) as usize)
+                    as *mut c_void;
+                return brush as LRESULT;
+            }
+            _ => {
+                SetTextColor(device_context, COLOR_TEXT);
+            }
+        }
         GetSysColorBrush(COLOR_WINDOW) as LRESULT
     }
 }
