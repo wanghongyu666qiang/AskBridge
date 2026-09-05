@@ -1,4 +1,5 @@
 use super::controls::*;
+use super::theme::{UiFonts, UiScale};
 use super::*;
 
 pub(super) fn create_page(
