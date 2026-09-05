@@ -184,7 +184,7 @@ impl SettingsWindow {
             instance,
             scale,
             "STATIC",
-            "轻量问答路由设置",
+            "截图问答 · 本机设置",
             WS_CHILD | WS_VISIBLE,
             24,
             50,
@@ -214,7 +214,7 @@ impl SettingsWindow {
                     | WS_VISIBLE
                     | WS_TABSTOP
                     | if index == 0 { WS_GROUP } else { 0 }
-                    | BS_AUTORADIOBUTTON as u32,
+                    | BS_OWNERDRAW as u32,
                 282 + index as i32 * 122,
                 34,
                 112,

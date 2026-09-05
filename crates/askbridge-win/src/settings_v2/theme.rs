@@ -12,24 +12,31 @@ use windows_sys::Win32::{
     UI::{
         Controls::{DRAWITEMSTRUCT, ODS_DISABLED, ODS_SELECTED},
         HiDpi::GetDpiForSystem,
-        WindowsAndMessaging::{GetDlgCtrlID, GetWindowTextW, SendMessageW, WM_GETFONT},
+        WindowsAndMessaging::{
+            GetDlgCtrlID, GetDlgItem, GetParent, GetWindowTextW, IsWindowVisible, SendMessageW,
+            WM_GETFONT,
+        },
     },
 };
 
 use crate::util::{last_error, wide};
 
 use super::{
-    CONTROL_APPLY, CONTROL_OPEN_BROWSER, CONTROL_OPEN_LOGIN, STATUS_LABEL, SUBTITLE_LABEL,
+    CONTROL_APPLY, CONTROL_OPEN_BROWSER, CONTROL_OPEN_LOGIN, PAGE_BROWSER, PAGE_GENERAL,
+    PAGE_HOTKEYS, PAGE_PROVIDERS, STATUS_LABEL, SUBTITLE_LABEL, TAB_BROWSER, TAB_GENERAL,
+    TAB_HOTKEYS, TAB_PROVIDERS,
 };
 
-const COLOR_TEXT: COLORREF = rgb(30, 41, 59);
-const COLOR_MUTED: COLORREF = rgb(100, 116, 139);
-const COLOR_ACCENT: COLORREF = rgb(37, 99, 235);
-const COLOR_ACCENT_PRESSED: COLORREF = rgb(29, 78, 216);
-const COLOR_SECONDARY: COLORREF = rgb(241, 245, 249);
-const COLOR_SECONDARY_PRESSED: COLORREF = rgb(226, 232, 240);
-const COLOR_BORDER: COLORREF = rgb(203, 213, 225);
-const COLOR_DISABLED: COLORREF = rgb(148, 163, 184);
+// Neutral grays and the orange accent reuse the capture toolbar's palette
+// (see capture/toolbar_html.rs) so both windows read as one product.
+const COLOR_TEXT: COLORREF = rgb(28, 28, 31);
+const COLOR_MUTED: COLORREF = rgb(75, 75, 80);
+const COLOR_ACCENT: COLORREF = rgb(153, 60, 29);
+const COLOR_ACCENT_PRESSED: COLORREF = rgb(140, 52, 25);
+const COLOR_SECONDARY: COLORREF = rgb(245, 245, 247);
+const COLOR_SECONDARY_PRESSED: COLORREF = rgb(235, 235, 238);
+const COLOR_BORDER: COLORREF = rgb(204, 204, 208);
+const COLOR_DISABLED: COLORREF = rgb(150, 150, 155);
 const COLOR_WHITE: COLORREF = rgb(255, 255, 255);
 
 const fn rgb(red: u8, green: u8, blue: u8) -> COLORREF {
@@ -123,6 +130,9 @@ impl UiFonts {
 }
 
 pub(super) fn draw_owner_button(item: &DRAWITEMSTRUCT) -> LRESULT {
+    if (TAB_HOTKEYS as u32..=TAB_GENERAL as u32).contains(&item.CtlID) {
+        return draw_tab(item);
+    }
     let primary = item.CtlID == CONTROL_APPLY as u32
         || item.CtlID == CONTROL_OPEN_BROWSER as u32
         || item.CtlID == CONTROL_OPEN_LOGIN as u32;
@@ -188,6 +198,77 @@ pub(super) fn draw_owner_button(item: &DRAWITEMSTRUCT) -> LRESULT {
         }
     }
     1
+}
+
+/// Page tabs are owner-drawn so the strip reads as tabs instead of native
+/// radio buttons. Selection state is derived from the paired page's
+/// visibility, which `switch_page` keeps in sync.
+fn draw_tab(item: &DRAWITEMSTRUCT) -> LRESULT {
+    let parent = unsafe { GetParent(item.hwndItem) };
+    let page = if parent.is_null() {
+        std::ptr::null_mut()
+    } else {
+        unsafe { GetDlgItem(parent, i32::from(page_for_tab(item.CtlID))) }
+    };
+    let selected = !page.is_null() && unsafe { IsWindowVisible(page) != 0 };
+    let text_color = if selected { COLOR_ACCENT } else { COLOR_MUTED };
+
+    // SAFETY: item contains the valid HDC and RECT supplied by WM_DRAWITEM.
+    unsafe {
+        let background = CreateSolidBrush(COLOR_WHITE);
+        if !background.is_null() {
+            FillRect(item.hDC, &item.rcItem, background);
+            DeleteObject(background);
+        }
+        if selected {
+            let mut underline = item.rcItem;
+            underline.top = underline.bottom - 3;
+            let accent = CreateSolidBrush(COLOR_ACCENT);
+            if !accent.is_null() {
+                FillRect(item.hDC, &underline, accent);
+                DeleteObject(accent);
+            }
+        }
+
+        SetBkMode(item.hDC, TRANSPARENT as i32);
+        SetTextColor(item.hDC, text_color);
+
+        let font = SendMessageW(item.hwndItem, WM_GETFONT, 0, 0) as *mut c_void;
+        let previous_font = if font.is_null() {
+            std::ptr::null_mut()
+        } else {
+            SelectObject(item.hDC, font)
+        };
+        let mut text = [0_u16; 96];
+        let copied = GetWindowTextW(item.hwndItem, text.as_mut_ptr(), text.len() as i32);
+        let mut text_rect: RECT = item.rcItem;
+        if selected {
+            text_rect.bottom -= 3;
+        }
+        DrawTextW(
+            item.hDC,
+            text.as_ptr(),
+            copied,
+            &mut text_rect,
+            0x0000_0001 | 0x0000_0004 | 0x0000_0020,
+        );
+        if !previous_font.is_null() {
+            SelectObject(item.hDC, previous_font);
+        }
+    }
+    1
+}
+
+fn page_for_tab(tab_id: u32) -> u16 {
+    if tab_id == TAB_HOTKEYS as u32 {
+        PAGE_HOTKEYS
+    } else if tab_id == TAB_PROVIDERS as u32 {
+        PAGE_PROVIDERS
+    } else if tab_id == TAB_BROWSER as u32 {
+        PAGE_BROWSER
+    } else {
+        PAGE_GENERAL
+    }
 }
 
 pub(super) fn static_control_color(window: HWND, device_context: *mut c_void) -> LRESULT {

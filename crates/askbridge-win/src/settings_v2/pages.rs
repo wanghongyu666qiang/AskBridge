@@ -135,7 +135,7 @@ pub(super) fn create_provider_page(
         page,
         instance,
         scale,
-        "内置供应商（修改入口时会把匹配边界收敛到同一 HTTPS 域名）",
+        "内置供应商（入口只匹配同一 HTTPS 域名）",
         12,
         48,
         710,
