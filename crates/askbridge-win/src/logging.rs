@@ -159,7 +159,23 @@ mod tests {
                 include_str!("adapter/rules_update.rs"),
             ),
             ("app icon", include_str!("app_icon.rs")),
-            ("browser worker", include_str!("browser/worker.rs")),
+            ("browser worker", include_str!("browser/worker/mod.rs")),
+            (
+                "browser worker jobs",
+                include_str!("browser/worker/jobs.rs"),
+            ),
+            (
+                "browser worker service",
+                include_str!("browser/worker/service.rs"),
+            ),
+            (
+                "browser worker prepare",
+                include_str!("browser/worker/prepare.rs"),
+            ),
+            (
+                "browser worker paste",
+                include_str!("browser/worker/paste.rs"),
+            ),
             ("CDP", include_str!("browser/cdp.rs")),
             ("Chrome", include_str!("browser/chrome.rs")),
             ("clipboard image", include_str!("clipboard_image.rs")),
@@ -175,10 +191,7 @@ mod tests {
                 include_str!("paste_mode/discover.rs"),
             ),
             ("paste mode focus", include_str!("paste_mode/focus.rs")),
-            (
-                "paste mode receipt",
-                include_str!("paste_mode/receipt.rs"),
-            ),
+            ("paste mode receipt", include_str!("paste_mode/receipt.rs")),
             (
                 "paste mode keystroke",
                 include_str!("paste_mode/keystroke.rs"),

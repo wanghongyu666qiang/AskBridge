@@ -8,7 +8,7 @@ use windows_sys::Win32::{
     System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize},
     UI::{
         Input::KeyboardAndMouse::{
-            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, keybd_event, VK_CONTROL,
+            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, keybd_event,
         },
         Shell::ShellExecuteW,
     },

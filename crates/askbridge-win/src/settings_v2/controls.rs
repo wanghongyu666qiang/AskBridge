@@ -3,8 +3,8 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::GetWindowTextW,
 };
 
-use super::*;
 use super::theme::UiScale;
+use super::*;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn create_label(

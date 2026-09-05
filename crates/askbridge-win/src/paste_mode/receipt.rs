@@ -14,7 +14,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::GetWindowRect,
 };
 
-use super::{S_FALSE, S_OK, RPC_E_CHANGED_MODE};
+use super::{RPC_E_CHANGED_MODE, S_FALSE, S_OK};
 
 const PASTE_RECEIPT_PROBE_INTERVAL: Duration = Duration::from_millis(50);
 

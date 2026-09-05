@@ -29,11 +29,7 @@ pub(super) fn download_release(
         std::str::from_utf8(&signature).map_err(|_| update_error("更新签名不是 UTF-8 文本"))?;
     let checksum_source = get_https(&release.checksum_url, MAX_CHECKSUM_BYTES)?;
     // The signature is verified before the checksum file is trusted at all.
-    verify_checksum_signature(
-        &checksum_source,
-        signature_text,
-        RELEASE_SIGNING_PUBLIC_KEY,
-    )?;
+    verify_checksum_signature(&checksum_source, signature_text, RELEASE_SIGNING_PUBLIC_KEY)?;
     let checksum_text = std::str::from_utf8(&checksum_source)
         .map_err(|_| update_error("SHA256SUMS 不是 UTF-8 文本"))?;
     let expected_hash = expected_checksum(checksum_text, &release.setup_name)?;
@@ -185,8 +181,8 @@ fn should_report_progress(received: u64, last_reported: u64, total: u64) -> bool
 mod tests {
     use tempfile::tempdir;
 
-    use crate::update::verify::validate_downloaded_setup;
     use super::*;
+    use crate::update::verify::validate_downloaded_setup;
 
     fn test_hash(bytes: &[u8]) -> String {
         let mut hasher = Sha256Stream::new();

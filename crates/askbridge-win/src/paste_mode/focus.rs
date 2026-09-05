@@ -21,7 +21,7 @@ use windows_sys::Win32::{
 };
 
 use super::keystroke::keyboard_input;
-use super::{S_FALSE, S_OK, RPC_E_CHANGED_MODE};
+use super::{RPC_E_CHANGED_MODE, S_FALSE, S_OK};
 
 /// Time allowed for the target window to actually take the foreground.
 const FOCUS_SETTLE: Duration = Duration::from_millis(200);
