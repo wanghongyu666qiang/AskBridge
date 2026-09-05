@@ -18,7 +18,7 @@ pub(super) fn create_page(
         24,
         126,
         794,
-        456,
+        472,
         0,
         id,
     )
