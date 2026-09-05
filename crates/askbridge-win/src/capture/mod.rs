@@ -2,6 +2,7 @@ pub(crate) mod encoder;
 mod monitor;
 mod overlay;
 pub(crate) mod screen;
+mod toolbar_html;
 mod toolbar_webview;
 
 use askbridge_core::{CapturedImage, Result};
