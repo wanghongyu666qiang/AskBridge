@@ -29,6 +29,8 @@ cargo build --workspace --release --locked --offline
 
 调试程序位于 `target/debug/askbridge.exe`。源码开发环境下数据目录自动解析为仓库根目录的 `data`。
 
+架构分层、crate 边界和各模块职责见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，改动前建议先读一遍，避免破坏 core 与 win 平台层的隔离。
+
 ## 提交与 PR 约定
 
 - 一个提交只做一件事，避免上千行的混合提交。
@@ -58,3 +60,5 @@ cargo deny check
 ## 报告问题
 
 提交 Bug 请使用 Issue 模板，尽量附上 `data/logs` 中的相关日志片段（AskBridge 不记录问题原文和截图内容，但贴日志前仍建议自行确认无敏感信息）。功能建议请说明使用场景，而不是只提实现方案。
+
+安全漏洞不要使用公开 Issue，请按 [SECURITY.md](SECURITY.md) 描述的渠道私下报告。

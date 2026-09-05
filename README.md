@@ -10,6 +10,8 @@ AskBridge 是一个 Windows 截图问答工具。框选屏幕内容后，可以�
 
 ## 下载与打开
 
+AskBridge 需要 64 位 Windows 10 或更高版本，以及 Microsoft Edge WebView2 Runtime（Windows 10/11 通常已内置；界面文字目前为简体中文）。
+
 1. 前往 [GitHub Releases](https://github.com/wanghongyu666qiang/AskBridge/releases) 下载最新版 `AskBridge-版本号-Setup.exe`。
 2. 双击安装程序，在安装窗口中选择一个独立的安装目录，并按需选择桌面快捷方式、开始菜单快捷方式和登录后自动启动。安装器不会默认选择 C 盘目录。
 3. 点击“安装”完成安装，然后通过所选快捷方式运行 AskBridge。程序启动后常驻 Windows 托盘，右键托盘图标可以打开设置或退出。
@@ -61,7 +63,7 @@ ChatGPT 可以在“设置 > 浏览器”中选择四种打开方式：
 
 配置、日志、专用浏览器资料和更新缓存分别位于 `data/config.json`、`data/logs`、`data/BrowserProfile` 和 `data/Updates`。网页上传使用的临时截图会为异步读取保留最多 10 分钟后删除；程序异常退出遗留的临时文件和已使用或遗留的更新安装包会在后续启动时清理。
 
-更多信息见 [隐私说明](docs/PRIVACY.md) 和 [故障排查](docs/TROUBLESHOOTING.md)。
+更多信息见 [隐私说明](docs/PRIVACY.md)、[故障排查](docs/TROUBLESHOOTING.md)、[安全策略](SECURITY.md) 和[更新日志](CHANGELOG.md)。
 
 ## 开发
 
