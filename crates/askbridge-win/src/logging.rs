@@ -125,6 +125,10 @@ impl Write for LockedWriter {
 mod tests {
     use super::*;
 
+    // Generated at build time from every file under `src`; see the privacy
+    // guard below for why the whole tree is scanned.
+    include!(concat!(env!("OUT_DIR"), "/runtime_sources.rs"));
+
     #[test]
     fn small_log_is_preserved() {
         let directory = tempfile::tempdir().expect("temporary log directory");
@@ -139,68 +143,11 @@ mod tests {
 
     #[test]
     fn privacy_forbidden_fields_are_absent_from_runtime_tracing_calls() {
-        let sources = [
-            ("app controller", include_str!("app/controller.rs")),
-            ("app capture", include_str!("app/capture_flow.rs")),
-            ("app commands", include_str!("app/commands.rs")),
-            ("app dispatch", include_str!("app/dispatch_flow.rs")),
-            ("app errors", include_str!("app/error_handler.rs")),
-            ("app events", include_str!("app/events.rs")),
-            ("app tray", include_str!("tray.rs")),
-            ("app update flow", include_str!("app/update_flow.rs")),
-            ("adapter generic", include_str!("adapter/generic.rs")),
-            ("adapter JavaScript", include_str!("adapter/javascript.rs")),
-            (
-                "adapter provider health",
-                include_str!("adapter/provider_health.rs"),
-            ),
-            (
-                "adapter rules update",
-                include_str!("adapter/rules_update.rs"),
-            ),
-            ("app icon", include_str!("app_icon.rs")),
-            ("browser worker", include_str!("browser/worker/mod.rs")),
-            (
-                "browser worker jobs",
-                include_str!("browser/worker/jobs.rs"),
-            ),
-            (
-                "browser worker service",
-                include_str!("browser/worker/service.rs"),
-            ),
-            (
-                "browser worker prepare",
-                include_str!("browser/worker/prepare.rs"),
-            ),
-            (
-                "browser worker paste",
-                include_str!("browser/worker/paste.rs"),
-            ),
-            ("CDP", include_str!("browser/cdp.rs")),
-            ("Chrome", include_str!("browser/chrome.rs")),
-            ("clipboard image", include_str!("clipboard_image.rs")),
-            ("capture mod", include_str!("capture/mod.rs")),
-            (
-                "overlay session",
-                include_str!("capture/overlay/session.rs"),
-            ),
-            ("main", include_str!("main.rs")),
-            ("paste mode", include_str!("paste_mode/mod.rs")),
-            (
-                "paste mode discovery",
-                include_str!("paste_mode/discover.rs"),
-            ),
-            ("paste mode focus", include_str!("paste_mode/focus.rs")),
-            ("paste mode receipt", include_str!("paste_mode/receipt.rs")),
-            (
-                "paste mode keystroke",
-                include_str!("paste_mode/keystroke.rs"),
-            ),
-            ("settings", include_str!("settings_v2/mod.rs")),
-            ("single instance", include_str!("single_instance.rs")),
-            ("startup", include_str!("startup.rs")),
-            ("update service", include_str!("update/mod.rs")),
-        ];
+        // The manifest above is generated from every file under `src`, so new
+        // modules join this guard automatically instead of relying on a
+        // hand-maintained file list. The guard module itself is excluded: it
+        // carries no runtime tracing calls and its fixtures quote forbidden
+        // shapes verbatim.
         let forbidden_fields = [
             "prompt",
             "clipboard",
@@ -210,11 +157,14 @@ mod tests {
             "debug_port",
             "error",
         ];
-        for (module, source) in sources {
+        for (path, source) in RUNTIME_SOURCES.iter() {
+            if path.ends_with("logging.rs") {
+                continue;
+            }
             for field in forbidden_fields {
                 assert!(
                     !contains_forbidden_logging_field(source, field),
-                    "{module} logs a value into the privacy-sensitive field {field}"
+                    "{path} logs a value into the privacy-sensitive field {field}"
                 );
             }
         }

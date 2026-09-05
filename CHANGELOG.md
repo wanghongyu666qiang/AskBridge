@@ -11,6 +11,10 @@
 
 ### 工程
 
+- 状态机回滚、开机启动项回滚和缓存安装包校验失败现在会记录 warning 日志；托盘"重试安装"失败时不再丢失具体原因。
+- 可选的远程供应商规则通道在获取、解析、缓存任一环节失败时分别记录原因。
+- 构建脚本支持用 `ASKBRIDGE_WEBVIEW2LOADER_PATH` 指定 WebView2Loader.dll；找不到时明确提示运行时后果与解决办法。
+- 日志隐私守卫改为构建时自动扫描 `src` 下全部源码文件，新模块自动纳入检查。
 - 新增 `SECURITY.md` 安全策略（含签名密钥泄漏应急预案）与 `CHANGELOG.md` 更新日志。
 - CI 新增 PowerShell 脚本语法检查、测试覆盖率汇总、每周定时依赖安全扫描，并引入 Dependabot 自动更新 Rust 依赖与 GitHub Actions。
 
