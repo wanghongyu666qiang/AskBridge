@@ -7,6 +7,10 @@ on:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
+  # Weekly run: lets cargo-deny pick up advisories and yanked crates published
+  # after the last push, and catches dependency drift while the tree is quiet.
+  schedule:
+    - cron: "0 1 * * 1"
 
 permissions:
   contents: read
@@ -29,6 +33,11 @@ jobs:
       - name: Check out repository
         # actions/checkout v4
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # Fails fast before any toolchain work; the release acceptance re-runs it.
+      - name: Check PowerShell script syntax
+        shell: pwsh
+        run: ./scripts/test-powershell-syntax.ps1
 
       # Use the native MSVC toolchain supplied by the Windows runner. The
       # project still supports GNU locally (build.rs handles windres), but a
@@ -60,6 +69,20 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --locked
+
+      # Summary-only: coverage numbers stay in the CI log; there is no
+      # third-party upload, matching the project's no-telemetry stance.
+      - name: Add coverage runtime component
+        run: rustup component add llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        # taiki-e/install-action v2
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Generate coverage summary
+        run: cargo llvm-cov --workspace --locked --summary-only
 
       - name: Build release workspace
         run: cargo build --workspace --release --locked
