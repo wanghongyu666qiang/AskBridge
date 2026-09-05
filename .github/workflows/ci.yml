@@ -32,7 +32,7 @@ jobs:
     steps:
       - name: Check out repository
         # actions/checkout v4
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       # Fails fast before any toolchain work; the release acceptance re-runs it.
       - name: Check PowerShell script syntax
@@ -95,7 +95,7 @@ jobs:
     steps:
       - name: Check out repository
         # actions/checkout v4
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Install Rust GNU toolchain
         # dtolnay/rust-toolchain, stable branch
@@ -130,7 +130,7 @@ jobs:
     steps:
       - name: Check out repository
         # actions/checkout v4
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Install Rust 1.88
         # dtolnay/rust-toolchain, stable branch
@@ -154,7 +154,7 @@ jobs:
     steps:
       - name: Check out repository
         # actions/checkout v4
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Run cargo-deny
         # EmbarkStudios/cargo-deny-action v2
