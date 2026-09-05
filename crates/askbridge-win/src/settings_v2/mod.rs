@@ -7,18 +7,19 @@ use askbridge_core::{
 use tracing::error;
 use windows_sys::Win32::{
     Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+    Graphics::Gdi::InvalidateRect,
     UI::{
         Controls::{BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SETLIMITTEXT, EM_SETMARGINS},
         WindowsAndMessaging::{
-            BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_GROUPBOX,
-            BS_OWNERDRAW, CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL,
-            CBS_DROPDOWNLIST, CreateWindowExW, DefWindowProcW, DestroyWindow, EC_LEFTMARGIN,
-            EC_RIGHTMARGIN, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY,
-            ES_WANTRETURN, FindWindowW, GetDlgItem, GetWindowTextLengthW, IsChild, IsWindowVisible,
-            PostMessageW, SW_HIDE, SW_SHOW, SendMessageW, SetForegroundWindow, SetWindowTextW,
-            ShowWindow, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_SETFONT,
-            WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED,
-            WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+            BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_OWNERDRAW,
+            CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL, CBS_DROPDOWNLIST,
+            CreateWindowExW, DefWindowProcW, DestroyWindow, EC_LEFTMARGIN, EC_RIGHTMARGIN,
+            ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN, FindWindowW,
+            GetDlgItem, GetWindowTextLengthW, IsChild, IsWindowVisible, PostMessageW, SW_HIDE,
+            SW_SHOW, SendMessageW, SetForegroundWindow, SetWindowTextW, ShowWindow, WM_CLOSE,
+            WM_COMMAND, WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_SETFONT, WS_CAPTION, WS_CHILD,
+            WS_CLIPCHILDREN, WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP,
+            WS_VISIBLE, WS_VSCROLL,
         },
     },
 };
@@ -606,6 +607,11 @@ fn switch_page(window: HWND, page: u16) {
         let tab = unsafe { GetDlgItem(window, i32::from(tab_id)) };
         if !tab.is_null() {
             set_checked(tab, page_id == page);
+            // Owner-drawn tabs have no check glyph to update; force a repaint
+            // so the previously selected tab drops its accent underline.
+            unsafe {
+                InvalidateRect(tab, std::ptr::null(), 1);
+            }
         }
     }
 }
@@ -632,16 +638,10 @@ pub unsafe extern "system" fn settings_window_proc(
             };
             if let Some(page) = page {
                 switch_page(window, page);
-                if command != TAB_PROVIDERS {
-                    return 0;
-                }
+                return 0;
             }
-            let forwarded_wparam = if command == TAB_PROVIDERS {
-                CONTROL_CHECK_PROVIDERS as WPARAM
-            } else {
-                wparam
-            };
-            let forwarded_lparam = if command == TAB_PROVIDERS { 0 } else { lparam };
+            let forwarded_wparam = wparam;
+            let forwarded_lparam = lparam;
             let class = wide(MAIN_WINDOW_CLASS);
             let title = wide(MAIN_WINDOW_TITLE);
             // SAFETY: Both search strings are valid nul-terminated UTF-16 buffers.

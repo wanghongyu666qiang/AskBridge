@@ -63,40 +63,48 @@ pub(super) fn create_check(
     Ok(check)
 }
 
-/// Decorative group frame with a caption; create before the controls that
-/// live inside it so they paint on top of the frame.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn create_group(
+/// Section header: a caption plus a full-width hairline. Children are laid
+/// out in plain page coordinates below it, so no origin math is needed.
+pub(super) fn create_section(
     parent: HWND,
     instance: HINSTANCE,
     scale: UiScale,
     fonts: &UiFonts,
     title: &str,
-    x: i32,
     y: i32,
-    width: i32,
-    height: i32,
-) -> Result<HWND> {
-    let group = create_control(
+) -> Result<()> {
+    let label = create_control(
         parent,
         instance,
         scale,
-        "BUTTON",
+        "STATIC",
         title,
-        WS_CHILD | WS_VISIBLE | BS_GROUPBOX as u32,
-        x,
+        WS_CHILD | WS_VISIBLE,
+        12,
         y,
-        width,
-        height,
+        500,
+        28,
         0,
         0,
     )?;
-    set_font(group, fonts.label.handle());
-    Ok(group)
+    set_font(label, fonts.label.handle());
+    create_control(
+        parent,
+        instance,
+        scale,
+        "STATIC",
+        "",
+        WS_CHILD | WS_VISIBLE,
+        12,
+        y + 30,
+        770,
+        2,
+        0,
+        CONTROL_DECORATION,
+    )?;
+    Ok(())
 }
 
-/// Single-line or multiline edit inside a flat 1px decorative frame
-/// (`CONTROL_DECORATION` static) instead of the sunken classic border.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn create_framed_edit(
     parent: HWND,
