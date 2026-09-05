@@ -169,7 +169,20 @@ mod tests {
                 include_str!("capture/overlay/session.rs"),
             ),
             ("main", include_str!("main.rs")),
-            ("paste mode", include_str!("paste_mode.rs")),
+            ("paste mode", include_str!("paste_mode/mod.rs")),
+            (
+                "paste mode discovery",
+                include_str!("paste_mode/discover.rs"),
+            ),
+            ("paste mode focus", include_str!("paste_mode/focus.rs")),
+            (
+                "paste mode receipt",
+                include_str!("paste_mode/receipt.rs"),
+            ),
+            (
+                "paste mode keystroke",
+                include_str!("paste_mode/keystroke.rs"),
+            ),
             ("settings", include_str!("settings_v2/mod.rs")),
             ("single instance", include_str!("single_instance.rs")),
             ("startup", include_str!("startup.rs")),
