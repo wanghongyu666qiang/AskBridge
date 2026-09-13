@@ -20,7 +20,7 @@ use super::primitives::{
     fill, frame,
 };
 use super::toolbar::draw_toolbar;
-use super::{COLOR_BORDER, COLOR_KEY, COLOR_OVERLAY, OVERLAY_ALPHA};
+use super::{COLOR_ACCENT_BRIGHT, COLOR_KEY, COLOR_OVERLAY, OVERLAY_ALPHA};
 
 pub(in crate::capture::overlay) fn paint_overlay(
     window: HWND,
@@ -125,11 +125,11 @@ unsafe fn draw_overlay_frame(
                     draw_selection_frame_antialiased(gdi, &selection_rect);
                     super::primitives::draw_selection_handles_antialiased(gdi, &selection_rect);
                 } else {
-                    frame(device_context, &selection_rect, COLOR_BORDER, cache);
+                    frame(device_context, &selection_rect, COLOR_ACCENT_BRIGHT, cache);
                     draw_selection_handles(device_context, &selection_rect, gdi, cache);
                 }
             } else {
-                frame(device_context, &selection_rect, COLOR_BORDER, cache);
+                frame(device_context, &selection_rect, COLOR_ACCENT_BRIGHT, cache);
                 draw_selection_handles(device_context, &selection_rect, gdi, cache);
             }
             draw_size_label(
@@ -145,7 +145,7 @@ unsafe fn draw_overlay_frame(
             }
         }
         if !inputs.locked {
-            draw_instructions(device_context, client, cache);
+            draw_instructions(device_context, client, cache, gdi);
         }
     }
 }

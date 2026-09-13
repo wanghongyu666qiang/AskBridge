@@ -35,7 +35,13 @@ mod pages;
 mod provider_config;
 mod theme;
 
-use theme::{UiFonts, UiScale, draw_owner_button, static_control_color};
+use theme::{UiFonts, UiScale, draw_owner_button, install_hover_tracking, static_control_color};
+
+/// The settings window background; the app controller registers the class
+/// with this color so pages, labels, and the window frame share one surface.
+pub const fn window_background_color() -> windows_sys::Win32::Foundation::COLORREF {
+    theme::COLOR_WINDOW_BG
+}
 
 use controls::{
     combo_add, combo_reset, combo_select, combo_selection, create_button, create_control, get_text,
@@ -71,6 +77,8 @@ const STATUS_LABEL: u16 = 2060;
 const CONTROL_SEPARATOR: u16 = 2061;
 /// Decorative frame statics behind framed edits; never looked up by ID.
 pub(super) const CONTROL_DECORATION: u16 = 2062;
+/// Secondary description text rendered in the muted color and small font.
+const DESC_LABEL: u16 = 2063;
 const EDIT_CAPTURE: u16 = 2101;
 const CHECK_CAPTURE: u16 = 2102;
 const EDIT_QUICK: u16 = 2103;
@@ -227,6 +235,7 @@ impl SettingsWindow {
                 id,
             )?;
             set_font(tab, fonts.label.handle());
+            install_hover_tracking(tab);
         }
 
         create_control(

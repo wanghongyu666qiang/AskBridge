@@ -17,8 +17,8 @@ use crate::util::wide;
 use super::super::gdiplus::GdiPlusSession;
 use super::cache::PaintCache;
 use super::{
-    ARGB_BORDER, ARGB_LABEL, ARGB_TOOLBAR_BORDER, COLOR_BORDER, COLOR_LABEL, COLOR_TOOLBAR_BORDER,
-    HANDLE_RADIUS,
+    ARGB_ACCENT_BRIGHT, ARGB_BORDER, ARGB_LABEL, ARGB_LABEL_BORDER, COLOR_ACCENT_BRIGHT,
+    COLOR_BORDER, COLOR_LABEL, COLOR_LABEL_BORDER, HANDLE_RADIUS,
 };
 
 pub(super) unsafe fn draw_text_in_rect(
@@ -184,7 +184,7 @@ pub(super) unsafe fn draw_selection_handles(
                 x + HANDLE_RADIUS,
                 y + HANDLE_RADIUS,
                 COLOR_BORDER,
-                COLOR_TOOLBAR_BORDER,
+                COLOR_ACCENT_BRIGHT,
                 cache,
             );
         }
@@ -192,14 +192,14 @@ pub(super) unsafe fn draw_selection_handles(
 }
 
 pub(super) fn draw_selection_frame_antialiased(gdi: &GdiPlusSession, rect: &RECT) {
-    let left = rect.left as f32 + 0.5;
-    let top = rect.top as f32 + 0.5;
-    let right = rect.right as f32 - 0.5;
-    let bottom = rect.bottom as f32 - 0.5;
-    gdi.line(left, top, right, top, ARGB_BORDER, 1.2);
-    gdi.line(right, top, right, bottom, ARGB_BORDER, 1.2);
-    gdi.line(right, bottom, left, bottom, ARGB_BORDER, 1.2);
-    gdi.line(left, bottom, left, top, ARGB_BORDER, 1.2);
+    let left = rect.left as f32 + 1.0;
+    let top = rect.top as f32 + 1.0;
+    let right = rect.right as f32 - 1.0;
+    let bottom = rect.bottom as f32 - 1.0;
+    gdi.line(left, top, right, top, ARGB_ACCENT_BRIGHT, 2.0);
+    gdi.line(right, top, right, bottom, ARGB_ACCENT_BRIGHT, 2.0);
+    gdi.line(right, bottom, left, bottom, ARGB_ACCENT_BRIGHT, 2.0);
+    gdi.line(left, bottom, left, top, ARGB_ACCENT_BRIGHT, 2.0);
 }
 
 pub(super) fn draw_selection_handles_antialiased(gdi: &GdiPlusSession, rect: &RECT) {
@@ -210,8 +210,8 @@ pub(super) fn draw_selection_handles_antialiased(gdi: &GdiPlusSession, rect: &RE
             (HANDLE_RADIUS * 2) as f32,
             (HANDLE_RADIUS * 2) as f32,
             ARGB_BORDER,
-            ARGB_TOOLBAR_BORDER,
-            1.0,
+            ARGB_ACCENT_BRIGHT,
+            1.4,
         );
     }
 }
@@ -243,9 +243,16 @@ pub(super) unsafe fn draw_size_label(
     // SAFETY: device_context and label_rect are valid for the current paint.
     unsafe {
         if let Some(gdi) = gdi {
-            gdi.rounded_rect_rect(&label_rect, 5.0, ARGB_LABEL, ARGB_LABEL, 1.0);
+            gdi.rounded_rect_rect(&label_rect, 8.0, ARGB_LABEL, ARGB_LABEL_BORDER, 1.0);
         } else {
-            fill(device_context, &label_rect, COLOR_LABEL, cache);
+            rounded_rect(
+                device_context,
+                &label_rect,
+                COLOR_LABEL,
+                COLOR_LABEL_BORDER,
+                16,
+                cache,
+            );
         }
         SetBkMode(device_context, TRANSPARENT as i32);
         SetTextColor(device_context, COLOR_BORDER);
@@ -267,6 +274,7 @@ pub(super) unsafe fn draw_instructions(
     device_context: *mut core::ffi::c_void,
     client: &RECT,
     cache: &mut PaintCache,
+    gdi: Option<&GdiPlusSession>,
 ) {
     let width = 300.min(client.right - client.left);
     let mut rect = RECT {
@@ -277,7 +285,18 @@ pub(super) unsafe fn draw_instructions(
     };
     // SAFETY: device_context and rect are valid for the current paint.
     unsafe {
-        fill(device_context, &rect, COLOR_LABEL, cache);
+        if let Some(gdi) = gdi {
+            gdi.rounded_rect_rect(&rect, 18.0, ARGB_LABEL, ARGB_LABEL_BORDER, 1.0);
+        } else {
+            rounded_rect(
+                device_context,
+                &rect,
+                COLOR_LABEL,
+                COLOR_LABEL_BORDER,
+                36,
+                cache,
+            );
+        }
         SetBkMode(device_context, TRANSPARENT as i32);
         SetTextColor(device_context, COLOR_BORDER);
     }
