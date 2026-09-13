@@ -6,29 +6,19 @@ use askbridge_core::{
 };
 use tracing::error;
 use windows_sys::Win32::{
-    Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
-    Graphics::Gdi::{
-        CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_WINDOW, CreateFontW, CreateSolidBrush,
-        DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DeleteObject, DrawTextW, FF_DONTCARE,
-        FW_NORMAL, FW_SEMIBOLD, FillRect, FrameRect, GetStockObject, GetSysColorBrush,
-        OUT_DEFAULT_PRECIS, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
-    },
+    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+    Graphics::Gdi::InvalidateRect,
     UI::{
-        Controls::{
-            BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SETLIMITTEXT, EM_SETMARGINS,
-            ODS_DISABLED, ODS_SELECTED,
-        },
-        HiDpi::GetDpiForSystem,
+        Controls::{BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SETLIMITTEXT, EM_SETMARGINS},
         WindowsAndMessaging::{
             BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_OWNERDRAW,
             CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL, CBS_DROPDOWNLIST,
             CreateWindowExW, DefWindowProcW, DestroyWindow, EC_LEFTMARGIN, EC_RIGHTMARGIN,
             ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN, FindWindowW,
-            GetDlgCtrlID, GetDlgItem, GetWindowTextLengthW, GetWindowTextW, IsChild,
-            IsWindowVisible, PostMessageW, SW_HIDE, SW_SHOW, SendMessageW, SetForegroundWindow,
-            SetWindowTextW, ShowWindow, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DRAWITEM,
-            WM_GETFONT, WM_SETFONT, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
-            WS_EX_CLIENTEDGE, WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP,
+            GetDlgItem, GetWindowTextLengthW, IsChild, IsWindowVisible, PostMessageW, SW_HIDE,
+            SW_SHOW, SendMessageW, SetForegroundWindow, SetWindowTextW, ShowWindow, WM_CLOSE,
+            WM_COMMAND, WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_SETFONT, WS_CAPTION, WS_CHILD,
+            WS_CLIPCHILDREN, WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP,
             WS_VISIBLE, WS_VSCROLL,
         },
     },
@@ -43,6 +33,9 @@ use crate::{
 mod controls;
 mod pages;
 mod provider_config;
+mod theme;
+
+use theme::{UiFonts, UiScale, draw_owner_button, static_control_color};
 
 use controls::{
     combo_add, combo_reset, combo_select, combo_selection, create_button, create_control, get_text,
@@ -75,6 +68,9 @@ pub const CONTROL_OPEN_LOGIN: u16 = 2056;
 pub const CONTROL_CHECK_PROVIDERS: u16 = 2057;
 
 const STATUS_LABEL: u16 = 2060;
+const CONTROL_SEPARATOR: u16 = 2061;
+/// Decorative frame statics behind framed edits; never looked up by ID.
+pub(super) const CONTROL_DECORATION: u16 = 2062;
 const EDIT_CAPTURE: u16 = 2101;
 const CHECK_CAPTURE: u16 = 2102;
 const EDIT_QUICK: u16 = 2103;
@@ -105,16 +101,6 @@ const WINDOW_HEIGHT: i32 = 720;
 const MAX_SINGLE_LINE: WPARAM = 2048;
 const MAX_MULTI_LINE: WPARAM = 16_384;
 
-const COLOR_TEXT: COLORREF = rgb(30, 41, 59);
-const COLOR_MUTED: COLORREF = rgb(100, 116, 139);
-const COLOR_ACCENT: COLORREF = rgb(37, 99, 235);
-const COLOR_ACCENT_PRESSED: COLORREF = rgb(29, 78, 216);
-const COLOR_SECONDARY: COLORREF = rgb(241, 245, 249);
-const COLOR_SECONDARY_PRESSED: COLORREF = rgb(226, 232, 240);
-const COLOR_BORDER: COLORREF = rgb(203, 213, 225);
-const COLOR_DISABLED: COLORREF = rgb(148, 163, 184);
-const COLOR_WHITE: COLORREF = rgb(255, 255, 255);
-
 const LIFECYCLES: [(&str, BrowserLifecycle); 4] = [
     ("按需启动，保持运行", BrowserLifecycle::OnDemandKeepRunning),
     (
@@ -124,92 +110,6 @@ const LIFECYCLES: [(&str, BrowserLifecycle); 4] = [
     ("每次准备后询问关闭", BrowserLifecycle::CloseAfterDispatch),
     ("随 AskBridge 启动", BrowserLifecycle::OnStartup),
 ];
-
-#[derive(Clone, Copy)]
-struct UiScale {
-    dpi: u32,
-}
-
-impl UiScale {
-    fn system() -> Self {
-        // SAFETY: The process selects Per-Monitor V2 awareness before creating settings UI.
-        let dpi = unsafe { GetDpiForSystem() };
-        Self {
-            dpi: if dpi == 0 { 96 } else { dpi },
-        }
-    }
-
-    fn px(self, value: i32) -> i32 {
-        ((i64::from(value) * i64::from(self.dpi) + 48) / 96) as i32
-    }
-}
-
-struct OwnedFont(*mut c_void);
-
-impl OwnedFont {
-    fn create(height: i32, weight: i32, scale: UiScale) -> Result<Self> {
-        let family = wide("Microsoft YaHei UI");
-        // SAFETY: All metrics are ordinary font attributes and family is nul-terminated.
-        let font = unsafe {
-            CreateFontW(
-                -scale.px(height),
-                0,
-                0,
-                0,
-                weight,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET as u32,
-                OUT_DEFAULT_PRECIS as u32,
-                CLIP_DEFAULT_PRECIS as u32,
-                CLEARTYPE_QUALITY as u32,
-                (DEFAULT_PITCH | FF_DONTCARE) as u32,
-                family.as_ptr(),
-            )
-        };
-        if font.is_null() {
-            return Err(AppError::Windows {
-                operation: "CreateFontW(settings)",
-                win32_code: last_error(),
-            });
-        }
-        Ok(Self(font))
-    }
-
-    const fn handle(&self) -> *mut c_void {
-        self.0
-    }
-}
-
-impl Drop for OwnedFont {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: The top-level settings window is destroyed before the fonts are dropped.
-            unsafe {
-                DeleteObject(self.0);
-            }
-        }
-    }
-}
-
-struct UiFonts {
-    title: OwnedFont,
-    body: OwnedFont,
-    label: OwnedFont,
-    small: OwnedFont,
-}
-
-impl UiFonts {
-    fn create(scale: UiScale) -> Result<Self> {
-        Ok(Self {
-            title: OwnedFont::create(24, FW_SEMIBOLD as i32, scale)?,
-            body: OwnedFont::create(16, FW_NORMAL as i32, scale)?,
-            label: OwnedFont::create(16, FW_SEMIBOLD as i32, scale)?,
-            small: OwnedFont::create(14, FW_NORMAL as i32, scale)?,
-        })
-    }
-}
 
 struct HotkeyRow {
     command: AppCommand,
@@ -276,9 +176,9 @@ impl SettingsWindow {
             "AskBridge",
             WS_CHILD | WS_VISIBLE,
             24,
-            18,
+            14,
             180,
-            32,
+            40,
             0,
             TITLE_LABEL,
         )?;
@@ -288,10 +188,10 @@ impl SettingsWindow {
             instance,
             scale,
             "STATIC",
-            "轻量问答路由设置",
+            "截图问答 · 本机设置",
             WS_CHILD | WS_VISIBLE,
             24,
-            50,
+            58,
             240,
             24,
             0,
@@ -318,9 +218,9 @@ impl SettingsWindow {
                     | WS_VISIBLE
                     | WS_TABSTOP
                     | if index == 0 { WS_GROUP } else { 0 }
-                    | BS_AUTORADIOBUTTON as u32,
-                282 + index as i32 * 122,
-                34,
+                    | BS_OWNERDRAW as u32,
+                24 + index as i32 * 118,
+                84,
                 112,
                 30,
                 0,
@@ -328,6 +228,21 @@ impl SettingsWindow {
             )?;
             set_font(tab, fonts.label.handle());
         }
+
+        create_control(
+            window,
+            instance,
+            scale,
+            "STATIC",
+            "",
+            WS_CHILD | WS_VISIBLE,
+            24,
+            118,
+            792,
+            2,
+            0,
+            CONTROL_SEPARATOR,
+        )?;
 
         let hotkey_page = create_page(window, instance, scale, PAGE_HOTKEYS)?;
         let provider_page = create_page(window, instance, scale, PAGE_PROVIDERS)?;
@@ -354,9 +269,9 @@ impl SettingsWindow {
             scale,
             &fonts,
             "应用更改",
-            494,
-            604,
-            104,
+            630,
+            606,
+            108,
             CONTROL_APPLY,
         )?;
         create_button(
@@ -364,21 +279,10 @@ impl SettingsWindow {
             instance,
             scale,
             &fonts,
-            "恢复默认快捷键",
-            610,
-            604,
-            132,
-            CONTROL_RESTORE_DEFAULTS,
-        )?;
-        create_button(
-            window,
-            instance,
-            scale,
-            &fonts,
             "关闭",
-            754,
-            604,
-            64,
+            750,
+            606,
+            66,
             CONTROL_CLOSE,
         )?;
         let status = create_control(
@@ -389,8 +293,8 @@ impl SettingsWindow {
             "准备就绪。所有设置在校验后统一应用。",
             WS_CHILD | WS_VISIBLE,
             24,
-            660,
-            794,
+            612,
+            580,
             28,
             0,
             STATUS_LABEL,
@@ -703,94 +607,13 @@ fn switch_page(window: HWND, page: u16) {
         let tab = unsafe { GetDlgItem(window, i32::from(tab_id)) };
         if !tab.is_null() {
             set_checked(tab, page_id == page);
+            // Owner-drawn tabs have no check glyph to update; force a repaint
+            // so the previously selected tab drops its accent underline.
+            unsafe {
+                InvalidateRect(tab, std::ptr::null(), 1);
+            }
         }
     }
-}
-
-fn draw_owner_button(item: &DRAWITEMSTRUCT) -> LRESULT {
-    let primary = item.CtlID == CONTROL_APPLY as u32
-        || item.CtlID == CONTROL_OPEN_BROWSER as u32
-        || item.CtlID == CONTROL_OPEN_LOGIN as u32;
-    let disabled = item.itemState & ODS_DISABLED != 0;
-    let pressed = item.itemState & ODS_SELECTED != 0;
-    let fill_color = if primary {
-        if pressed {
-            COLOR_ACCENT_PRESSED
-        } else {
-            COLOR_ACCENT
-        }
-    } else if pressed {
-        COLOR_SECONDARY_PRESSED
-    } else {
-        COLOR_SECONDARY
-    };
-    let border_color = if primary { fill_color } else { COLOR_BORDER };
-    let text_color = if disabled {
-        COLOR_DISABLED
-    } else if primary {
-        COLOR_WHITE
-    } else {
-        COLOR_TEXT
-    };
-
-    // SAFETY: item contains the valid HDC and RECT supplied by WM_DRAWITEM.
-    unsafe {
-        let fill = CreateSolidBrush(fill_color);
-        if !fill.is_null() {
-            FillRect(item.hDC, &item.rcItem, fill);
-            DeleteObject(fill);
-        }
-
-        let border = CreateSolidBrush(border_color);
-        if !border.is_null() {
-            FrameRect(item.hDC, &item.rcItem, border);
-            DeleteObject(border);
-        }
-
-        SetBkMode(item.hDC, TRANSPARENT as i32);
-        SetTextColor(item.hDC, text_color);
-
-        let font = SendMessageW(item.hwndItem, WM_GETFONT, 0, 0) as *mut c_void;
-        let previous_font = if font.is_null() {
-            ptr::null_mut()
-        } else {
-            SelectObject(item.hDC, font)
-        };
-
-        let mut text = [0_u16; 96];
-        let copied = GetWindowTextW(item.hwndItem, text.as_mut_ptr(), text.len() as i32);
-        let mut text_rect: RECT = item.rcItem;
-        DrawTextW(
-            item.hDC,
-            text.as_ptr(),
-            copied,
-            &mut text_rect,
-            0x0000_0001 | 0x0000_0004 | 0x0000_0020,
-        );
-
-        if !previous_font.is_null() {
-            SelectObject(item.hDC, previous_font);
-        }
-    }
-    1
-}
-
-fn static_control_color(window: HWND, device_context: *mut c_void) -> LRESULT {
-    // SAFETY: window and device_context are supplied by WM_CTLCOLORSTATIC for a live control.
-    unsafe {
-        SetBkMode(device_context, TRANSPARENT as i32);
-        let id = GetDlgCtrlID(window);
-        let color = match id as u16 {
-            SUBTITLE_LABEL | STATUS_LABEL => COLOR_MUTED,
-            _ => COLOR_TEXT,
-        };
-        SetTextColor(device_context, color);
-        GetSysColorBrush(COLOR_WINDOW) as LRESULT
-    }
-}
-
-const fn rgb(red: u8, green: u8, blue: u8) -> COLORREF {
-    red as COLORREF | ((green as COLORREF) << 8) | ((blue as COLORREF) << 16)
 }
 
 const fn make_lparam(low: u16, high: u16) -> LPARAM {
@@ -815,16 +638,10 @@ pub unsafe extern "system" fn settings_window_proc(
             };
             if let Some(page) = page {
                 switch_page(window, page);
-                if command != TAB_PROVIDERS {
-                    return 0;
-                }
+                return 0;
             }
-            let forwarded_wparam = if command == TAB_PROVIDERS {
-                CONTROL_CHECK_PROVIDERS as WPARAM
-            } else {
-                wparam
-            };
-            let forwarded_lparam = if command == TAB_PROVIDERS { 0 } else { lparam };
+            let forwarded_wparam = wparam;
+            let forwarded_lparam = lparam;
             let class = wide(MAIN_WINDOW_CLASS);
             let title = wide(MAIN_WINDOW_TITLE);
             // SAFETY: Both search strings are valid nul-terminated UTF-16 buffers.

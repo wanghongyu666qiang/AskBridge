@@ -1,3 +1,9 @@
+use windows_sys::Win32::{
+    Graphics::Gdi::{DEFAULT_GUI_FONT, GetStockObject},
+    UI::WindowsAndMessaging::GetWindowTextW,
+};
+
+use super::theme::UiScale;
 use super::*;
 
 #[allow(clippy::too_many_arguments)]
@@ -55,6 +61,91 @@ pub(super) fn create_check(
     )?;
     set_font(check, fonts.body.handle());
     Ok(check)
+}
+
+/// Section header: a caption plus a full-width hairline. Children are laid
+/// out in plain page coordinates below it, so no origin math is needed.
+pub(super) fn create_section(
+    parent: HWND,
+    instance: HINSTANCE,
+    scale: UiScale,
+    fonts: &UiFonts,
+    title: &str,
+    y: i32,
+) -> Result<()> {
+    let label = create_control(
+        parent,
+        instance,
+        scale,
+        "STATIC",
+        title,
+        WS_CHILD | WS_VISIBLE,
+        12,
+        y,
+        500,
+        28,
+        0,
+        0,
+    )?;
+    set_font(label, fonts.label.handle());
+    create_control(
+        parent,
+        instance,
+        scale,
+        "STATIC",
+        "",
+        WS_CHILD | WS_VISIBLE,
+        12,
+        y + 30,
+        770,
+        2,
+        0,
+        CONTROL_DECORATION,
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn create_framed_edit(
+    parent: HWND,
+    instance: HINSTANCE,
+    scale: UiScale,
+    text: &str,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    extra_styles: u32,
+    id: u16,
+) -> Result<HWND> {
+    create_control(
+        parent,
+        instance,
+        scale,
+        "STATIC",
+        "",
+        WS_CHILD | WS_VISIBLE,
+        x - 1,
+        y - 1,
+        width + 2,
+        height + 2,
+        0,
+        CONTROL_DECORATION,
+    )?;
+    create_control(
+        parent,
+        instance,
+        scale,
+        "EDIT",
+        text,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32 | extra_styles,
+        x,
+        y,
+        width,
+        height,
+        0,
+        id,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

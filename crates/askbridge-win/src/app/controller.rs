@@ -6,7 +6,7 @@ use askbridge_core::{
 };
 use tracing::{error, info, warn};
 use windows_sys::Win32::{
-    Foundation::HINSTANCE,
+    Foundation::{ERROR_ACCESS_DENIED, HINSTANCE},
     System::LibraryLoader::GetModuleHandleW,
     UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
 };
@@ -61,12 +61,18 @@ pub fn run() -> Result<()> {
     }
 
     // SAFETY: Process DPI awareness must be selected before any windows are created.
+    // The embedded manifest also declares Per-Monitor V2, in which case this call
+    // fails with ERROR_ACCESS_DENIED ("already set") and the manifest governs.
     if unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) } == 0 {
-        warn!(
-            stage = "startup",
-            completed = false,
-            "per-monitor V2 DPI awareness could not be enabled"
-        );
+        let win32_code = last_error();
+        if win32_code != ERROR_ACCESS_DENIED {
+            warn!(
+                stage = "startup",
+                completed = false,
+                win32_code,
+                "per-monitor V2 DPI awareness could not be enabled"
+            );
+        }
     }
 
     // SAFETY: A null module name requests the current process module.
@@ -209,7 +215,14 @@ impl Runtime {
         if candidate.general.start_on_login
             && !startup::is_current_executable_registered().unwrap_or(false)
         {
-            let _ = startup::restore(&startup_snapshot);
+            if let Err(rollback_error) = startup::restore(&startup_snapshot) {
+                warn!(
+                    stage = "settings",
+                    completed = false,
+                    error_kind = rollback_error.kind(),
+                    "startup registration rollback failed"
+                );
+            }
             self.settings
                 .set_status("无法应用：开机启动项写入后未能通过校验。");
             return;
@@ -256,7 +269,14 @@ impl Runtime {
                 info!(stage = "settings", completed = true, "settings updated");
             }
             Err(error) => {
-                let _ = startup::restore(&startup_snapshot);
+                if let Err(rollback_error) = startup::restore(&startup_snapshot) {
+                    warn!(
+                        stage = "settings",
+                        completed = false,
+                        error_kind = rollback_error.kind(),
+                        "startup registration rollback failed"
+                    );
+                }
                 error!(
                     stage = "settings",
                     completed = false,

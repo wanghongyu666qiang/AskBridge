@@ -8,7 +8,11 @@
 
 AskBridge is a Windows screenshot-to-AI tool. After selecting an area of the screen, you can copy the capture, switch AI models, or stage the screenshot together with preset text into an AI website's input box. Whether to actually send is always decided by the user.
 
+> Note: the in-app UI (tray menu, capture toolbar, settings) is currently Simplified Chinese only.
+
 ## Download and Setup
+
+AskBridge requires 64-bit Windows 10 or later and the Microsoft Edge WebView2 Runtime (usually preinstalled on Windows 10/11).
 
 1. Go to [GitHub Releases](https://github.com/wanghongyu666qiang/AskBridge/releases) and download the latest `AskBridge-<version>-Setup.exe`.
 2. Run the installer, choose a dedicated installation directory, and select whether to create Desktop and Start menu shortcuts or start AskBridge after sign-in. The installer does not choose a C-drive directory by default.
@@ -61,7 +65,7 @@ The managed Chrome uses a dedicated `BrowserProfile` and never connects to or mo
 
 Configuration, logs, the managed browser profile, and update downloads live at `data/config.json`, `data/logs`, `data/BrowserProfile`, and `data/Updates` respectively. Temporary screenshots used for web upload remain available for asynchronous page reads for up to 10 minutes and are then deleted; files left by an abnormal exit and used or stale update installers are cleaned on a later launch.
 
-See [Privacy Notes](docs/PRIVACY.md) and [Troubleshooting](docs/TROUBLESHOOTING.md) for more information.
+See [Privacy Notes](docs/PRIVACY.md), [Troubleshooting](docs/TROUBLESHOOTING.md), the [security policy](SECURITY.md), and the [changelog](CHANGELOG.md) for more information.
 
 ## Development
 
