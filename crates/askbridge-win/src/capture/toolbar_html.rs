@@ -57,15 +57,15 @@ body {{ position: relative; }}
   align-items: center;
   gap: 4px;
   padding: 5px 7px;
-  border: 1px solid rgba(255, 255, 255, .16);
-  border-radius: 18px;
-  background: #1c1c1f;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), 0 8px 24px rgba(0, 0, 0, .34), 0 2px 6px rgba(0, 0, 0, .24);
+  border: 1px solid rgba(255, 255, 255, .093);
+  border-radius: 12px;
+  background: #202020;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05), 0 8px 24px rgba(0, 0, 0, .32), 0 2px 8px rgba(0, 0, 0, .24);
 }}
 button {{
   height: 40px;
   border: 0;
-  border-radius: 11px;
+  border-radius: 7px;
   background: transparent;
   color: #f5f5f7;
   display: inline-flex;
@@ -77,23 +77,24 @@ button {{
   letter-spacing: 0;
   white-space: nowrap;
   cursor: default;
+  transition: background-color 90ms ease;
 }}
 button:hover {{ background: rgba(255, 255, 255, .09); }}
-button:active {{ background: rgba(255, 255, 255, .14); transform: translateY(1px); }}
+button:active {{ background: rgba(255, 255, 255, .12); }}
 button:focus-visible {{ outline: 2px solid rgba(226, 109, 69, .92); outline-offset: -2px; }}
 .copy {{ width: 88px; }}
 .cancel {{ width: 84px; }}
-.divider {{ width: 1px; height: 26px; margin: 0 4px; background: rgba(255, 255, 255, .14); }}
+.divider {{ width: 1px; height: 24px; margin: 0 4px; background: rgba(255, 255, 255, .12); }}
 .provider-picker {{ position: relative; width: 188px; height: 40px; flex: 0 0 188px; }}
 .provider-toggle {{
   width: 100%;
   justify-content: flex-start;
   padding-left: 13px;
   padding-right: 12px;
-  border: 1px solid rgba(255, 255, 255, .11);
-  background: rgba(255, 255, 255, .055);
+  border: 1px solid rgba(255, 255, 255, .07);
+  background: rgba(255, 255, 255, .06);
 }}
-.provider-toggle:hover {{ background: rgba(255, 255, 255, .10); }}
+.provider-toggle:hover {{ background: rgba(255, 255, 255, .09); }}
 .provider-label {{ flex: 1; overflow: hidden; text-align: left; text-overflow: ellipsis; }}
 .ask {{
   width: 112px;
@@ -101,13 +102,14 @@ button:focus-visible {{ outline: 2px solid rgba(226, 109, 69, .92); outline-offs
   background: #993c1d;
   color: #fffaf6;
   font-weight: 600;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 2px 7px rgba(0, 0, 0, .22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14), 0 1px 3px rgba(0, 0, 0, .26);
 }}
 .ask:hover {{ background: #ad4928; }}
 .ask:active {{ background: #8c3419; }}
-.chevron {{ width: 16px; height: 16px; transition: transform 120ms ease; }}
+.chevron {{ width: 16px; height: 16px; transition: transform 140ms cubic-bezier(.17, .84, .44, 1); }}
 body.menu-open .chevron {{ transform: rotate(180deg); }}
 .icon {{ width: 19px; height: 19px; flex: 0 0 19px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }}
+.icon-fill {{ fill: currentColor; stroke: none; }}
 .provider-menu {{
   position: absolute;
   left: 0;
@@ -118,10 +120,10 @@ body.menu-open .chevron {{ transform: rotate(180deg); }}
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 4px;
-  border: 1px solid rgba(255, 255, 255, .15);
-  border-radius: 12px;
-  background: #1c1c1f;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07), 0 10px 28px rgba(0, 0, 0, .38), 0 2px 6px rgba(0, 0, 0, .22);
+  border: 1px solid rgba(255, 255, 255, .093);
+  border-radius: 10px;
+  background: #2b2b2b;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), 0 12px 32px rgba(0, 0, 0, .40), 0 2px 8px rgba(0, 0, 0, .26);
   color-scheme: dark;
   scrollbar-color: rgba(255, 255, 255, .24) transparent;
   scrollbar-width: thin;
@@ -129,11 +131,15 @@ body.menu-open .chevron {{ transform: rotate(180deg); }}
 }}
 .provider-menu::-webkit-scrollbar {{ width: 8px; }}
 .provider-menu::-webkit-scrollbar-thumb {{ border: 2px solid transparent; border-radius: 999px; background: rgba(255, 255, 255, .22); background-clip: padding-box; }}
-body.menu-open .provider-menu {{ display: block; }}
-.provider-option {{ width: 100%; height: 32px; justify-content: flex-start; padding: 0 9px; gap: 8px; border-radius: 8px; font-size: 13.5px; }}
+body.menu-open .provider-menu {{ display: block; animation: menu-in 150ms cubic-bezier(.17, .84, .44, 1); }}
+@keyframes menu-in {{
+  from {{ opacity: 0; transform: scale(.97); }}
+  to {{ opacity: 1; transform: scale(1); }}
+}}
+.provider-option {{ width: 100%; height: 32px; justify-content: flex-start; padding: 0 9px; gap: 8px; border-radius: 6px; font-size: 13.5px; transition: background-color 60ms ease; }}
 .provider-option:hover {{ background: rgba(255, 255, 255, .075); }}
-.provider-option.selected {{ background: rgba(255, 255, 255, .105); font-weight: 500; }}
-.provider-option.selected:hover {{ background: rgba(255, 255, 255, .13); }}
+.provider-option.selected {{ background: rgba(255, 255, 255, .09); font-weight: 500; }}
+.provider-option.selected:hover {{ background: rgba(255, 255, 255, .12); }}
 .provider-check {{ width: 16px; height: 16px; margin-left: auto; opacity: 0; }}
 .provider-option.selected .provider-check {{ opacity: 1; color: #e77a54; }}
 .provider-option span {{ overflow: hidden; text-overflow: ellipsis; }}
@@ -159,7 +165,7 @@ body.menu-open .provider-menu {{ display: block; }}
     <div class="provider-menu" id="provider-menu" role="menu"></div>
   </div>
   <button class="ask" id="ask" title="用当前模型提问 (Enter)">
-    <svg class="icon" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4"></path><path d="m7.5 7.5 2 2M14.5 14.5l2 2M16.5 7.5l-2 2M9.5 14.5l-2 2"></path></svg>
+    <svg class="icon icon-fill" viewBox="0 0 24 24"><path d="M11.4 2.9c.2-.7 1-.7 1.2 0l1.6 4.5c.1.3.4.6.7.7l4.5 1.6c.7.2.7 1 0 1.2l-4.5 1.6c-.3.1-.6.4-.7.7l-1.6 4.5c-.2.7-1 .7-1.2 0l-1.6-4.5c-.1-.3-.4-.6-.7-.7l-4.5-1.6c-.7-.2-.7-1 0-1.2l4.5-1.6c.3-.1.6-.4.7-.7l1.6-4.5z"></path><path d="M18.2 15.3c.1-.4.7-.4.8 0l.7 1.9c.1.2.2.3.4.4l1.9.7c.4.1.4.7 0 .8l-1.9.7c-.2.1-.3.2-.4.4l-.7 1.9c-.1.4-.7.4-.8 0l-.7-1.9c-.1-.2-.2-.3-.4-.4l-1.9-.7c-.4-.1-.4-.7 0-.8l1.9-.7c.2-.1.3-.2.4-.4l.7-1.9z"></path></svg>
     <span>问问</span>
   </button>
 </div>
@@ -286,7 +292,7 @@ mod tests {
         assert!(html.contains("if (menuOpen)"));
         assert!(!html.contains("event.key === 'Enter' && !menuOpen"));
         assert!(!html.contains("<select"));
-        assert!(html.contains("background: #1c1c1f"));
+        assert!(html.contains("background: #202020"));
         assert!(html.contains("background: #993c1d"));
         assert!(html.contains("class=\"provider-picker\""));
         assert!(html.contains("left: 0;"));
@@ -325,9 +331,10 @@ mod tests {
     fn toolbar_surfaces_do_not_leak_background_content() {
         let html = toolbar_html(&[], 170, false).expect("toolbar html");
 
-        assert!(html.matches("background: #1c1c1f;").count() >= 2);
-        assert!(!html.contains("background: rgba(28, 28, 31, .975)"));
-        assert!(!html.contains("background: rgba(28, 28, 31, .985)"));
+        assert!(html.contains("background: #202020;"));
+        assert!(html.contains("background: #2b2b2b;"));
+        assert!(!html.contains("background: rgba(32, 32, 32,"));
+        assert!(!html.contains("background: rgba(43, 43, 43,"));
         assert!(!html.contains("backdrop-filter"));
     }
 

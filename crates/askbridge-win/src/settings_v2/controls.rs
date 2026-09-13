@@ -98,7 +98,7 @@ pub(super) fn create_section(
         12,
         y + 30,
         770,
-        2,
+        1,
         0,
         CONTROL_DECORATION,
     )?;
@@ -174,7 +174,8 @@ pub(super) fn create_button(
         0,
         id,
     )?;
-    set_font(button, fonts.label.handle());
+    set_font(button, fonts.body.handle());
+    super::theme::install_hover_tracking(button);
     Ok(button)
 }
 

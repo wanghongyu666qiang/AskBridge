@@ -16,10 +16,10 @@ use super::super::session::ToolbarState;
 use super::cache::PaintCache;
 use super::primitives::{draw_text_in_rect, rounded_rect};
 use super::{
-    ARGB_DROPDOWN_SELECTED, ARGB_TOOLBAR, ARGB_TOOLBAR_ACCENT, ARGB_TOOLBAR_BORDER,
-    ARGB_TOOLBAR_HOVER, ARGB_TOOLBAR_TEXT, COLOR_DROPDOWN_SELECTED, COLOR_TOOLBAR,
-    COLOR_TOOLBAR_ACCENT, COLOR_TOOLBAR_BORDER, COLOR_TOOLBAR_HOVER, COLOR_TOOLBAR_TEXT,
-    TOOLBAR_RADIUS,
+    ARGB_ACCENT_BRIGHT, ARGB_DROPDOWN_SELECTED, ARGB_TOOLBAR, ARGB_TOOLBAR_ACCENT,
+    ARGB_TOOLBAR_BORDER, ARGB_TOOLBAR_HOVER, ARGB_TOOLBAR_TEXT, COLOR_ACCENT_BRIGHT,
+    COLOR_DROPDOWN_SELECTED, COLOR_TOOLBAR, COLOR_TOOLBAR_ACCENT, COLOR_TOOLBAR_BORDER,
+    COLOR_TOOLBAR_HOVER, COLOR_TOOLBAR_TEXT, TOOLBAR_RADIUS,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -90,7 +90,7 @@ pub(super) unsafe fn draw_toolbar(
             &layout.ask,
             COLOR_TOOLBAR_ACCENT,
             COLOR_TOOLBAR_ACCENT,
-            10,
+            14,
             cache,
         );
         draw_toolbar_item(
@@ -107,7 +107,7 @@ pub(super) unsafe fn draw_toolbar(
                 &layout.dropdown_bounds,
                 COLOR_TOOLBAR,
                 COLOR_TOOLBAR_BORDER,
-                12,
+                20,
                 cache,
             );
             for (index, rect) in layout.dropdown_rects.iter().enumerate() {
@@ -117,7 +117,18 @@ pub(super) unsafe fn draw_toolbar(
                         &inset_rect(rect, 4),
                         COLOR_DROPDOWN_SELECTED,
                         COLOR_DROPDOWN_SELECTED,
-                        8,
+                        12,
+                        cache,
+                    );
+                    super::primitives::fill(
+                        device_context,
+                        &RECT {
+                            left: rect.left + 7,
+                            top: rect.top + 8,
+                            right: rect.left + 10,
+                            bottom: rect.bottom - 8,
+                        },
+                        COLOR_ACCENT_BRIGHT,
                         cache,
                     );
                 }
@@ -142,17 +153,17 @@ fn draw_toolbar_antialiased(
     layout: &super::super::layout::ToolbarLayout,
     toolbar: &ToolbarState,
 ) {
-    gdi.rounded_rect_rect(&layout.outer, 18.0, ARGB_TOOLBAR, ARGB_TOOLBAR_BORDER, 1.0);
+    gdi.rounded_rect_rect(&layout.outer, 12.0, ARGB_TOOLBAR, ARGB_TOOLBAR_BORDER, 1.0);
     gdi.rounded_rect_rect(
         &layout.provider,
-        10.0,
+        7.0,
         ARGB_TOOLBAR_HOVER,
         ARGB_TOOLBAR_HOVER,
         1.0,
     );
     gdi.rounded_rect_rect(
         &layout.ask,
-        10.0,
+        7.0,
         ARGB_TOOLBAR_ACCENT,
         ARGB_TOOLBAR_ACCENT,
         1.0,
@@ -164,7 +175,7 @@ fn draw_toolbar_antialiased(
     if toolbar.dropdown_open {
         gdi.rounded_rect_rect(
             &layout.dropdown_bounds,
-            12.0,
+            10.0,
             ARGB_TOOLBAR,
             ARGB_TOOLBAR_BORDER,
             1.0,
@@ -173,10 +184,21 @@ fn draw_toolbar_antialiased(
             if index == toolbar.selected_index {
                 gdi.rounded_rect_rect(
                     &inset_rect(rect, 4),
-                    8.0,
+                    6.0,
                     ARGB_DROPDOWN_SELECTED,
                     ARGB_DROPDOWN_SELECTED,
                     1.0,
+                );
+                let row_height = (rect.bottom - rect.top) as f32;
+                gdi.rounded_rect(
+                    rect.left as f32 + 7.0,
+                    rect.top as f32 + (row_height - 14.0) / 2.0,
+                    3.0,
+                    14.0,
+                    1.5,
+                    ARGB_ACCENT_BRIGHT,
+                    0,
+                    0.0,
                 );
             }
         }
@@ -259,7 +281,7 @@ unsafe fn draw_toolbar_item(
                 rect,
                 COLOR_TOOLBAR_HOVER,
                 COLOR_TOOLBAR_HOVER,
-                10,
+                14,
                 cache,
             );
         }

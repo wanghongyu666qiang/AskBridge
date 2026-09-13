@@ -59,8 +59,20 @@ pub(super) fn create_hotkey_page(
         definitions.into_iter().enumerate()
     {
         let y = 52 + index as i32 * 96;
-        create_label(page, instance, scale, label, 28, y, 240, 26, 0)?;
-        create_label(page, instance, scale, description, 28, y + 26, 280, 24, 0)?;
+        let title = create_label(page, instance, scale, label, 28, y, 240, 26, 0)?;
+        set_font(title, fonts.body.handle());
+        let caption = create_label(
+            page,
+            instance,
+            scale,
+            description,
+            28,
+            y + 26,
+            280,
+            24,
+            DESC_LABEL,
+        )?;
+        set_font(caption, fonts.small.handle());
         let edit = create_framed_edit(page, instance, scale, "", 320, y, 270, 34, 0, edit_id)?;
         set_limit(edit, MAX_SINGLE_LINE);
         let enabled = create_control(
@@ -83,7 +95,7 @@ pub(super) fn create_hotkey_page(
             enabled,
         });
     }
-    create_label(
+    let hint = create_label(
         page,
         instance,
         scale,
@@ -92,8 +104,9 @@ pub(super) fn create_hotkey_page(
         320,
         570,
         24,
-        0,
+        DESC_LABEL,
     )?;
+    set_font(hint, fonts.small.handle());
     create_button(
         page,
         instance,
@@ -115,7 +128,8 @@ pub(super) fn create_provider_page(
     fonts: &UiFonts,
 ) -> Result<(HWND, Vec<ProviderRow>, HWND)> {
     create_section(page, instance, scale, fonts, "供应商", 6)?;
-    create_label(page, instance, scale, "默认供应商", 28, 46, 120, 26, 0)?;
+    let field = create_label(page, instance, scale, "默认供应商", 28, 46, 120, 26, 0)?;
+    set_font(field, fonts.body.handle());
     let default_provider = create_control(
         page,
         instance,
@@ -142,7 +156,7 @@ pub(super) fn create_provider_page(
         CONTROL_CHECK_PROVIDERS,
     )?;
 
-    create_label(
+    let builtin_note = create_label(
         page,
         instance,
         scale,
@@ -151,8 +165,9 @@ pub(super) fn create_provider_page(
         84,
         740,
         24,
-        0,
+        DESC_LABEL,
     )?;
+    set_font(builtin_note, fonts.small.handle());
     let defaults = built_in_providers();
     let mut rows = Vec::new();
     for (index, provider) in defaults.into_iter().enumerate() {
@@ -198,6 +213,7 @@ pub(super) fn create_provider_page(
             0,
             PROVIDER_HEALTH_BASE + index as u16,
         )?;
+        set_font(health, fonts.small.handle());
         rows.push(ProviderRow {
             id: provider.id,
             enabled,
@@ -206,7 +222,7 @@ pub(super) fn create_provider_page(
         });
     }
 
-    create_label(
+    let custom_note = create_label(
         page,
         instance,
         scale,
@@ -215,8 +231,9 @@ pub(super) fn create_provider_page(
         372,
         740,
         24,
-        0,
+        DESC_LABEL,
     )?;
+    set_font(custom_note, fonts.small.handle());
     let custom = create_framed_edit(
         page,
         instance,
@@ -301,7 +318,7 @@ pub(super) fn create_browser_page(
         RADIO_CHATGPT_DEDICATED_THEN_CLIPBOARD,
     )?;
     set_font(dedicated_then_clipboard, fonts.body.handle());
-    create_label(
+    let fallback_note = create_label(
         page,
         instance,
         scale,
@@ -310,11 +327,12 @@ pub(super) fn create_browser_page(
         182,
         740,
         24,
-        0,
+        DESC_LABEL,
     )?;
+    set_font(fallback_note, fonts.small.handle());
 
     create_section(page, instance, scale, fonts, "专用 Chrome", 214)?;
-    create_label(
+    let chrome_label = create_label(
         page,
         instance,
         scale,
@@ -325,7 +343,8 @@ pub(super) fn create_browser_page(
         24,
         0,
     )?;
-    create_label(
+    set_font(chrome_label, fonts.body.handle());
+    let chrome_hint = create_label(
         page,
         instance,
         scale,
@@ -334,8 +353,9 @@ pub(super) fn create_browser_page(
         254,
         560,
         24,
-        0,
+        DESC_LABEL,
     )?;
+    set_font(chrome_hint, fonts.small.handle());
     let chrome = create_framed_edit(
         page,
         instance,
@@ -349,7 +369,8 @@ pub(super) fn create_browser_page(
         EDIT_CHROME_PATH,
     )?;
     set_limit(chrome, MAX_SINGLE_LINE);
-    create_label(page, instance, scale, "生命周期", 28, 326, 170, 24, 0)?;
+    let lifecycle_label = create_label(page, instance, scale, "生命周期", 28, 326, 170, 24, 0)?;
+    set_font(lifecycle_label, fonts.body.handle());
     let lifecycle = create_control(
         page,
         instance,
@@ -397,7 +418,7 @@ pub(super) fn create_browser_page(
         226,
         CONTROL_OPEN_LOGIN,
     )?;
-    create_label(
+    let profile_note = create_label(
         page,
         instance,
         scale,
@@ -406,10 +427,11 @@ pub(super) fn create_browser_page(
         398,
         740,
         24,
-        0,
+        DESC_LABEL,
     )?;
+    set_font(profile_note, fonts.small.handle());
 
-    create_label(
+    let data_label = create_label(
         page,
         instance,
         scale,
@@ -420,6 +442,7 @@ pub(super) fn create_browser_page(
         24,
         0,
     )?;
+    set_font(data_label, fonts.body.handle());
     let data_path = create_framed_edit(
         page,
         instance,
@@ -450,7 +473,8 @@ pub(super) fn create_general_page(
     fonts: &UiFonts,
 ) -> Result<(HWND, HWND, HWND)> {
     create_section(page, instance, scale, fonts, "截图快速投递", 6)?;
-    create_label(page, instance, scale, "提示词", 28, 46, 300, 24, 0)?;
+    let prompt_label = create_label(page, instance, scale, "提示词", 28, 46, 300, 24, 0)?;
+    set_font(prompt_label, fonts.body.handle());
     let quick_prompt = create_framed_edit(
         page,
         instance,
@@ -486,7 +510,7 @@ pub(super) fn create_general_page(
         264,
         CHECK_DEBUG_LOGGING,
     )?;
-    create_label(
+    let note = create_label(
         page,
         instance,
         scale,
@@ -495,7 +519,8 @@ pub(super) fn create_general_page(
         310,
         740,
         24,
-        0,
+        DESC_LABEL,
     )?;
+    set_font(note, fonts.small.handle());
     Ok((quick_prompt, start_on_login, debug))
 }

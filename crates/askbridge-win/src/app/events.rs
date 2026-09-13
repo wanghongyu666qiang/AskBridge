@@ -3,8 +3,8 @@ use std::{mem::zeroed, ptr, sync::atomic::Ordering};
 use askbridge_core::{AppError, Result};
 use tracing::{error, info};
 use windows_sys::Win32::{
-    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
-    Graphics::Gdi::{COLOR_WINDOW, GetSysColorBrush},
+    Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+    Graphics::Gdi::CreateSolidBrush,
     UI::WindowsAndMessaging::{
         CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
         DispatchMessageW, GetMessageW, IDC_ARROW, IsDialogMessageW, LoadCursorW, MSG, PostMessageW,
@@ -171,6 +171,7 @@ pub(super) fn register_window_class(
     name: &str,
     instance: HINSTANCE,
     window_proc: WNDPROC,
+    background: COLORREF,
 ) -> Result<()> {
     let name = wide(name);
     // SAFETY: Loading the shared arrow cursor with a null module handle is supported.
@@ -181,8 +182,15 @@ pub(super) fn register_window_class(
             win32_code: last_error(),
         });
     }
-    // SAFETY: GetSysColorBrush returns a shared system brush.
-    let background = unsafe { GetSysColorBrush(COLOR_WINDOW) };
+    // SAFETY: CreateSolidBrush returns a GDI object; one brush per class is
+    // registered once and lives for the process lifetime.
+    let background = unsafe { CreateSolidBrush(background) };
+    if background.is_null() {
+        return Err(AppError::Windows {
+            operation: "CreateSolidBrush(window class)",
+            win32_code: last_error(),
+        });
+    }
     // The embedded app icon; on failure a null class icon only loses the chrome icon.
     let icon = crate::app_icon::load_app_icon(false);
     let class = WNDCLASSW {
@@ -283,7 +291,7 @@ mod tests {
         assert!(!module.is_null());
         let instance = module as HINSTANCE;
         let class_name = "AskBridge.Test.TrayRelayWindow.v1";
-        register_window_class(class_name, instance, Some(window_proc))
+        register_window_class(class_name, instance, Some(window_proc), 0x00FF_FFFF)
             .expect("test window class should register");
         let class = wide(class_name);
         let title = wide("AskBridge tray relay test");
@@ -339,7 +347,7 @@ mod tests {
         assert!(!module.is_null());
         let instance = module as HINSTANCE;
         let class_name = "AskBridge.Test.MainCloseWindow.v1";
-        register_window_class(class_name, instance, Some(window_proc))
+        register_window_class(class_name, instance, Some(window_proc), 0x00FF_FFFF)
             .expect("test window class should register");
         let class = wide(class_name);
         let title = wide("AskBridge close test");

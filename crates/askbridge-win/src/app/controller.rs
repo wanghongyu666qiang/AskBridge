@@ -18,7 +18,7 @@ use crate::{
     data_dir,
     hotkey_manager::HotkeyManager,
     logging,
-    settings_v2::{SETTINGS_CLASS, SettingsWindow, settings_window_proc},
+    settings_v2::{SETTINGS_CLASS, SettingsWindow, settings_window_proc, window_background_color},
     single_instance::{MAIN_WINDOW_CLASS, SingleInstance},
     startup,
     tray::TrayIcon,
@@ -89,8 +89,13 @@ pub fn run() -> Result<()> {
         });
     }
     let instance = module as HINSTANCE;
-    register_window_class(MAIN_WINDOW_CLASS, instance, Some(window_proc))?;
-    register_window_class(SETTINGS_CLASS, instance, Some(settings_window_proc))?;
+    register_window_class(MAIN_WINDOW_CLASS, instance, Some(window_proc), 0x00FF_FFFF)?;
+    register_window_class(
+        SETTINGS_CLASS,
+        instance,
+        Some(settings_window_proc),
+        window_background_color(),
+    )?;
     let main_window = MainWindow::create(instance)?;
     let capture = CaptureService::new(instance, main_window.hwnd())?;
     let mut hotkeys = HotkeyManager::new(main_window.hwnd());
