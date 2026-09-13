@@ -67,33 +67,71 @@ fn default_for_executable(executable: &Path) -> Result<PathBuf> {
 
 #[cfg(feature = "store")]
 fn store_local_state() -> Result<PathBuf> {
-    use windows::Storage::ApplicationData;
+    let local_app_data = env::var_os("LOCALAPPDATA").ok_or_else(|| {
+        AppError::ConfigurationInvalid(
+            "LOCALAPPDATA is unavailable for the Microsoft Store package".to_owned(),
+        )
+    })?;
+    let package_family_name = current_package_family_name()?;
+    store_local_state_from(Path::new(&local_app_data), &package_family_name)
+}
 
-    let _apartment = crate::store_runtime::initialize_sta(
-        "initializing Windows Runtime for Store data directory failed",
-    )?;
-    let application_data = ApplicationData::Current().map_err(|error| {
-        AppError::ConfigurationInvalid(format!(
-            "resolving Microsoft Store application data failed: {error}"
-        ))
-    })?;
-    let local_folder = application_data.LocalFolder().map_err(|error| {
-        AppError::ConfigurationInvalid(format!(
-            "resolving Microsoft Store local data folder failed: {error}"
-        ))
-    })?;
-    let path = local_folder.Path().map_err(|error| {
-        AppError::ConfigurationInvalid(format!(
-            "reading Microsoft Store local data folder failed: {error}"
-        ))
-    })?;
-    let path = PathBuf::from(path.to_string());
-    if !path.is_absolute() {
+#[cfg(feature = "store")]
+fn current_package_family_name() -> Result<String> {
+    use windows_sys::Win32::{
+        Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS},
+        Storage::Packaging::Appx::GetCurrentPackageFamilyName,
+    };
+
+    let mut length = 0u32;
+    // SAFETY: The first call intentionally supplies a null output buffer so
+    // Windows returns the required UTF-16 buffer length.
+    let first = unsafe { GetCurrentPackageFamilyName(&mut length, std::ptr::null_mut()) };
+    if first != ERROR_INSUFFICIENT_BUFFER || length < 2 {
+        return Err(AppError::ConfigurationInvalid(format!(
+            "reading Microsoft Store package family length failed: Win32 error {first}"
+        )));
+    }
+
+    let mut buffer = vec![0u16; length as usize];
+    // SAFETY: The buffer contains length writable UTF-16 code units, exactly
+    // matching the size reported by the first call.
+    let second = unsafe { GetCurrentPackageFamilyName(&mut length, buffer.as_mut_ptr()) };
+    if second != ERROR_SUCCESS {
+        return Err(AppError::ConfigurationInvalid(format!(
+            "reading Microsoft Store package family name failed: Win32 error {second}"
+        )));
+    }
+    if buffer.last() == Some(&0) {
+        buffer.pop();
+    }
+    String::from_utf16(&buffer).map_err(|_| {
+        AppError::ConfigurationInvalid(
+            "Microsoft Store package family name is not valid UTF-16".to_owned(),
+        )
+    })
+}
+
+#[cfg(feature = "store")]
+fn store_local_state_from(local_app_data: &Path, package_family_name: &str) -> Result<PathBuf> {
+    if !local_app_data.is_absolute() {
         return Err(AppError::ConfigurationInvalid(
-            "Microsoft Store local data folder is not absolute".to_owned(),
+            "LOCALAPPDATA must be absolute for the Microsoft Store package".to_owned(),
         ));
     }
-    Ok(path)
+    if package_family_name.is_empty()
+        || !package_family_name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
+    {
+        return Err(AppError::ConfigurationInvalid(
+            "Microsoft Store package family name contains invalid characters".to_owned(),
+        ));
+    }
+    Ok(local_app_data
+        .join("Packages")
+        .join(package_family_name)
+        .join("LocalState"))
 }
 
 #[cfg(test)]
@@ -127,5 +165,22 @@ mod tests {
         let resolved = default_for_executable(Path::new(r"D:\Apps\AskBridge\askbridge.exe"))
             .expect("portable data directory");
         assert_eq!(resolved, PathBuf::from(r"D:\Apps\AskBridge\data"));
+    }
+
+    #[cfg(feature = "store")]
+    #[test]
+    fn store_data_path_is_derived_without_winrt_activation() {
+        let resolved = store_local_state_from(
+            Path::new(r"C:\Users\StoreTest\AppData\Local"),
+            "55AD4ABA.AskBridge_3kthnvq439ewe",
+        )
+        .expect("derive packaged LocalState path without activating WinRT");
+
+        assert_eq!(
+            resolved,
+            PathBuf::from(
+                r"C:\Users\StoreTest\AppData\Local\Packages\55AD4ABA.AskBridge_3kthnvq439ewe\LocalState"
+            )
+        );
     }
 }

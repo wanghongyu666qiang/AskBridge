@@ -11,6 +11,26 @@ const TASK_ID: &str = "AskBridgeStartupTask";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartupSnapshot(bool);
 
+/// Reconciles the packaged startup task during ordinary application launch.
+///
+/// This helper is separated from the WinRT calls so the launch policy can be
+/// tested without requiring an installed package.
+pub fn reconcile_on_launch(start_on_login: bool) -> Result<()> {
+    reconcile_on_launch_with(start_on_login, apply, is_current_executable_registered)
+}
+
+fn reconcile_on_launch_with(
+    _start_on_login: bool,
+    _apply_setting: impl FnMut(bool) -> Result<()>,
+    _verify_setting: impl FnMut() -> Result<bool>,
+) -> Result<()> {
+    // A packaged StartupTask persists its own state after the user changes it
+    // in AskBridge or Windows Settings. Reopening that WinRT object during
+    // every process launch is unnecessary and, on certification build
+    // 10.0.26100.9168, faulted inside combase.dll before the UI was ready.
+    Ok(())
+}
+
 pub fn snapshot() -> Result<StartupSnapshot> {
     let _apartment = crate::store_runtime::initialize_sta(
         "initializing Windows Runtime for startup settings failed",
@@ -88,6 +108,7 @@ fn store_error(operation: &'static str, error: windows::core::Error) -> AppError
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn enabled_states_include_policy_state() {
@@ -96,5 +117,49 @@ mod tests {
         assert!(!is_enabled(StartupTaskState::Disabled));
         assert!(!is_enabled(StartupTaskState::DisabledByUser));
         assert!(!is_enabled(StartupTaskState::DisabledByPolicy));
+    }
+
+    #[test]
+    fn disabled_default_does_not_touch_winrt_during_launch() {
+        let apply_calls = Cell::new(0);
+        let verify_calls = Cell::new(0);
+
+        reconcile_on_launch_with(
+            false,
+            |_| {
+                apply_calls.set(apply_calls.get() + 1);
+                Ok(())
+            },
+            || {
+                verify_calls.set(verify_calls.get() + 1);
+                Ok(false)
+            },
+        )
+        .expect("disabled Store startup should not require WinRT during launch");
+
+        assert_eq!(apply_calls.get(), 0);
+        assert_eq!(verify_calls.get(), 0);
+    }
+
+    #[test]
+    fn enabled_setting_does_not_reopen_winrt_during_launch() {
+        let apply_calls = Cell::new(0);
+        let verify_calls = Cell::new(0);
+
+        reconcile_on_launch_with(
+            true,
+            |_| {
+                apply_calls.set(apply_calls.get() + 1);
+                Ok(())
+            },
+            || {
+                verify_calls.set(verify_calls.get() + 1);
+                Ok(true)
+            },
+        )
+        .expect("persisted Store startup state should be left to Windows during launch");
+
+        assert_eq!(apply_calls.get(), 0);
+        assert_eq!(verify_calls.get(), 0);
     }
 }

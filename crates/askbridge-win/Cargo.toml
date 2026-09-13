@@ -35,8 +35,6 @@ wry = { version = "0.56.1", default-features = false }
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61.3", features = [
     "ApplicationModel",
-    "Storage",
-    "Storage_Search",
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_WinRT",

@@ -4,6 +4,13 @@
 
 ## [未发布]
 
+### 修复
+
+- Microsoft Store 版普通启动不再激活 WinRT ApplicationData 或
+  StartupTask；LocalState 路径改由打包身份和本地应用数据目录解析，
+  避免认证环境中 combase.dll 的启动访问冲突。
+- 仅在用户明确更改“登录后自动启动”设置时访问 Store StartupTask。
+
 ### 安全
 
 - 应用内更新在哈希校验与安装包启动之间持有拒绝写入/删除共享的文件句柄，防止校验通过后被其他进程替换（TOCTOU 加固）。

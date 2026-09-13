@@ -53,11 +53,16 @@ pub fn run() -> Result<()> {
         completed = false,
         "AskBridge startup began"
     );
-    startup::apply(loaded.config.general.start_on_login)?;
-    if loaded.config.general.start_on_login && !startup::is_current_executable_registered()? {
-        return Err(AppError::ConfigurationInvalid(
-            "startup registration could not be verified".to_owned(),
-        ));
+    #[cfg(feature = "store")]
+    startup::reconcile_on_launch(loaded.config.general.start_on_login)?;
+    #[cfg(not(feature = "store"))]
+    {
+        startup::apply(loaded.config.general.start_on_login)?;
+        if loaded.config.general.start_on_login && !startup::is_current_executable_registered()? {
+            return Err(AppError::ConfigurationInvalid(
+                "startup registration could not be verified".to_owned(),
+            ));
+        }
     }
 
     // SAFETY: Process DPI awareness must be selected before any windows are created.
@@ -199,33 +204,43 @@ impl Runtime {
         let browser_changed = self.config.browser != candidate.browser;
         let debug_logging_changed =
             self.config.general.debug_logging != candidate.general.debug_logging;
-        let startup_snapshot = match startup::snapshot() {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
+        let startup_changed =
+            self.config.general.start_on_login != candidate.general.start_on_login;
+        let startup_snapshot = if startup_changed {
+            match startup::snapshot() {
+                Ok(snapshot) => Some(snapshot),
+                Err(error) => {
+                    self.settings
+                        .set_status(&format!("无法应用：{}", user_facing_error(&error)));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        if startup_changed {
+            if let Err(error) = startup::apply(candidate.general.start_on_login) {
                 self.settings
                     .set_status(&format!("无法应用：{}", user_facing_error(&error)));
                 return;
             }
-        };
-        if let Err(error) = startup::apply(candidate.general.start_on_login) {
-            self.settings
-                .set_status(&format!("无法应用：{}", user_facing_error(&error)));
-            return;
-        }
-        if candidate.general.start_on_login
-            && !startup::is_current_executable_registered().unwrap_or(false)
-        {
-            if let Err(rollback_error) = startup::restore(&startup_snapshot) {
-                warn!(
-                    stage = "settings",
-                    completed = false,
-                    error_kind = rollback_error.kind(),
-                    "startup registration rollback failed"
-                );
+            if candidate.general.start_on_login
+                && !startup::is_current_executable_registered().unwrap_or(false)
+            {
+                if let Some(snapshot) = startup_snapshot.as_ref()
+                    && let Err(rollback_error) = startup::restore(snapshot)
+                {
+                    warn!(
+                        stage = "settings",
+                        completed = false,
+                        error_kind = rollback_error.kind(),
+                        "startup registration rollback failed"
+                    );
+                }
+                self.settings
+                    .set_status("无法应用：开机启动项写入后未能通过校验。");
+                return;
             }
-            self.settings
-                .set_status("无法应用：开机启动项写入后未能通过校验。");
-            return;
         }
         let store = &self.store;
         let result = self
@@ -269,7 +284,9 @@ impl Runtime {
                 info!(stage = "settings", completed = true, "settings updated");
             }
             Err(error) => {
-                if let Err(rollback_error) = startup::restore(&startup_snapshot) {
+                if let Some(snapshot) = startup_snapshot.as_ref()
+                    && let Err(rollback_error) = startup::restore(snapshot)
+                {
                     warn!(
                         stage = "settings",
                         completed = false,
