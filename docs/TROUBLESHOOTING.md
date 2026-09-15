@@ -33,7 +33,7 @@
 
 1. Chrome 路径留空可自动检测，也可以在设置中选择现有的 `chrome.exe`。
 2. 点击“检查连接”只会连接 AskBridge 专用 Chrome，不会连接日常 Chrome。
-3. 若提示配置正在使用，先正常关闭所有由 AskBridge 启动的 Chrome 窗口。
+3. 应用重启后会自动接管仍在运行的专用 Chrome 继续复用；若仍提示配置正在使用，先关闭所有由 AskBridge 启动的 Chrome 窗口。
 4. 不要添加 `--no-sandbox`、`--disable-gpu` 或固定远程调试端口。
 
 ## 多显示器偏移
