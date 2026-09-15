@@ -88,9 +88,12 @@ pub struct DedicatedChromeJob {
     pub profile_dir: String,
     pub connect_timeout: Duration,
     pub page_timeout: Duration,
-    /// Optional end-to-end budget for this managed-browser attempt. This is
-    /// used by the screenshot clipboard-fallback route so every CDP stage
-    /// shares one short deadline instead of receiving a fresh timeout.
+    /// Optional fail-fast budget for reusing an already-running managed
+    /// browser. Used by the screenshot clipboard-fallback route so every CDP
+    /// stage shares one short deadline instead of receiving a fresh timeout.
+    /// A cold start is exempt: a freshly spawned browser cannot finish
+    /// within this budget, so it runs with the full connect and page
+    /// timeouts instead.
     pub attempt_timeout: Option<Duration>,
     pub lifecycle: BrowserLifecycle,
     pub start_url: String,
