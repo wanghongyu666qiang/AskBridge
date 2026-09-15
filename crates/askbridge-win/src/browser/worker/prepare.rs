@@ -45,8 +45,9 @@ pub(super) fn warmup_browser(
     let manager = manager.as_mut().ok_or_else(|| {
         AppError::BrowserConnectionFailed("browser manager initialization failed".to_owned())
     })?;
-    let endpoint = manager.launch_and_wait(job.connect_timeout, cancelled)?;
-    if manager.managed_process_id().is_none() {
+    let (endpoint, spawned_fresh_process) =
+        manager.launch_and_wait(job.connect_timeout, cancelled)?;
+    if spawned_fresh_process && manager.managed_process_id().is_none() {
         return Err(AppError::BrowserConnectionFailed(
             "browser process ownership could not be confirmed".to_owned(),
         ));
@@ -265,29 +266,56 @@ fn prepare_dedicated_browser_job(
 ) -> std::result::Result<CdpClient, BrowserAttemptFailure> {
     let request = &dispatch.request;
     let request_id = &request.id;
-    let deadline =
-        AttemptDeadline::new(job.attempt_timeout).map_err(|error| BrowserAttemptFailure {
+    if manager.is_none() {
+        let created = (|| -> Result<ChromeManager> {
+            let installation = ChromeInstallation::discover(job.configured_chrome_path.as_deref())?;
+            let profile = ManagedProfile::open(&job.profile_dir, data_root)?;
+            Ok(ChromeManager::new(installation, profile))
+        })()
+        .map_err(|error| BrowserAttemptFailure {
             error,
             provider_preparation_started: false,
         })?;
-    let before_preparation = (|| -> Result<(CdpClient, CdpTarget, GenericProviderAdapter)> {
-        if manager.is_none() {
-            let installation = ChromeInstallation::discover(job.configured_chrome_path.as_deref())?;
-            let profile = ManagedProfile::open(&job.profile_dir, data_root)?;
-            *manager = Some(ChromeManager::new(installation, profile));
-        }
-        let manager = manager.as_mut().ok_or_else(|| {
-            AppError::BrowserConnectionFailed("browser manager initialization failed".to_owned())
+        *manager = Some(created);
+    }
+    let Some(manager) = manager.as_mut() else {
+        return Err(BrowserAttemptFailure {
+            error: AppError::BrowserConnectionFailed(
+                "browser manager initialization failed".to_owned(),
+            ),
+            provider_preparation_started: false,
+        });
+    };
+    let (endpoint, spawned_fresh_process) = manager
+        .launch_and_wait(job.connect_timeout, cancelled)
+        .map_err(|error| BrowserAttemptFailure {
+            error,
+            provider_preparation_started: false,
         })?;
-        let endpoint =
-            manager.launch_and_wait(deadline.remaining(job.connect_timeout)?, cancelled)?;
-        if manager.managed_process_id().is_none() {
-            return Err(AppError::BrowserConnectionFailed(
+    if spawned_fresh_process && manager.managed_process_id().is_none() {
+        return Err(BrowserAttemptFailure {
+            error: AppError::BrowserConnectionFailed(
                 "browser process ownership could not be confirmed".to_owned(),
-            ));
-        }
-        send_stage(owner, events, request_id, BrowserStage::Started);
+            ),
+            provider_preparation_started: false,
+        });
+    }
+    send_stage(owner, events, request_id, BrowserStage::Started);
 
+    // The fail-fast fallback budget presumes an already-running browser can
+    // finish within it. A freshly spawned browser cannot, so a cold start
+    // runs every stage with the full configured timeouts instead.
+    let deadline = AttemptDeadline::new(if spawned_fresh_process {
+        None
+    } else {
+        job.attempt_timeout
+    })
+    .map_err(|error| BrowserAttemptFailure {
+        error,
+        provider_preparation_started: false,
+    })?;
+
+    let before_preparation = (|| -> Result<(CdpClient, CdpTarget, GenericProviderAdapter)> {
         let client = connect_with_one_retry(
             endpoint,
             deadline.remaining(job.connect_timeout)?,
@@ -388,7 +416,8 @@ pub(super) fn close_managed_browser(
     let Some(manager) = manager.as_mut() else {
         return;
     };
-    if manager.managed_process_id().is_none() {
+    let owned_process = manager.managed_process_id().is_some();
+    if !owned_process && !manager.has_live_endpoint() {
         return;
     }
     let close_cancelled = AtomicBool::new(false);
@@ -407,17 +436,31 @@ pub(super) fn close_managed_browser(
         .and_then(|client| client.close_browser(&close_cancelled))
         .is_ok();
     }
-    let exited = closed
-        && remaining() >= MIN_STEP
-        && manager
-            .wait_for_managed_exit(remaining().min(Duration::from_secs(5)))
-            .unwrap_or(false);
-    if !exited && manager.terminate_managed().is_err() {
-        tracing::warn!(
-            stage = "managed_browser_shutdown",
-            completed = false,
-            "managed Chrome did not exit cleanly"
-        );
+    if owned_process {
+        let exited = closed
+            && remaining() >= MIN_STEP
+            && manager
+                .wait_for_managed_exit(remaining().min(Duration::from_secs(5)))
+                .unwrap_or(false);
+        if !exited && manager.terminate_managed().is_err() {
+            tracing::warn!(
+                stage = "managed_browser_shutdown",
+                completed = false,
+                "managed Chrome did not exit cleanly"
+            );
+        }
+    } else if closed {
+        // An adopted resident browser has no owned child handle, so its exit
+        // can only be observed through the endpoint port.
+        let exited = remaining() >= MIN_STEP
+            && manager.wait_for_adopted_exit(remaining().min(Duration::from_secs(5)));
+        if !exited {
+            tracing::warn!(
+                stage = "managed_browser_shutdown",
+                completed = false,
+                "adopted managed Chrome did not exit cleanly"
+            );
+        }
     }
 }
 

@@ -111,14 +111,22 @@ impl ChromeManager {
         }
     }
 
+    /// Launches the managed browser unless one is already running for this
+    /// profile, then returns its DevTools endpoint plus whether this call
+    /// spawned a new browser process (`true`: cold start; `false`: an
+    /// already-running managed browser was reused, including one adopted
+    /// from a previous application session through its live endpoint).
     pub fn launch_and_wait(
         &mut self,
         timeout: Duration,
         cancelled: &AtomicBool,
-    ) -> Result<DevToolsEndpoint> {
+    ) -> Result<(DevToolsEndpoint, bool)> {
         self.clear_finished_child()?;
+        let mut spawned_fresh_process = false;
         if self.child.is_none() {
-            prepare_endpoint_for_launch(&self.profile)?;
+            if let Some(endpoint) = prepare_endpoint_for_launch(&self.profile)? {
+                return Ok((endpoint, false));
+            }
             let args = launch_args(self.profile.path());
             let child = Command::new(self.installation.path())
                 .args(args)
@@ -126,8 +134,10 @@ impl ChromeManager {
                 .spawn()
                 .map_err(|_| AppError::BrowserLaunchFailed)?;
             self.child = Some(child);
+            spawned_fresh_process = true;
         }
-        self.wait_for_endpoint(timeout, cancelled)
+        let endpoint = self.wait_for_endpoint(timeout, cancelled)?;
+        Ok((endpoint, spawned_fresh_process))
     }
 
     pub fn managed_process_id(&self) -> Option<u32> {
@@ -150,6 +160,30 @@ impl ChromeManager {
             }
             if Instant::now() >= deadline {
                 return Ok(false);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// Reports whether a DevTools endpoint for this profile is currently live
+    /// (readable and accepting TCP connections).
+    pub fn has_live_endpoint(&self) -> bool {
+        self.read_managed_endpoint().is_ok_and(|endpoint| {
+            TcpStream::connect_timeout(&endpoint.socket_addr(), Duration::from_millis(250)).is_ok()
+        })
+    }
+
+    /// Waits until the adopted resident browser stops listening on its
+    /// endpoint port. There is no child handle for an adopted browser, so the
+    /// port is the only observable exit signal.
+    pub fn wait_for_adopted_exit(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if !self.has_live_endpoint() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
             }
             thread::sleep(Duration::from_millis(25));
         }
@@ -229,17 +263,18 @@ impl ChromeManager {
     }
 }
 
-fn prepare_endpoint_for_launch(profile: &ManagedProfile) -> Result<()> {
+fn prepare_endpoint_for_launch(profile: &ManagedProfile) -> Result<Option<DevToolsEndpoint>> {
     let endpoint_path = profile.endpoint_file();
     if !endpoint_path.exists() {
-        return Ok(());
+        return Ok(None);
     }
     if let Ok(endpoint) = DevToolsEndpoint::read(&endpoint_path)
         && TcpStream::connect_timeout(&endpoint.socket_addr(), Duration::from_millis(250)).is_ok()
     {
-        return Err(AppError::BrowserProfileInUse);
+        return Ok(Some(endpoint));
     }
-    clear_stale_endpoint(profile)
+    clear_stale_endpoint(profile)?;
+    Ok(None)
 }
 
 fn clear_stale_endpoint(profile: &ManagedProfile) -> Result<()> {
@@ -431,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn live_endpoint_is_preserved_and_reported_as_in_use() {
+    fn live_endpoint_is_adopted_without_spawning() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
         let port = listener.local_addr().expect("address").port();
         let path = unique_test_profile("live-endpoint");
@@ -442,11 +477,19 @@ mod tests {
         )
         .expect("live endpoint");
 
-        assert!(matches!(
-            prepare_endpoint_for_launch(&profile),
-            Err(AppError::BrowserProfileInUse)
-        ));
-        assert!(profile.endpoint_file().exists());
+        let installation = ChromeInstallation::configured(PathBuf::from("chrome.exe"));
+        let mut manager = ChromeManager {
+            installation,
+            profile,
+            child: None,
+        };
+        let cancelled = AtomicBool::new(false);
+        let (endpoint, spawned_fresh_process) = manager
+            .launch_and_wait(Duration::from_secs(1), &cancelled)
+            .expect("adopt the resident browser");
+        assert_eq!(endpoint.socket_addr().port(), port);
+        assert!(!spawned_fresh_process);
+        assert!(manager.managed_process_id().is_none());
 
         drop(listener);
         fs::remove_dir_all(path).expect("cleanup");

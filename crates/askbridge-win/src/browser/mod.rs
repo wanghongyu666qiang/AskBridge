@@ -87,7 +87,7 @@ mod integration_tests {
             ChromeInstallation::discover(Some(&chrome_path)).expect("Chrome installation");
         let mut manager = ChromeManager::new(installation, profile);
         let cancelled = AtomicBool::new(false);
-        let endpoint = manager
+        let (endpoint, _) = manager
             .launch_and_wait(Duration::from_secs(15), &cancelled)
             .expect("dynamic endpoint");
         assert!(manager.managed_process_id().is_some());
@@ -165,7 +165,7 @@ mod integration_tests {
             ChromeInstallation::discover(Some(&chrome_path)).expect("Chrome installation");
         let mut manager = ChromeManager::new(installation, profile);
         let cancelled = AtomicBool::new(false);
-        let endpoint = manager
+        let (endpoint, _) = manager
             .launch_and_wait(Duration::from_secs(15), &cancelled)
             .expect("dynamic endpoint");
 
@@ -265,7 +265,7 @@ mod integration_tests {
             ChromeInstallation::discover(Some(&chrome_path)).expect("Chrome installation");
         let mut manager = ChromeManager::new(installation, profile);
         let cancelled = AtomicBool::new(false);
-        let endpoint = manager
+        let (endpoint, _) = manager
             .launch_and_wait(Duration::from_secs(15), &cancelled)
             .expect("dynamic endpoint");
         assert!(manager.managed_process_id().is_some());
@@ -306,7 +306,7 @@ mod integration_tests {
             ChromeInstallation::discover(Some(&chrome_path)).expect("Chrome installation");
         let mut manager = ChromeManager::new(installation, profile);
         let cancelled = AtomicBool::new(false);
-        let endpoint = manager
+        let (endpoint, _) = manager
             .launch_and_wait(Duration::from_secs(15), &cancelled)
             .expect("dynamic endpoint");
         let client =
@@ -358,7 +358,7 @@ mod integration_tests {
         let mut manager = ChromeManager::new(installation, profile);
         let cancelled = AtomicBool::new(false);
         let launch_started = Instant::now();
-        let endpoint = manager
+        let (endpoint, _) = manager
             .launch_and_wait(Duration::from_secs(15), &cancelled)
             .expect("dynamic endpoint");
         let browser_launch_ms = launch_started.elapsed().as_secs_f64() * 1_000.0;
