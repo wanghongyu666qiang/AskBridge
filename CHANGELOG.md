@@ -6,6 +6,12 @@
 
 ### 修复
 
+- 配置剪贴板回退后，专用 Chrome 冷启动不再套用 3 秒尝试预算：冷启动
+  按完整的连接与页面超时执行，避免必然超时后接连弹出专用 Chrome 与
+  默认浏览器两个窗口；3 秒预算仅在复用已在运行的专用 Chrome 时生效。
+- 应用被强制结束或崩溃后仍在运行的专用 Chrome 不再触发
+  browser_profile_in_use 回退：新会话通过其调试端点直接接管继续复用，
+  仅当端点已失效时才冷启动；应用正常退出时同样会关闭被接管的浏览器。
 - Microsoft Store 版普通启动不再激活 WinRT ApplicationData 或
   StartupTask；LocalState 路径改由打包身份和本地应用数据目录解析，
   避免认证环境中 combase.dll 的启动访问冲突。

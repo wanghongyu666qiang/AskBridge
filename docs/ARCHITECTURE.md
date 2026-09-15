@@ -31,6 +31,8 @@ Screenshot
 
 受管理的 Chrome 使用 AskBridge 独立 `BrowserProfile`，remote debugging endpoint 必须是 loopback。这样可以隔离日常 Chrome 配置，并避免读取或控制用户日常浏览器的 Cookie、密码、验证码和会话。
 
+endpoint 文件随 profile 持久化：应用重启后若该端点仍接受连接，新会话直接接管驻留的专用 Chrome 继续复用，不重新生成进程；应用正常退出时通过 CDP 关闭被接管的浏览器。端点失效才按陈旧文件清理并冷启动。
+
 ## Persistent CDP 与 TargetSession
 
 一个 `CdpClient` 持有一个 persistent WebSocket。`BrowserConnection` 复用该连接，并维护 `target_id -> session_id` 映射和有上限的事件队列。目标首次使用时通过 `Target.attachToTarget(flatten=true)` 建立 session；`TargetSession` 在一次同步操作中复用它，并在 detach 或导航状态不确定时 fail-closed。
