@@ -9,7 +9,7 @@
 AskBridge 是一个 Windows 截图问答工具。框选屏幕内容后，可以复制截图、切换 AI 模型，或将截图和预设文字准备到 AI 网页的输入区。最终是否发送始终由用户决定。
 
 ## 下载与打开
-
+方法一：
 AskBridge 需要 64 位 Windows 10 或更高版本，以及 Microsoft Edge WebView2 Runtime（Windows 10/11 通常已内置；界面文字目前为简体中文）。
 
 1. 前往 [GitHub Releases](https://github.com/wanghongyu666qiang/AskBridge/releases) 下载最新版 `AskBridge-版本号-Setup.exe`。
@@ -21,6 +21,9 @@ AskBridge 启动后会在后台检查 GitHub Releases，此后每 24 小时检�
 普通用户不需要打开 PowerShell，也不需要运行仓库 `scripts` 目录中的任何命令。
 
 在本仓库参与开发时，编译后的调试程序位于 `target/debug/askbridge.exe`，发布程序位于 `target/release/askbridge.exe`。
+
+方法二：微软商店搜索：AskBridge
+
 
 ## 快捷键
 
