@@ -4,6 +4,8 @@
 
 ## [未发布]
 
+## [2.0.5] - 2026-09-19
+
 ### 修复
 
 - 配置剪贴板回退后，专用 Chrome 冷启动不再套用 3 秒尝试预算：冷启动按完整的连接与页面超时执行，避免必然超时后接连弹出专用 Chrome 与默认浏览器两个窗口；3 秒预算仅在复用已在运行的专用 Chrome 时生效。
@@ -96,7 +98,9 @@
 
 - 首个公开版本：框选截图与工具条、把截图和预设文字准备到 AI 网页输入区、专用 Chrome 与 CDP 对接、发布打包与安装路径防护。
 
-[未发布]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.3...HEAD
+[未发布]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.5...HEAD
+[2.0.5]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.4...v2.0.5
+[2.0.4]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.3...v2.0.4
 [2.0.3]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.0...v2.0.1
