@@ -35,10 +35,17 @@ pub(super) fn download_release(
     let expected_hash = expected_checksum(checksum_text, &release.setup_name)?;
 
     let mut spool = SetupSpool::create(update_root, &release.setup_name)?;
+    // Release-page fallback cannot know the published size up front; the
+    // maximum transfer cap plus the signed SHA-256 record still bound and
+    // verify the download in that case.
+    let size_limit = match release.setup_size {
+        0 => MAX_SETUP_BYTES as u64,
+        exact => exact,
+    };
     let mut last_reported: u64 = 0;
     let result = get_https_chunks(&release.setup_url, MAX_SETUP_BYTES, |chunk| {
-        spool.write_chunk(chunk, release.setup_size)?;
-        if should_report_progress(spool.received(), last_reported, release.setup_size) {
+        spool.write_chunk(chunk, size_limit)?;
+        if should_report_progress(spool.received(), last_reported, size_limit) {
             last_reported = spool.received();
             report_progress(last_reported, release.setup_size);
         }
@@ -112,7 +119,9 @@ impl SetupSpool {
     }
 
     fn publish(&mut self, expected_hash: &str, expected_size: u64) -> Result<PathBuf> {
-        if self.received != expected_size {
+        // A zero expected size means the size was unknown (release-page
+        // fallback); the SHA-256 check alone verifies the byte stream then.
+        if expected_size != 0 && self.received != expected_size {
             return Err(update_error("更新安装包大小与 GitHub Release 不一致"));
         }
         let actual_hash = self.hasher.finish_hex();

@@ -4,10 +4,11 @@ use askbridge_core::{AppError, Result};
 use windows_sys::Win32::{
     Foundation::GetLastError,
     Networking::WinHttp::{
-        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER,
+        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_DISABLE_REDIRECTS, WINHTTP_FLAG_SECURE,
+        WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_LOCATION,
         WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen,
         WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
-        WinHttpSendRequest, WinHttpSetTimeouts,
+        WinHttpSendRequest, WinHttpSetOption, WinHttpSetTimeouts,
     },
 };
 
@@ -91,6 +92,129 @@ pub(super) fn get_https_chunks(
         return Err(update_error(format!("更新服务器返回 HTTP {status}")));
     }
     read_response(&request, max_bytes, &mut sink)
+}
+
+/// Performs a GET with automatic redirects disabled and returns the
+/// `Location` header of a 3xx response. Used to resolve the latest release
+/// tag from the public release page when the GitHub API is unavailable
+/// (for example when a shared proxy exit IP exhausts the anonymous API
+/// quota); the redirect target is served by github.com, which has no such
+/// per-IP API quota.
+pub(super) fn probe_redirect_target(url: &str) -> Result<String> {
+    let parsed = ParsedHttpsUrl::parse(url)?;
+    let agent = wide("AskBridge Update/1.0");
+    let host = wide(&parsed.host);
+    let method = wide("GET");
+    let path = wide(&parsed.path);
+
+    // SAFETY: All strings are live, NUL-terminated UTF-16 buffers for synchronous calls.
+    let session = unsafe {
+        WinHttpOpen(
+            agent.as_ptr(),
+            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+            ptr::null(),
+            ptr::null(),
+            0,
+        )
+    };
+    let session = InternetHandle::new(session, "WinHttpOpen(update)")?;
+    // SAFETY: session and host remain valid for this synchronous connection call.
+    let connection = unsafe { WinHttpConnect(session.0, host.as_ptr(), parsed.port, 0) };
+    let connection = InternetHandle::new(connection, "WinHttpConnect(update)")?;
+    // SAFETY: connection is valid and the request uses HTTPS without a body.
+    let request = unsafe {
+        WinHttpOpenRequest(
+            connection.0,
+            method.as_ptr(),
+            path.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            WINHTTP_FLAG_SECURE,
+        )
+    };
+    let request = InternetHandle::new(request, "WinHttpOpenRequest(update)")?;
+    // SAFETY: request is live and the option value is a plain u32 flag.
+    if unsafe {
+        WinHttpSetOption(
+            request.0,
+            WINHTTP_OPTION_DISABLE_FEATURE,
+            &WINHTTP_DISABLE_REDIRECTS as *const u32 as *const core::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+        )
+    } == 0
+    {
+        return Err(last_windows_error("WinHttpSetOption(update)"));
+    }
+    // SAFETY: request is live and all bounded timeout values are milliseconds.
+    if unsafe {
+        WinHttpSetTimeouts(
+            request.0,
+            REQUEST_TIMEOUT_MS,
+            REQUEST_TIMEOUT_MS,
+            REQUEST_TIMEOUT_MS,
+            REQUEST_TIMEOUT_MS,
+        )
+    } == 0
+    {
+        return Err(last_windows_error("WinHttpSetTimeouts(update)"));
+    }
+    // SAFETY: No extra headers or request body are supplied.
+    if unsafe { WinHttpSendRequest(request.0, ptr::null(), 0, ptr::null(), 0, 0, 0) } == 0 {
+        return Err(last_windows_error("WinHttpSendRequest(update)"));
+    }
+    // SAFETY: request remains live for this synchronous response operation.
+    if unsafe { WinHttpReceiveResponse(request.0, ptr::null_mut()) } == 0 {
+        return Err(last_windows_error("WinHttpReceiveResponse(update)"));
+    }
+    let status = response_status(&request)?;
+    if !(300..400).contains(&status) {
+        return Err(update_error(format!(
+            "更新服务器返回 HTTP {status}，未提供发布页跳转"
+        )));
+    }
+    redirect_location(&request)
+}
+
+fn redirect_location(request: &InternetHandle) -> Result<String> {
+    // WinHttpQueryHeaders reports ERROR_INSUFFICIENT_BUFFER and the required
+    // character count (including the NUL terminator) when the buffer is null.
+    let mut size = 0_u32;
+    // SAFETY: A null buffer with size zero only queries the required size.
+    let _ = unsafe {
+        WinHttpQueryHeaders(
+            request.0,
+            WINHTTP_QUERY_LOCATION,
+            ptr::null(),
+            ptr::null_mut(),
+            &mut size,
+            ptr::null_mut(),
+        )
+    };
+    if size == 0 {
+        return Err(update_error("更新服务器未提供跳转地址"));
+    }
+    let mut buffer = vec![0_u16; size as usize];
+    // SAFETY: buffer is writable for the size reported by the probe call above.
+    if unsafe {
+        WinHttpQueryHeaders(
+            request.0,
+            WINHTTP_QUERY_LOCATION,
+            ptr::null(),
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+            ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(last_windows_error("WinHttpQueryHeaders(update)"));
+    }
+    let length = buffer
+        .iter()
+        .position(|character| *character == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf16(&buffer[..length])
+        .map_err(|_| update_error("更新服务器跳转地址不是有效 UTF-16"))
 }
 
 fn response_status(request: &InternetHandle) -> Result<u32> {
