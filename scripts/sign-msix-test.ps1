@@ -12,13 +12,15 @@ Set-StrictMode -Version Latest
 # Partner Center certifies and re-signs Store submissions, so the package built
 # by package-msix.ps1 is deliberately unsigned and stays that way.
 #
-# To smoke test a package locally, prefer Developer Mode plus
-# "Add-AppxPackage -AllowUnsigned" on the unsigned package - no certificate and
-# no elevation involved. This script covers the other route, for machines where
-# Developer Mode cannot be enabled: Windows validates the package signature
-# against machine trust, so a self-signed signature is rejected with
-# 0x80073CF0 / 0x800B0109 until the certificate is imported into
-# Cert:\LocalMachine\TrustedPeople, which needs an elevated session.
+# To smoke test a package locally you still have to sign it, because Windows only
+# deploys packages whose publisher it trusts. Add-AppxPackage -AllowUnsigned is
+# not a way around that: it accepts only packages whose manifest Publisher carries
+# the unsigned-namespace OID, and such a package can never share identity with the
+# signed one, so deploying the real Store package with it fails 0x80073D2C.
+#
+# So this script produces the test-signed copy; deployment then needs the
+# certificate in Cert:\LocalMachine\TrustedPeople, which only an elevated session
+# can write. Without that trust, Add-AppxPackage fails 0x80073CF0 / 0x800B0109.
 $certSubject = "CN=085D3D42-B8F4-43F7-BB9E-C0889168662A"
 $certFriendlyName = "AskBridge MSIX local test"
 $certStorePath = "Cert:\CurrentUser\My"
@@ -144,12 +146,14 @@ Write-Host "Test-signed package : $testPackage"
 Write-Host "Public certificate  : $certificatePath"
 Write-Host "Submission package  : $sourcePackage (left unsigned on purpose)"
 Write-Host ""
-Write-Host "Either of these installs the package locally - this script deliberately does neither:"
-Write-Host "  # no certificate needed; Settings > System > Developer settings, then:"
-Write-Host "  Add-AppxPackage -Path `"$sourcePackage`" -AllowUnsigned"
-Write-Host "  # or, elevated PowerShell, trust this certificate for the whole machine."
+Write-Host "Windows does not trust this certificate yet, and unsigned deployment is not an"
+Write-Host "option for a Store package (Add-AppxPackage -AllowUnsigned needs the"
+Write-Host "unsigned-namespace OID, which fails 0x80073D2C here)."
+Write-Host "Run these yourself - this script deliberately does not:"
+Write-Host "  # elevated PowerShell, trusts the certificate for the whole machine."
 Write-Host "  # User-scope stores are ignored by deployment; it must be LocalMachine."
 Write-Host "  Import-Certificate -FilePath `"$certificatePath`" -CertStoreLocation Cert:\LocalMachine\TrustedPeople"
+Write-Host "  # normal PowerShell, installs the package for the current user"
 Write-Host "  Add-AppxPackage -Path `"$testPackage`""
 Write-Host "  # afterwards, drops the trust entry again"
 Write-Host "  Remove-Item `"Cert:\LocalMachine\TrustedPeople\$($cert.Thumbprint)`""

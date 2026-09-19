@@ -33,15 +33,8 @@ built above is exactly what gets uploaded: that path involves no certificate, no
 PFX and no HSM. (Submitting an MSI or EXE instead would be the exception, and
 would have to carry its own signature.)
 
-To install a build locally before submitting it, turn on Developer Mode
-(`ms-settings:developers`) and install the unsigned package directly:
-
-```powershell
-Add-AppxPackage -Path D:/your-chosen-msix-output/AskBridge-2.0.5-store-x64.msix -AllowUnsigned
-```
-
-Where Developer Mode cannot be enabled, sign a throwaway copy with a
-self-signed test certificate instead:
+To install a build locally you still have to sign a throwaway copy, because
+Windows only deploys packages whose publisher it trusts:
 
 ```powershell
 ./scripts/sign-msix-test.ps1 -MsixPath D:/your-chosen-msix-output/AskBridge-2.0.5-store-x64.msix
@@ -50,12 +43,29 @@ self-signed test certificate instead:
 The script reuses or creates a single `CN=085D3D42-B8F4-43F7-BB9E-C0889168662A`
 certificate in `Cert:\CurrentUser\My`, writes an
 `...-testsigned.msix` package plus its public `.cer` next to the input, and
-leaves the submission file byte-for-byte untouched. Deployment validates the
-signature against machine trust, so such a package installs only after an
-elevated `Import-Certificate` puts the `.cer` into
-`Cert:\LocalMachine\TrustedPeople`; user-scope trust stores are ignored. The
-script prints that step rather than running it. Never upload the test-signed
-copy.
+leaves the submission file byte-for-byte untouched. It prints the two remaining
+steps rather than running them:
+
+```powershell
+# elevated PowerShell, once per machine
+Import-Certificate -FilePath D:/your-chosen-msix-output/AskBridge-2.0.5-store-x64-testsigned.cer `
+    -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+# then, for the current user
+Add-AppxPackage -Path D:/your-chosen-msix-output/AskBridge-2.0.5-store-x64-testsigned.msix
+```
+
+Deployment validates signatures against machine trust, so the certificate must
+land in `Cert:\LocalMachine\TrustedPeople`; `Cert:\CurrentUser\TrustedPeople` and
+`Cert:\CurrentUser\Root` are ignored and leave you with `0x80073CF0` /
+`0x800B0109`.
+
+Developer Mode plus `Add-AppxPackage -AllowUnsigned` does not bypass this. That
+flag only accepts a package whose manifest `Publisher` carries the
+unsigned-namespace OID, and an unsigned package deliberately can never share
+identity with a signed one — with our Store identity the deploy fails
+`0x80073D2C`.
+
+Never upload the test-signed copy.
 
 ## CI
 
