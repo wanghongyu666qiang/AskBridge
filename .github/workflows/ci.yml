@@ -28,6 +28,8 @@ jobs:
     name: Windows (MSVC)
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      ASKBRIDGE_MSIX_ROOT: ${{ runner.temp }}\askbridge-msix-ci
 
     steps:
       - name: Check out repository
@@ -94,9 +96,21 @@ jobs:
 
       - name: Pack Microsoft Store MSIX
         shell: pwsh
-        run: |
-          $artifactRoot = Join-Path $env:RUNNER_TEMP "askbridge-msix-ci"
-          ./scripts/package-msix.ps1 -ArtifactRoot $artifactRoot
+        run: ./scripts/package-msix.ps1 -ArtifactRoot $env:ASKBRIDGE_MSIX_ROOT
+
+      # Store submissions need no authenticode signature (Partner Center
+      # re-signs after certification), so CI deliberately uploads the unsigned
+      # package. scripts/sign-msix-test.ps1 is the local sideload-only path.
+      - name: Preserve Store MSIX
+        # actions/upload-artifact v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: AskBridge-store-msix-unsigned
+          path: |
+            ${{ env.ASKBRIDGE_MSIX_ROOT }}/*.msix
+            ${{ env.ASKBRIDGE_MSIX_ROOT }}/package-metadata.json
+            ${{ env.ASKBRIDGE_MSIX_ROOT }}/SHA256SUMS.txt
+          if-no-files-found: error
 
   windows-gnu:
     name: Windows (GNU)

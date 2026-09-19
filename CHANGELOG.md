@@ -9,6 +9,11 @@
 - Microsoft Store 版普通启动不再激活 WinRT ApplicationData 或 StartupTask；LocalState 路径改由打包身份和本地应用数据目录解析，避免认证环境中 combase.dll 的启动访问冲突。
 - 仅在用户明确更改“登录后自动启动”设置时访问 Store StartupTask。
 
+### 工程
+
+- CI 在每次分支推送与 PR 中打包 Microsoft Store MSIX，并将其连同 `package-metadata.json` 与 `SHA256SUMS.txt` 保留为 `AskBridge-store-msix-unsigned` 工作流产物；产物刻意保持未签名，因为 Partner Center 会在认证后重新签名，商店包也不进入 GitHub Release。
+- 新增 `scripts/sign-msix-test.ps1`，用一张可复用的自签测试证书为本地侧载安装生成 `-testsigned.msix` 副本，提交用的未签名包保持逐字节不变；脚本仅打印加入受信任人员存储与 `Add-AppxPackage` 的命令，不代为执行。
+
 ## [2.0.5] - 2026-09-19
 
 ### 安全
