@@ -6,16 +6,19 @@
 
 ### 修复
 
-- 配置剪贴板回退后，专用 Chrome 冷启动不再套用 3 秒尝试预算：冷启动
-  按完整的连接与页面超时执行，避免必然超时后接连弹出专用 Chrome 与
-  默认浏览器两个窗口；3 秒预算仅在复用已在运行的专用 Chrome 时生效。
-- 应用被强制结束或崩溃后仍在运行的专用 Chrome 不再触发
-  browser_profile_in_use 回退：新会话通过其调试端点直接接管继续复用，
-  仅当端点已失效时才冷启动；应用正常退出时同样会关闭被接管的浏览器。
-- Microsoft Store 版普通启动不再激活 WinRT ApplicationData 或
-  StartupTask；LocalState 路径改由打包身份和本地应用数据目录解析，
-  避免认证环境中 combase.dll 的启动访问冲突。
+- Microsoft Store 版普通启动不再激活 WinRT ApplicationData 或 StartupTask；LocalState 路径改由打包身份和本地应用数据目录解析，避免认证环境中 combase.dll 的启动访问冲突。
 - 仅在用户明确更改“登录后自动启动”设置时访问 Store StartupTask。
+
+## [2.0.5] - 2026-09-19
+
+### 安全
+
+- 发布构建不再依据可执行文件各级祖先目录中未认证的 `Cargo.toml` 标记判定数据目录：即使在安装目录的上层植入标记文件，也无法把已安装版或便携版的数据目录（含开机启动状态）挪到别处；该源码树探测仅在调试构建生效，本地运行仍然使用仓库的 `data` 目录。
+
+### 修复
+
+- 配置剪贴板回退后，专用 Chrome 冷启动不再套用 3 秒尝试预算：冷启动按完整的连接与页面超时执行，避免必然超时后接连弹出专用 Chrome 与默认浏览器两个窗口；3 秒预算仅在复用已在运行的专用 Chrome 时生效。
+- 应用被强制结束或崩溃后仍在运行的专用 Chrome 不再触发 browser_profile_in_use 回退：新会话通过其调试端点直接接管继续复用，仅当端点已失效时才冷启动；应用正常退出时同样会关闭被接管的浏览器。
 
 ## [2.0.4] - 2026-09-13
 
@@ -104,7 +107,9 @@
 
 - 首个公开版本：框选截图与工具条、把截图和预设文字准备到 AI 网页输入区、专用 Chrome 与 CDP 对接、发布打包与安装路径防护。
 
-[未发布]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.3...HEAD
+[未发布]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.5...HEAD
+[2.0.5]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.4...v2.0.5
+[2.0.4]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.3...v2.0.4
 [2.0.3]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.0...v2.0.1

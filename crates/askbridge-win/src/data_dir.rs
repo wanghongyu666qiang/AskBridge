@@ -43,12 +43,21 @@ fn default_for_executable(executable: &Path) -> Result<PathBuf> {
 
     #[cfg(not(feature = "store"))]
     {
-        let directory = executable.parent().ok_or_else(|| {
-            AppError::ConfigurationInvalid(
-                "AskBridge executable has no parent directory".to_owned(),
-            )
-        })?;
+        // Shipped builds must never let planted source-tree markers redirect user data.
+        default_for_executable_with_source_tree(executable, cfg!(debug_assertions))
+    }
+}
 
+#[cfg(not(feature = "store"))]
+fn default_for_executable_with_source_tree(
+    executable: &Path,
+    allow_source_tree: bool,
+) -> Result<PathBuf> {
+    let directory = executable.parent().ok_or_else(|| {
+        AppError::ConfigurationInvalid("AskBridge executable has no parent directory".to_owned())
+    })?;
+
+    if allow_source_tree {
         for ancestor in directory.ancestors() {
             if ancestor.join("Cargo.toml").is_file()
                 && ancestor
@@ -60,9 +69,9 @@ fn default_for_executable(executable: &Path) -> Result<PathBuf> {
                 return Ok(ancestor.join(DATA_DIR_NAME));
             }
         }
-
-        Ok(directory.join(DATA_DIR_NAME))
     }
+
+    Ok(directory.join(DATA_DIR_NAME))
 }
 
 #[cfg(feature = "store")]
@@ -181,6 +190,28 @@ mod tests {
             PathBuf::from(
                 r"C:\Users\StoreTest\AppData\Local\Packages\55AD4ABA.AskBridge_3kthnvq439ewe\LocalState"
             )
+        );
+    }
+
+    #[cfg(not(feature = "store"))]
+    #[test]
+    fn only_debug_builds_honour_source_tree_markers() {
+        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repository_root = crate_dir
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root");
+        let in_repository = crate_dir.join("target").join("debug").join("askbridge.exe");
+
+        let debug = default_for_executable_with_source_tree(&in_repository, true)
+            .expect("debug data directory");
+        assert_eq!(debug, repository_root.join(DATA_DIR_NAME));
+
+        let shipped = default_for_executable_with_source_tree(&in_repository, false)
+            .expect("shipped data directory");
+        assert_eq!(
+            shipped,
+            crate_dir.join("target").join("debug").join(DATA_DIR_NAME)
         );
     }
 }
