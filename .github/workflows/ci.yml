@@ -77,7 +77,7 @@ jobs:
 
       - name: Install cargo-llvm-cov
         # taiki-e/install-action v2
-        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5
         with:
           tool: cargo-llvm-cov
 
