@@ -16,7 +16,7 @@ A 77-second demo that walks through the whole path, from selecting an area with 
 
 <p align="center">
   <a href="https://github.com/wanghongyu666qiang/AskBridge/releases/tag/v2.0.5">
-    <img src="assets/demo/askbridge-demo-preview.gif" alt="AskBridge demo animation: the screen dims, an area is dragged out with a live size readout, the capture toolbar appears with Copy, Cancel, model picker and Ask AI, then the screenshot and prompt land in an AI website's input box, closing on the wordmark and the two download channels" width="800">
+    <img src="assets/demo/askbridge-demo-preview.gif" alt="AskBridge demo animation: the screen dims, an area is dragged out with a live size readout, the capture toolbar appears with Copy, Cancel, model picker and Ask AI; the screenshot and prompt then land in an AI website's input box; the settings window is toured across its Hotkeys, Providers, Browser and General tabs, closing on the AskBridge wordmark with the GitHub Releases and Microsoft Store channels" width="800">
   </a>
 </p>
 

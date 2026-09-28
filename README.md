@@ -14,7 +14,7 @@ AskBridge 是一个 Windows 截图问答工具。框选屏幕内容后，可以�
 
 <p align="center">
   <a href="https://github.com/wanghongyu666qiang/AskBridge/releases/tag/v2.0.5">
-    <img src="assets/demo/askbridge-demo-preview.gif" alt="AskBridge 演示动图：整屏压暗后拖框选择区域并实时显示尺寸读数，随后出现复制、取消、模型下拉与问问 AI 工具条，截图与提示词进入 AI 网页输入区，收在字标与两个下载入口" width="800">
+    <img src="assets/demo/askbridge-demo-preview.gif" alt="AskBridge 演示动图：整屏压暗后拖框选择区域并实时显示尺寸读数，出现复制、取消、模型下拉与问问 AI 工具条；截图与提示词进入 AI 网页输入区；再巡览设置窗的快捷键、供应商、浏览器、常规四页；收在 AskBridge 字标与 GitHub Releases、微软商店两个下载入口" width="800">
   </a>
 </p>
 
