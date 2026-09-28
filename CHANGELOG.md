@@ -4,6 +4,10 @@
 
 ## [未发布]
 
+### 文档
+
+- 中英文 README 新增「演示」一节：内嵌 16 秒 GIF 预览（`assets/demo/askbridge-demo-preview.gif`），并链接挂在 v2.0.5 Release 上的 77 秒完整演示片 `AskBridge-Demo-77s.mp4`。演示片画面里的网页与日志均为虚构数据，域名使用保留的 `.invalid`。
+
 ## [2.0.5] - 2026-09-19
 
 ### 安全

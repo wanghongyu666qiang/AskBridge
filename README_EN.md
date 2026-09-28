@@ -10,6 +10,18 @@ AskBridge is a Windows screenshot-to-AI tool. After selecting an area of the scr
 
 > Note: the in-app UI (tray menu, capture toolbar, settings) is currently Simplified Chinese only.
 
+## Demo
+
+A 77-second demo that walks through the whole path, from selecting an area with `Alt+Q` to staging the screenshot and prompt text in an AI website's input box. Every page and log line shown in the film is **fictional demo data** (domains use the reserved `.invalid` TLD) — no real accounts, conversations or project content appear.
+
+<p align="center">
+  <a href="https://github.com/wanghongyu666qiang/AskBridge/releases/tag/v2.0.5">
+    <img src="assets/demo/askbridge-demo-preview.gif" alt="AskBridge demo animation: the screen dims, an area is dragged out with a live size readout, the capture toolbar appears with Copy, Cancel, model picker and Ask AI, then the screenshot and prompt land in an AI website's input box, closing on the wordmark and the two download channels" width="800">
+  </a>
+</p>
+
+<p align="center">▶ <a href="https://github.com/wanghongyu666qiang/AskBridge/releases/download/v2.0.5/AskBridge-Demo-77s.mp4">Watch the full demo (77s · 1080p · MP4)</a></p>
+
 ## Download and Setup
 
 AskBridge requires 64-bit Windows 10 or later and the Microsoft Edge WebView2 Runtime (usually preinstalled on Windows 10/11).
