@@ -1,70 +1,65 @@
-use std::{ffi::c_void, path::Path, ptr};
+//! The settings window: a native host frame with one WebView2 child page.
+//!
+//! The native side owns the frame, DPI, and lifetime; the page owns layout and
+//! interaction. Commands flow back as the same `WM_COMMAND` IDs the runtime
+//! already handles, so `app/commands.rs` needs no knowledge of the page.
 
-use askbridge_core::{
-    AppCommand, AppConfig, AppError, BrowserLifecycle, BrowserTargetPreference, HotkeyBinding,
-    HotkeyConfig, ProviderConfig, ProviderOverride, Result, provider::built_in_providers,
+use std::{
+    cell::RefCell,
+    ffi::c_void,
+    path::{Path, PathBuf},
+    ptr,
+    rc::Rc,
 };
-use tracing::error;
+
+use askbridge_core::{AppConfig, AppError, Result};
+use tracing::{info, warn};
 use windows_sys::Win32::{
-    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
-    Graphics::Gdi::InvalidateRect,
+    Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Graphics::Dwm::{
+        DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+        DwmSetWindowAttribute,
+    },
     UI::{
-        Controls::{BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SETLIMITTEXT, EM_SETMARGINS},
+        HiDpi::AdjustWindowRectExForDpi,
         WindowsAndMessaging::{
-            BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_OWNERDRAW,
-            CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL, CBS_DROPDOWNLIST,
-            CreateWindowExW, DefWindowProcW, DestroyWindow, EC_LEFTMARGIN, EC_RIGHTMARGIN,
-            ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN, FindWindowW,
-            GetDlgItem, GetWindowTextLengthW, IsChild, IsWindowVisible, PostMessageW, SW_HIDE,
-            SW_SHOW, SendMessageW, SetForegroundWindow, SetWindowTextW, ShowWindow, WM_CLOSE,
-            WM_COMMAND, WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_SETFONT, WS_CAPTION, WS_CHILD,
-            WS_CLIPCHILDREN, WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP,
-            WS_VISIBLE, WS_VSCROLL,
+            CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA,
+            GetClientRect, PostMessageW, SW_HIDE, SW_SHOW, SetForegroundWindow, SetWindowLongPtrW,
+            SetWindowTextW, ShowWindow, WM_CLOSE, WM_COMMAND, WM_NCCREATE, WM_NCDESTROY,
+            WS_CAPTION, WS_CLIPCHILDREN, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
         },
     },
 };
 
+use wry::{
+    Rect, WebContext, WebView, WebViewBuilder,
+    dpi::{PhysicalPosition, PhysicalSize},
+    raw_window_handle::{
+        HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle,
+    },
+};
+
 use crate::{
-    adapter::{ProviderHealth, ProviderHealthReport},
+    adapter::ProviderHealthReport,
     single_instance::{MAIN_WINDOW_CLASS, MAIN_WINDOW_TITLE},
     util::{last_error, wide},
 };
 
-mod controls;
-mod pages;
-mod provider_config;
-mod theme;
-
-use theme::{UiFonts, UiScale, draw_owner_button, install_hover_tracking, static_control_color};
-
-/// The settings window background; the app controller registers the class
-/// with this color so pages, labels, and the window frame share one surface.
-pub const fn window_background_color() -> windows_sys::Win32::Foundation::COLORREF {
-    theme::COLOR_WINDOW_BG
-}
-
-use controls::{
-    combo_add, combo_reset, combo_select, combo_selection, create_button, create_control, get_text,
-    is_checked, set_checked, set_font, set_text,
+use self::{
+    dpi::UiScale,
+    draft::SettingsDraft,
+    html::settings_html,
+    view_model::{SettingsViewModel, health_status},
 };
-use pages::{
-    create_browser_page, create_general_page, create_hotkey_page, create_page, create_provider_page,
-};
-use provider_config::{origin_pattern, parse_custom_providers};
 
 pub const SETTINGS_CLASS: &str = "AskBridgeSettingsWindow";
 
-const TAB_HOTKEYS: u16 = 2001;
-const TAB_PROVIDERS: u16 = 2002;
-const TAB_BROWSER: u16 = 2003;
-const TAB_GENERAL: u16 = 2004;
-const PAGE_HOTKEYS: u16 = 2011;
-const PAGE_PROVIDERS: u16 = 2012;
-const PAGE_BROWSER: u16 = 2013;
-const PAGE_GENERAL: u16 = 2014;
-const TITLE_LABEL: u16 = 2021;
-const SUBTITLE_LABEL: u16 = 2022;
+mod dpi;
+mod draft;
+mod html;
+mod view_model;
 
+/// Control IDs the runtime already understands. The page posts these verbatim.
 pub const CONTROL_APPLY: u16 = 2051;
 pub const CONTROL_RESTORE_DEFAULTS: u16 = 2052;
 pub const CONTROL_CLOSE: u16 = 2053;
@@ -73,83 +68,51 @@ pub const CONTROL_CHECK_BROWSER: u16 = 2055;
 pub const CONTROL_OPEN_LOGIN: u16 = 2056;
 pub const CONTROL_CHECK_PROVIDERS: u16 = 2057;
 
-const STATUS_LABEL: u16 = 2060;
-const CONTROL_SEPARATOR: u16 = 2061;
-/// Decorative frame statics behind framed edits; never looked up by ID.
-pub(super) const CONTROL_DECORATION: u16 = 2062;
-/// Secondary description text rendered in the muted color and small font.
-const DESC_LABEL: u16 = 2063;
-const EDIT_CAPTURE: u16 = 2101;
-const CHECK_CAPTURE: u16 = 2102;
-const EDIT_QUICK: u16 = 2103;
-const CHECK_QUICK: u16 = 2104;
-const EDIT_TEXT: u16 = 2105;
-const CHECK_TEXT: u16 = 2106;
+const WINDOW_TITLE: &str = "AskBridge 设置";
+const WINDOW_WIDTH: i32 = 900;
+const WINDOW_HEIGHT: i32 = 660;
+/// The page background, kept in sync with `--bg` in `html.rs` and the DWM
+/// caption color so the title bar and the page read as one surface.
+const PAGE_BACKGROUND: COLORREF = rgb(251, 249, 246);
+const BORDER_COLOR: COLORREF = rgb(232, 227, 219);
 
-const COMBO_DEFAULT_PROVIDER: u16 = 2201;
-const CHECK_PROVIDER_BASE: u16 = 2210;
-const EDIT_PROVIDER_URL_BASE: u16 = 2220;
-const EDIT_CUSTOM_PROVIDERS: u16 = 2230;
-const PROVIDER_HEALTH_BASE: u16 = 2240;
-
-const RADIO_CHATGPT_DESKTOP_PWA: u16 = 2301;
-const RADIO_CHATGPT_DEDICATED_CHROME: u16 = 2305;
-const RADIO_CHATGPT_CLIPBOARD_PASTE: u16 = 2306;
-const RADIO_CHATGPT_DEDICATED_THEN_CLIPBOARD: u16 = 2307;
-const EDIT_CHROME_PATH: u16 = 2302;
-const COMBO_LIFECYCLE: u16 = 2303;
-const EDIT_DATA_PATH: u16 = 2304;
-
-const EDIT_QUICK_PROMPT: u16 = 2401;
-const CHECK_START_ON_LOGIN: u16 = 2402;
-const CHECK_DEBUG_LOGGING: u16 = 2405;
-
-const WINDOW_WIDTH: i32 = 840;
-const WINDOW_HEIGHT: i32 = 720;
-const MAX_SINGLE_LINE: WPARAM = 2048;
-const MAX_MULTI_LINE: WPARAM = 16_384;
-
-const LIFECYCLES: [(&str, BrowserLifecycle); 4] = [
-    ("按需启动，保持运行", BrowserLifecycle::OnDemandKeepRunning),
-    (
-        "按需启动，空闲十分钟关闭",
-        BrowserLifecycle::OnDemandIdleClose,
-    ),
-    ("每次准备后询问关闭", BrowserLifecycle::CloseAfterDispatch),
-    ("随 AskBridge 启动", BrowserLifecycle::OnStartup),
-];
-
-struct HotkeyRow {
-    command: AppCommand,
-    edit: HWND,
-    enabled: HWND,
+const fn rgb(red: u8, green: u8, blue: u8) -> COLORREF {
+    red as COLORREF | ((green as COLORREF) << 8) | ((blue as COLORREF) << 16)
 }
 
-struct ProviderRow {
-    id: String,
-    enabled: HWND,
-    start_url: HWND,
-    health: HWND,
+/// The window background; the runtime registers the class with this color so
+/// the frame never flashes a system color while the page loads.
+pub const fn window_background_color() -> COLORREF {
+    PAGE_BACKGROUND
+}
+
+/// Everything the page and the host share.
+///
+/// All of this runs on the UI thread: the IPC handler is invoked from the
+/// WebView2 message pump, which this thread's message loop drives.
+struct SettingsState {
+    /// Created on first `show`, so startup never pays for a WebView2
+    /// environment the user may never open.
+    webview: Option<WebView>,
+    /// `WebContext` must outlive the WebView it created.
+    context: Option<Box<WebContext>>,
+    /// The draft last posted by the page, consumed when the runtime applies.
+    draft: Option<SettingsDraft>,
+    /// The page has loaded and can accept `evaluate_script` calls.
+    ready: bool,
+    status: String,
+    status_tone: &'static str,
+    health: Vec<ProviderHealthReport>,
+    /// Latest serialized view model, so a page that finishes loading after a
+    /// refresh still receives the current configuration.
+    view_model: String,
 }
 
 pub struct SettingsWindow {
     window: HWND,
-    rows: Vec<HotkeyRow>,
-    provider_rows: Vec<ProviderRow>,
-    provider_ids: Vec<String>,
-    default_provider: HWND,
-    custom_providers: HWND,
-    chatgpt_desktop_pwa: HWND,
-    chatgpt_dedicated_chrome: HWND,
-    chatgpt_clipboard_paste: HWND,
-    chatgpt_dedicated_then_clipboard: HWND,
-    chrome_path: HWND,
-    lifecycle: HWND,
-    quick_prompt: HWND,
-    start_on_login: HWND,
-    debug_logging: HWND,
-    status: HWND,
-    _fonts: UiFonts,
+    state: Rc<RefCell<SettingsState>>,
+    data_root: PathBuf,
+    config: AppConfig,
 }
 
 impl SettingsWindow {
@@ -160,185 +123,88 @@ impl SettingsWindow {
         data_root: &Path,
     ) -> Result<Self> {
         let scale = UiScale::system();
-        let fonts = UiFonts::create(scale)?;
-        let window = create_control(
-            parent,
-            instance,
-            scale,
-            SETTINGS_CLASS,
-            "AskBridge 设置",
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-            180,
-            120,
-            WINDOW_WIDTH,
-            WINDOW_HEIGHT,
-            0,
-            0,
-        )?;
-
-        let title = create_control(
-            window,
-            instance,
-            scale,
-            "STATIC",
-            "AskBridge",
-            WS_CHILD | WS_VISIBLE,
-            24,
-            14,
-            180,
-            40,
-            0,
-            TITLE_LABEL,
-        )?;
-        set_font(title, fonts.title.handle());
-        let subtitle = create_control(
-            window,
-            instance,
-            scale,
-            "STATIC",
-            "截图问答 · 本机设置",
-            WS_CHILD | WS_VISIBLE,
-            24,
-            58,
-            240,
-            24,
-            0,
-            SUBTITLE_LABEL,
-        )?;
-        set_font(subtitle, fonts.small.handle());
-
-        for (index, (id, label)) in [
-            (TAB_HOTKEYS, "快捷键"),
-            (TAB_PROVIDERS, "供应商"),
-            (TAB_BROWSER, "浏览器"),
-            (TAB_GENERAL, "常规"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let tab = create_control(
-                window,
-                instance,
-                scale,
-                "BUTTON",
-                label,
-                WS_CHILD
-                    | WS_VISIBLE
-                    | WS_TABSTOP
-                    | if index == 0 { WS_GROUP } else { 0 }
-                    | BS_OWNERDRAW as u32,
-                24 + index as i32 * 118,
-                84,
-                112,
-                30,
+        // The page is laid out in CSS pixels, so the *client* area must be
+        // exactly the logical size once the window's DPI scaling is applied.
+        let (client_width, client_height) = scale.size(WINDOW_WIDTH, WINDOW_HEIGHT);
+        let (width, height) = window_size_for_client(client_width, client_height, scale.dpi());
+        let class_name = wide(SETTINGS_CLASS);
+        let title = wide(WINDOW_TITLE);
+        // The page starts empty until the first show builds it, so the state
+        // pointer is not needed at creation time.
+        // SAFETY: The class is registered by the runtime and both string
+        // buffers live through the call. The window starts hidden.
+        let window = unsafe {
+            CreateWindowExW(
                 0,
-                id,
-            )?;
-            set_font(tab, fonts.label.handle());
-            install_hover_tracking(tab);
-        }
-
-        create_control(
-            window,
-            instance,
-            scale,
-            "STATIC",
-            "",
-            WS_CHILD | WS_VISIBLE,
-            24,
-            118,
-            792,
-            2,
-            0,
-            CONTROL_SEPARATOR,
-        )?;
-
-        let hotkey_page = create_page(window, instance, scale, PAGE_HOTKEYS)?;
-        let provider_page = create_page(window, instance, scale, PAGE_PROVIDERS)?;
-        let browser_page = create_page(window, instance, scale, PAGE_BROWSER)?;
-        let general_page = create_page(window, instance, scale, PAGE_GENERAL)?;
-
-        let rows = create_hotkey_page(hotkey_page, instance, scale, &fonts)?;
-        let (default_provider, provider_rows, custom_providers) =
-            create_provider_page(provider_page, instance, scale, &fonts)?;
-        let (
-            chatgpt_desktop_pwa,
-            chatgpt_dedicated_chrome,
-            chatgpt_clipboard_paste,
-            chatgpt_dedicated_then_clipboard,
-            chrome_path,
-            lifecycle,
-        ) = create_browser_page(browser_page, instance, scale, data_root, &fonts)?;
-        let (quick_prompt, start_on_login, debug_logging) =
-            create_general_page(general_page, instance, scale, &fonts)?;
-
-        create_button(
-            window,
-            instance,
-            scale,
-            &fonts,
-            "应用更改",
-            630,
-            606,
-            108,
-            CONTROL_APPLY,
-        )?;
-        create_button(
-            window,
-            instance,
-            scale,
-            &fonts,
-            "关闭",
-            750,
-            606,
-            66,
-            CONTROL_CLOSE,
-        )?;
-        let status = create_control(
-            window,
-            instance,
-            scale,
-            "STATIC",
-            "准备就绪。所有设置在校验后统一应用。",
-            WS_CHILD | WS_VISIBLE,
-            24,
-            612,
-            580,
-            28,
-            0,
-            STATUS_LABEL,
-        )?;
-        set_font(status, fonts.small.handle());
-
-        let mut settings = Self {
-            window,
-            rows,
-            provider_rows,
-            provider_ids: Vec::new(),
-            default_provider,
-            custom_providers,
-            chatgpt_desktop_pwa,
-            chatgpt_dedicated_chrome,
-            chatgpt_clipboard_paste,
-            chatgpt_dedicated_then_clipboard,
-            chrome_path,
-            lifecycle,
-            quick_prompt,
-            start_on_login,
-            debug_logging,
-            status,
-            _fonts: fonts,
+                class_name.as_ptr(),
+                title.as_ptr(),
+                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
+                180,
+                120,
+                width,
+                height,
+                parent,
+                ptr::null_mut(),
+                instance,
+                ptr::null_mut(),
+            )
         };
-        settings.refresh(config)?;
-        switch_page(window, PAGE_HOTKEYS);
-        Ok(settings)
+        if window.is_null() {
+            return Err(AppError::Windows {
+                operation: "CreateWindowExW(settings window)",
+                win32_code: last_error(),
+            });
+        }
+        apply_dwm_frame(window);
+
+        let view_model = SettingsViewModel::build(
+            config,
+            data_root,
+            "准备就绪。所有设置在校验后统一应用。",
+            &[],
+        )?;
+        Ok(Self {
+            window,
+            state: Rc::new(RefCell::new(SettingsState {
+                webview: None,
+                context: None,
+                draft: None,
+                ready: false,
+                status: "准备就绪。所有设置在校验后统一应用。".to_owned(),
+                status_tone: "",
+                health: Vec::new(),
+                view_model: view_model.to_json()?,
+            })),
+            data_root: data_root.to_path_buf(),
+            config: config.clone(),
+        })
     }
 
     pub const fn hwnd(&self) -> HWND {
         self.window
     }
 
-    pub fn show(&self) {
+    /// Shows the window, building the page on first use.
+    ///
+    /// A page that cannot initialize is reported to the user instead of
+    /// leaving an empty frame on screen: without WebView2 there is no settings
+    /// UI at all, so silence would look like a hang.
+    pub fn show(&mut self) {
+        if let Err(error) = self.ensure_page() {
+            warn!(
+                error_kind = error.kind(),
+                "settings page could not be created"
+            );
+            let message = format!(
+                "设置页面无法打开：{error}\n\n\
+                 AskBridge 的设置界面需要 Microsoft Edge WebView2 运行时。\n\
+                 Windows 11 与多数 Windows 10 已内置；若缺失，请从微软官方下载安装后重试。\n\n\
+                 在此期间仍可直接编辑配置文件：\n{}",
+                self.data_root.join("config.json").display()
+            );
+            crate::util::show_error("AskBridge 设置无法打开", &message);
+            return;
+        }
         // SAFETY: window is owned by this object and remains valid.
         unsafe {
             ShowWindow(self.window, SW_SHOW);
@@ -353,240 +219,188 @@ impl SettingsWindow {
         }
     }
 
-    pub fn is_visible(&self) -> bool {
-        // SAFETY: window is owned by this object.
-        unsafe { IsWindowVisible(self.window) != 0 }
-    }
-
-    pub fn contains(&self, window: HWND) -> bool {
-        window == self.window || {
-            // SAFETY: both handles are UI handles on the same thread.
-            unsafe { IsChild(self.window, window) != 0 }
-        }
-    }
-
+    /// Replaces the configuration the page renders.
     pub fn refresh(&mut self, config: &AppConfig) -> Result<()> {
-        for row in &self.rows {
-            let binding = config.hotkeys.binding(row.command);
-            set_text(row.edit, &binding.to_string())?;
-            set_checked(row.enabled, binding.enabled);
-        }
-
-        let providers = config.merged_providers()?;
-        self.provider_ids.clear();
-        combo_reset(self.default_provider);
-        let mut selected = 0;
-        for provider in &providers {
-            let index = combo_add(self.default_provider, &provider.display_name)?;
-            if provider.id == config.default_provider_id {
-                selected = index;
-            }
-            self.provider_ids.push(provider.id.clone());
-        }
-        combo_select(self.default_provider, selected);
-
-        for row in &self.provider_rows {
-            let provider = providers
-                .iter()
-                .find(|provider| provider.id == row.id)
-                .ok_or_else(|| AppError::InvalidProvider(row.id.clone()))?;
-            set_checked(row.enabled, provider.enabled);
-            set_text(row.start_url, &provider.start_url)?;
-            set_text(row.health, "○ 未检测")?;
-        }
-        let custom_text = config
-            .custom_providers
-            .iter()
-            .map(|provider| {
-                format!(
-                    "{} | {} | {} | {}",
-                    provider.id,
-                    provider.display_name,
-                    provider.start_url,
-                    provider.url_patterns.join(",")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\r\n");
-        set_text(self.custom_providers, &custom_text)?;
-
-        set_text(
-            self.chrome_path,
-            config.browser.chrome_path.as_deref().unwrap_or_default(),
-        )?;
-        set_checked(
-            self.chatgpt_desktop_pwa,
-            config.browser.target_preference("chatgpt") == BrowserTargetPreference::DesktopPwa,
-        );
-        set_checked(
-            self.chatgpt_dedicated_chrome,
-            config.browser.target_preference("chatgpt") == BrowserTargetPreference::DedicatedChrome,
-        );
-        set_checked(
-            self.chatgpt_clipboard_paste,
-            config.browser.target_preference("chatgpt") == BrowserTargetPreference::ClipboardPaste,
-        );
-        set_checked(
-            self.chatgpt_dedicated_then_clipboard,
-            config.browser.target_preference("chatgpt")
-                == BrowserTargetPreference::DedicatedChromeThenClipboardPaste,
-        );
-        combo_reset(self.lifecycle);
-        let mut lifecycle_selected = 0;
-        for (index, (label, value)) in LIFECYCLES.into_iter().enumerate() {
-            combo_add(self.lifecycle, label)?;
-            if config.browser.lifecycle == value {
-                lifecycle_selected = index;
-            }
-        }
-        combo_select(self.lifecycle, lifecycle_selected);
-
-        set_text(self.quick_prompt, &config.quick_prompt)?;
-        set_checked(self.start_on_login, config.general.start_on_login);
-        set_checked(self.debug_logging, config.general.debug_logging);
-        Ok(())
+        self.config = config.clone();
+        self.rebuild_view_model()?;
+        self.push_view_model()
     }
 
-    pub fn read_config(&self, base: &AppConfig) -> Result<AppConfig> {
-        let mut candidate = base.clone();
-        candidate.hotkeys = self.read_hotkeys()?;
-        candidate.default_provider_id = self.read_default_provider()?;
-        candidate.quick_prompt = get_text(self.quick_prompt)?.trim().to_owned();
-        candidate.general.start_on_login = is_checked(self.start_on_login);
-        candidate.general.debug_logging = is_checked(self.debug_logging);
-        candidate.general.auto_submit = false;
-
-        let chrome_path = get_text(self.chrome_path)?;
-        candidate.browser.chrome_path =
-            (!chrome_path.trim().is_empty()).then(|| chrome_path.trim().to_owned());
-        candidate.browser.lifecycle = self.read_lifecycle()?;
-        candidate.browser.target_preferences.insert(
-            "chatgpt".to_owned(),
-            if is_checked(self.chatgpt_desktop_pwa) {
-                BrowserTargetPreference::DesktopPwa
-            } else if is_checked(self.chatgpt_clipboard_paste) {
-                BrowserTargetPreference::ClipboardPaste
-            } else if is_checked(self.chatgpt_dedicated_then_clipboard) {
-                BrowserTargetPreference::DedicatedChromeThenClipboardPaste
-            } else {
-                BrowserTargetPreference::DedicatedChrome
-            },
-        );
-        candidate.provider_overrides = self.read_provider_overrides(base)?;
-        candidate.custom_providers = parse_custom_providers(&get_text(self.custom_providers)?)?;
-        candidate.validate()?;
-        Ok(candidate)
+    /// Hands the page's pending draft to the runtime. Returns `None` when the
+    /// page has not posted one, which the runtime treats as "nothing to apply".
+    pub fn take_draft(&self) -> Option<SettingsDraft> {
+        self.state.borrow_mut().draft.take()
     }
 
     pub fn set_status(&self, message: &str) {
-        let _ = set_text(self.status, message);
+        {
+            let mut state = self.state.borrow_mut();
+            state.status = message.to_owned();
+            state.status_tone = "";
+        }
+        self.evaluate(format!(
+            "window.applyStatus?.({}, \"\");",
+            js_string_literal(message)
+        ));
     }
 
-    /// Updates the provider rows with the latest no-send capability results.
+    /// Reports the outcome of an apply so the page can show its toast.
+    pub fn report_apply(&self, result: std::result::Result<&str, &str>) {
+        let (ok, message) = match result {
+            Ok(message) => (true, message),
+            Err(message) => (false, message),
+        };
+        {
+            let mut state = self.state.borrow_mut();
+            state.status = message.to_owned();
+            state.status_tone = if ok { "ok" } else { "error" };
+        }
+        info!(ok, "settings apply result");
+        self.evaluate(format!(
+            "window.applyResult?.({ok}, {});",
+            js_string_literal(message)
+        ));
+    }
+
+    /// Updates the provider health badges.
     pub fn set_provider_health(&self, reports: &[ProviderHealthReport]) {
-        for row in &self.provider_rows {
-            let Some(report) = reports.iter().find(|report| report.provider_id == row.id) else {
-                continue;
-            };
-            let message = match report.health {
-                ProviderHealth::Healthy => "✓ 页面/输入框/图片",
-                ProviderHealth::LoginRequired => "⚠ 需要登录",
-                ProviderHealth::ComposerMissing => "⚠ 输入框检测失败",
-                ProviderHealth::AttachmentUnsupported => "⚠ 输入框正常；无图片",
-                ProviderHealth::NetworkError => "✕ 页面访问失败",
-            };
-            let _ = set_text(row.health, message);
+        self.state.borrow_mut().health = reports.to_vec();
+        self.evaluate(format!("window.applyHealth?.({});", health_json(reports)));
+    }
+
+    /// Runs a script in the page once it is loaded. Calls made before the page
+    /// finishes loading are dropped; the page hydrates from the inline view
+    /// model, so nothing is lost.
+    fn evaluate(&self, script: String) {
+        let state = self.state.borrow();
+        if !state.ready {
+            return;
+        }
+        let Some(webview) = &state.webview else {
+            return;
+        };
+        if let Err(error) = webview.evaluate_script(&script) {
+            warn!(
+                error_kind = "webview_eval",
+                "settings page script could not run: {error}"
+            );
         }
     }
 
-    fn read_hotkeys(&self) -> Result<HotkeyConfig> {
-        let mut config = HotkeyConfig::default();
-        for row in &self.rows {
-            let text = get_text(row.edit)?;
-            let mut binding = text
-                .parse::<HotkeyBinding>()
-                .map_err(|error| AppError::InvalidHotkey(format!("{text}: {error}")))?;
-            binding.enabled = is_checked(row.enabled);
-            *config.binding_mut(row.command) = binding;
+    fn ensure_page(&mut self) -> Result<()> {
+        if self.state.borrow().webview.is_some() {
+            return Ok(());
         }
-        config.validate()?;
-        Ok(config)
-    }
-
-    fn read_default_provider(&self) -> Result<String> {
-        let selected = combo_selection(self.default_provider)?;
-        self.provider_ids.get(selected).cloned().ok_or_else(|| {
-            AppError::InvalidProvider("selected default provider is unavailable".to_owned())
-        })
-    }
-
-    fn read_lifecycle(&self) -> Result<BrowserLifecycle> {
-        let selected = combo_selection(self.lifecycle)?;
-        LIFECYCLES
-            .get(selected)
-            .map(|(_, value)| *value)
-            .ok_or_else(|| {
-                AppError::ConfigurationInvalid("browser lifecycle selection is invalid".to_owned())
+        let html = settings_html(&self.state.borrow().view_model)?;
+        let mut context = Box::new(WebContext::new(Some(self.webview_data_dir())));
+        let state = Rc::clone(&self.state);
+        let host = HostWindow(self.window);
+        let scale = UiScale::for_window(self.window);
+        let (width, height) = scale.size(WINDOW_WIDTH, WINDOW_HEIGHT);
+        let webview = WebViewBuilder::new_with_web_context(&mut context)
+            .with_html(html)
+            .with_bounds(Rect {
+                position: PhysicalPosition::new(0, 0).into(),
+                size: PhysicalSize::new(width as u32, height as u32).into(),
             })
+            // The page is fully self-contained: navigating away from it is
+            // either a bug or an injection attempt. `with_html` loads the
+            // document through `NavigateToString`, which itself reports
+            // `about:blank`, so that one origin must stay allowed.
+            // The page is fully self-contained: navigating away from it is
+            // either a bug or an injection attempt. `with_html` loads the
+            // document as an inline `data:` URL, so only that origin stays
+            // allowed; anything else (including links and redirects) is
+            // cancelled.
+            .with_navigation_handler(|url| is_inline_document(&url))
+            .with_devtools(cfg!(debug_assertions))
+            .with_ipc_handler(move |request| {
+                if let Err(error) = handle_page_message(&state, request.body()) {
+                    warn!(
+                        error_kind = error.kind(),
+                        "settings page message could not be handled"
+                    );
+                }
+            })
+            .build_as_child(&host)
+            .map_err(|error| {
+                AppError::ConfigurationInvalid(format!(
+                    "设置页面无法初始化（需要 Microsoft Edge WebView2 运行时）：{error}"
+                ))
+            })?;
+        {
+            let mut state = self.state.borrow_mut();
+            state.webview = Some(webview);
+            state.context = Some(context);
+        }
+        // Creating the WebView2 child re-creates the host's window text, so
+        // the title has to be restored afterwards. It is the identity the
+        // accessibility tree and the UI acceptance script look the window up
+        // by, so it must not stay empty.
+        let title = wide(WINDOW_TITLE);
+        // SAFETY: window is live and title is a nul-terminated UTF-16 buffer.
+        unsafe {
+            SetWindowTextW(self.window, title.as_ptr());
+        }
+        self.resize_page();
+        Ok(())
     }
 
-    fn read_provider_overrides(&self, base: &AppConfig) -> Result<Vec<ProviderOverride>> {
-        let defaults = built_in_providers();
-        let current = base.merged_providers()?;
-        let mut overrides = Vec::new();
-        for row in &self.provider_rows {
-            let original = defaults
-                .iter()
-                .find(|provider| provider.id == row.id)
-                .ok_or_else(|| AppError::InvalidProvider(row.id.clone()))?;
-            let existing = base
-                .provider_overrides
-                .iter()
-                .find(|provider| provider.id == row.id);
-            let previous = current
-                .iter()
-                .find(|provider| provider.id == row.id)
-                .ok_or_else(|| AppError::InvalidProvider(row.id.clone()))?;
-            let enabled = is_checked(row.enabled);
-            let start_url = get_text(row.start_url)?.trim().to_owned();
-            let url_patterns = if start_url == previous.start_url {
-                previous.url_patterns.clone()
-            } else {
-                vec![origin_pattern(&start_url)?]
-            };
-            let verification = ProviderConfig {
-                id: row.id.clone(),
-                display_name: original.display_name.clone(),
-                enabled,
-                start_url: start_url.clone(),
-                url_patterns: url_patterns.clone(),
-                is_custom: false,
-                adapter_override: original.adapter_override.clone(),
-            };
-            verification.validate()?;
-            let provider_override = ProviderOverride {
-                id: row.id.clone(),
-                display_name: existing.and_then(|value| value.display_name.clone()),
-                enabled: (enabled != original.enabled).then_some(enabled),
-                start_url: (start_url != original.start_url).then_some(start_url),
-                url_patterns: (url_patterns != original.url_patterns).then_some(url_patterns),
-                adapter_override: existing.and_then(|value| value.adapter_override.clone()),
-            };
-            if provider_override.display_name.is_some()
-                || provider_override.enabled.is_some()
-                || provider_override.start_url.is_some()
-                || provider_override.url_patterns.is_some()
-                || provider_override.adapter_override.is_some()
-            {
-                overrides.push(provider_override);
-            }
+    fn webview_data_dir(&self) -> PathBuf {
+        self.data_root.join("webview")
+    }
+
+    fn rebuild_view_model(&self) -> Result<()> {
+        let state = self.state.borrow();
+        let view_model =
+            SettingsViewModel::build(&self.config, &self.data_root, &state.status, &state.health)?;
+        let json = view_model.to_json()?;
+        drop(state);
+        self.state.borrow_mut().view_model = json;
+        Ok(())
+    }
+
+    fn push_view_model(&self) -> Result<()> {
+        let payload = self.state.borrow().view_model.clone();
+        self.evaluate(format!("window.hydrate?.({payload});"));
+        Ok(())
+    }
+
+    /// Keeps the WebView2 surface filling the host client area. The window is
+    /// fixed-size, so this only matters on the initial layout and after a DPI
+    /// change.
+    fn resize_page(&self) {
+        let state = self.state.borrow();
+        let Some(webview) = &state.webview else {
+            return;
+        };
+        let mut client = RECT::default();
+        // SAFETY: window is live and client points to writable storage.
+        unsafe {
+            GetClientRect(self.window, &mut client);
         }
-        Ok(overrides)
+        let width = (client.right - client.left).max(1) as u32;
+        let height = (client.bottom - client.top).max(1) as u32;
+        if let Err(error) = webview.set_bounds(Rect {
+            position: PhysicalPosition::new(0, 0).into(),
+            size: PhysicalSize::new(width, height).into(),
+        }) {
+            warn!(
+                error_kind = "webview_bounds",
+                "settings page could not be sized: {error}"
+            );
+        }
     }
 }
 
 impl Drop for SettingsWindow {
     fn drop(&mut self) {
+        // The WebView must be released before the window it is parented to,
+        // and the WebContext after the WebView.
+        let mut state = self.state.borrow_mut();
+        state.webview = None;
+        state.context = None;
+        drop(state);
         if !self.window.is_null() {
             // SAFETY: This object owns the top-level window and drops it on its UI thread.
             unsafe {
@@ -597,36 +411,193 @@ impl Drop for SettingsWindow {
     }
 }
 
-fn switch_page(window: HWND, page: u16) {
-    for (page_id, tab_id) in [
-        (PAGE_HOTKEYS, TAB_HOTKEYS),
-        (PAGE_PROVIDERS, TAB_PROVIDERS),
-        (PAGE_BROWSER, TAB_BROWSER),
-        (PAGE_GENERAL, TAB_GENERAL),
-    ] {
-        // SAFETY: window is the live outer settings window and IDs are its child controls.
-        let page_window = unsafe { GetDlgItem(window, i32::from(page_id)) };
-        if !page_window.is_null() {
-            // SAFETY: page_window is a live child window.
-            unsafe {
-                ShowWindow(page_window, if page_id == page { SW_SHOW } else { SW_HIDE });
-            }
-        }
-        // SAFETY: window is live and tab_id names an optional direct child.
-        let tab = unsafe { GetDlgItem(window, i32::from(tab_id)) };
-        if !tab.is_null() {
-            set_checked(tab, page_id == page);
-            // Owner-drawn tabs have no check glyph to update; force a repaint
-            // so the previously selected tab drops its accent underline.
-            unsafe {
-                InvalidateRect(tab, std::ptr::null(), 1);
+/// Converts a desired client size into the window size that produces it.
+///
+/// The settings page is laid out in CSS pixels, so the client area has to be
+/// exactly the logical size; without this the caption and borders would eat
+/// into the page and clip its right-hand column.
+fn window_size_for_client(client_width: i32, client_height: i32, dpi: u32) -> (i32, i32) {
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: client_width,
+        bottom: client_height,
+    };
+    // SAFETY: rect is writable and the style matches the window created below.
+    let adjusted = unsafe {
+        AdjustWindowRectExForDpi(
+            &mut rect,
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+            0,
+            0,
+            dpi,
+        )
+    };
+    if adjusted == 0 {
+        return (client_width, client_height);
+    }
+    (rect.right - rect.left, rect.bottom - rect.top)
+}
+
+/// Rounds the frame and merges the caption with the page surface. Every
+/// attribute is a no-op on Windows 10, where the frame keeps the system look.
+fn apply_dwm_frame(window: HWND) {
+    let corner = DWMWCP_ROUND;
+    let caption = PAGE_BACKGROUND;
+    let border = BORDER_COLOR;
+    // SAFETY: Each call passes a pointer to a live local of the documented size.
+    unsafe {
+        for (attribute, value, size) in [
+            (
+                DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+                &corner as *const _ as *const c_void,
+                std::mem::size_of_val(&corner) as u32,
+            ),
+            (
+                DWMWA_CAPTION_COLOR as u32,
+                &caption as *const _ as *const c_void,
+                std::mem::size_of_val(&caption) as u32,
+            ),
+            (
+                DWMWA_BORDER_COLOR as u32,
+                &border as *const _ as *const c_void,
+                std::mem::size_of_val(&border) as u32,
+            ),
+        ] {
+            let result = DwmSetWindowAttribute(window, attribute, value, size);
+            if result < 0 {
+                // Windows 10 rejects these; the frame just stays square, which
+                // is the intended fallback.
+                info!(
+                    hresult = format!("0x{:08X}", result as u32),
+                    "DWM frame attribute unavailable on this Windows build"
+                );
             }
         }
     }
 }
 
-const fn make_lparam(low: u16, high: u16) -> LPARAM {
-    (low as usize | ((high as usize) << 16)) as LPARAM
+/// Whether a navigation target is the inline document itself.
+///
+/// `WebViewBuilder::with_html` hands the page to WebView2 as a `data:` URL,
+/// so the initial load and any same-document reload carry that scheme. Every
+/// other URL is external and must be refused.
+fn is_inline_document(url: &str) -> bool {
+    url.starts_with("data:text/html") || url == "about:blank"
+}
+
+/// A JS string literal for interpolation into an `evaluate_script` call.
+///
+/// `serde_json` already produces a valid JS string literal, so this delegates
+/// instead of hand-escaping, which is the usual source of script injection.
+/// `<` is additionally escaped so a value can never terminate an inline
+/// `<script>` block if it is ever embedded in markup.
+fn js_string_literal(value: &str) -> String {
+    serde_json::to_string(value)
+        .map(|literal| literal.replace('<', "\\u003c"))
+        .unwrap_or_else(|_| "\"\"".to_owned())
+}
+
+fn health_json(reports: &[ProviderHealthReport]) -> String {
+    let payload = reports
+        .iter()
+        .map(|report| {
+            let (health, label) = health_status(report.health);
+            serde_json::json!({
+                "provider_id": report.provider_id,
+                "health": health,
+                "health_label": label,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::Value::Array(payload).to_string()
+}
+
+/// Routes a page message either to the page state or to the runtime.
+fn handle_page_message(state: &Rc<RefCell<SettingsState>>, body: &str) -> Result<()> {
+    if body == "ready" {
+        let mut state = state.borrow_mut();
+        state.ready = true;
+        // A refresh may have landed while the page was still loading.
+        let payload = state.view_model.clone();
+        let webview = state.webview.as_ref();
+        if let Some(webview) = webview
+            && let Err(error) = webview.evaluate_script(&format!("window.hydrate?.({payload});"))
+        {
+            warn!(
+                error_kind = "webview_eval",
+                "settings page could not hydrate after load: {error}"
+            );
+        }
+        return Ok(());
+    }
+    if body == "close" {
+        forward_command(CONTROL_CLOSE);
+        return Ok(());
+    }
+    let command = match body {
+        "restore_defaults" => CONTROL_RESTORE_DEFAULTS,
+        "check_providers" => CONTROL_CHECK_PROVIDERS,
+        "open_browser" => CONTROL_OPEN_BROWSER,
+        "open_login" => CONTROL_OPEN_LOGIN,
+        _ => {
+            // Only the messages the page actually sends are meaningful; a
+            // stray body is ignored rather than logged, so a malformed page
+            // cannot flood the log.
+            let Some(payload) = body.strip_prefix("apply:") else {
+                return Ok(());
+            };
+            let draft = serde_json::from_str::<SettingsDraft>(payload).map_err(|error| {
+                AppError::ConfigurationInvalid(format!("设置草稿格式无效：{error}"))
+            })?;
+            state.borrow_mut().draft = Some(draft);
+            CONTROL_APPLY
+        }
+    };
+    forward_command(command);
+    Ok(())
+}
+
+/// Forwards a control ID to the hidden runtime window, which owns the
+/// configuration, hotkeys, and browser. The settings window never applies
+/// anything itself.
+fn forward_command(command: u16) {
+    let class = wide(MAIN_WINDOW_CLASS);
+    let title = wide(MAIN_WINDOW_TITLE);
+    // SAFETY: Both search strings are valid nul-terminated UTF-16 buffers.
+    let main_window = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW(class.as_ptr(), title.as_ptr())
+    };
+    if main_window.is_null() {
+        warn!(
+            stage = "settings_command_dispatch",
+            completed = false,
+            "the runtime window was not found; settings command dropped"
+        );
+        return;
+    }
+    // SAFETY: WM_COMMAND targets our own UI thread and carries only control data.
+    unsafe {
+        if PostMessageW(main_window, WM_COMMAND, command as WPARAM, 0) == 0 {
+            warn!(
+                stage = "settings_command_dispatch",
+                completed = false,
+                win32_code = last_error(),
+                "failed to forward a settings command to the runtime"
+            );
+        }
+    }
+}
+
+struct HostWindow(HWND);
+
+impl HasWindowHandle for HostWindow {
+    fn window_handle(&self) -> std::result::Result<WindowHandle<'_>, HandleError> {
+        let hwnd = std::num::NonZeroIsize::new(self.0 as isize).ok_or(HandleError::Unavailable)?;
+        let handle = Win32WindowHandle::new(hwnd);
+        // SAFETY: The borrowed handle is valid while the owned settings window is alive.
+        Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Win32(handle)) })
+    }
 }
 
 pub unsafe extern "system" fn settings_window_proc(
@@ -635,50 +606,23 @@ pub unsafe extern "system" fn settings_window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if message == WM_NCCREATE {
+        // SAFETY: lparam points to CREATESTRUCTW for WM_NCCREATE.
+        let create = unsafe { &*(lparam as *const CREATESTRUCTW) };
+        // SAFETY: lpCreateParams carries the settings state pointer, if any.
+        unsafe {
+            SetWindowLongPtrW(window, GWLP_USERDATA, create.lpCreateParams as isize);
+        }
+        return 1;
+    }
+    if message == WM_NCDESTROY {
+        // SAFETY: Clear the borrowed state pointer before default teardown.
+        unsafe {
+            SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+            return DefWindowProcW(window, message, wparam, lparam);
+        }
+    }
     match message {
-        WM_COMMAND => {
-            let command = (wparam & 0xffff) as u16;
-            let page = match command {
-                TAB_HOTKEYS => Some(PAGE_HOTKEYS),
-                TAB_PROVIDERS => Some(PAGE_PROVIDERS),
-                TAB_BROWSER => Some(PAGE_BROWSER),
-                TAB_GENERAL => Some(PAGE_GENERAL),
-                _ => None,
-            };
-            if let Some(page) = page {
-                switch_page(window, page);
-                return 0;
-            }
-            let forwarded_wparam = wparam;
-            let forwarded_lparam = lparam;
-            let class = wide(MAIN_WINDOW_CLASS);
-            let title = wide(MAIN_WINDOW_TITLE);
-            // SAFETY: Both search strings are valid nul-terminated UTF-16 buffers.
-            let main_window = unsafe { FindWindowW(class.as_ptr(), title.as_ptr()) };
-            if !main_window.is_null() {
-                // SAFETY: WM_COMMAND targets our own UI thread and carries only control data.
-                if unsafe { PostMessageW(main_window, message, forwarded_wparam, forwarded_lparam) }
-                    == 0
-                {
-                    error!(
-                        stage = "settings_command_dispatch",
-                        completed = false,
-                        win32_code = last_error(),
-                        "failed to forward a settings command to the runtime"
-                    );
-                }
-            }
-            0
-        }
-        WM_DRAWITEM => {
-            if lparam == 0 {
-                return 0;
-            }
-            // SAFETY: For WM_DRAWITEM, lparam points to a DRAWITEMSTRUCT valid for this call.
-            let item = unsafe { &*(lparam as *const DRAWITEMSTRUCT) };
-            draw_owner_button(item)
-        }
-        WM_CTLCOLORSTATIC => static_control_color(lparam as HWND, wparam as *mut c_void),
         WM_CLOSE => {
             // SAFETY: window is the live settings window receiving this close request.
             unsafe {
@@ -698,44 +642,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn custom_provider_editor_requires_safe_complete_rows() {
-        let providers = parse_custom_providers(
-            "example | Example | https://example.com/chat | https://example.com/",
-        )
-        .expect("custom provider");
-        assert_eq!(providers.len(), 1);
-        assert!(providers[0].is_custom);
-        assert!(parse_custom_providers("bad | Missing fields").is_err());
-        assert!(
-            parse_custom_providers("bad | Bad | javascript:alert(1) | https://example.com/")
-                .is_err()
-        );
+    fn page_background_matches_the_css_page_color() {
+        // COLORREF is 0x00BBGGRR, so #fbf9f6 becomes 0x00f6f9fb.
+        assert_eq!(PAGE_BACKGROUND, 0x00f6f9fb);
     }
 
     #[test]
-    fn built_in_url_edits_are_scoped_to_their_https_origin() {
-        assert_eq!(
-            origin_pattern("https://example.com/app/new?x=1").expect("origin"),
-            "https://example.com/"
-        );
-        assert!(origin_pattern("http://example.com/").is_err());
+    fn control_ids_stay_in_the_range_the_runtime_handles() {
+        for id in [
+            CONTROL_APPLY,
+            CONTROL_RESTORE_DEFAULTS,
+            CONTROL_CLOSE,
+            CONTROL_OPEN_BROWSER,
+            CONTROL_CHECK_BROWSER,
+            CONTROL_OPEN_LOGIN,
+            CONTROL_CHECK_PROVIDERS,
+        ] {
+            assert!((2051..=2057).contains(&id));
+        }
     }
 
     #[test]
-    fn settings_page_exposes_no_auto_submit_control() {
-        let source = concat!(include_str!("mod.rs"), include_str!("pages.rs"));
-        let forbidden_control = ["CHECK_", "AUTO_", "SUBMIT"].concat();
-        assert!(!source.contains(&forbidden_control));
+    fn js_string_literals_escape_quotes_and_newlines() {
+        assert_eq!(js_string_literal("a\"b"), "\"a\\\"b\"");
+        assert_eq!(js_string_literal("a\nb"), "\"a\\nb\"");
+        assert_eq!(js_string_literal("设置已保存"), "\"设置已保存\"");
+        // A script terminator must not survive as raw markup.
+        assert!(!js_string_literal("</script>").contains("</script>"));
     }
 
     #[test]
-    fn browser_page_exposes_explicit_chatgpt_target_choices() {
-        let source = concat!(include_str!("mod.rs"), include_str!("pages.rs"));
-        assert!(source.contains("桌面网页端：复用现有登录，但截图需要手动上传"));
-        assert!(source.contains("AskBridge 专用 Chrome：支持自动上传图片，需要单独登录"));
-        assert!(source.contains("通用粘贴：支持浏览器或 AI 桌面端，仅模拟 Ctrl+V（不验证结果）"));
-        assert!(source.contains("专用 Chrome 优先：安全失败后自动用 Ctrl+V 粘贴截图"));
-        let forbidden = ["截图提问会", "自动使用 AskBridge 专用 Chrome"].concat();
-        assert!(!source.contains(&forbidden));
+    fn health_payload_uses_the_page_vocabulary() {
+        let reports = vec![ProviderHealthReport {
+            provider_id: "chatgpt".to_owned(),
+            health: crate::adapter::ProviderHealth::ComposerMissing,
+            page_accessible: true,
+            logged_in: true,
+            composer_found: false,
+            attachment_supported: false,
+            focus_supported: false,
+        }];
+        let json = health_json(&reports);
+        assert!(json.contains("\"composer_missing\""));
+        assert!(json.contains("\"provider_id\":\"chatgpt\""));
+    }
+
+    #[test]
+    fn only_the_inline_document_may_navigate() {
+        assert!(is_inline_document(
+            "data:text/html;charset=utf-8;base64,PCFkb2N0eXBl"
+        ));
+        assert!(is_inline_document("about:blank"));
+        for external in [
+            "https://example.com/",
+            "http://127.0.0.1:8080/",
+            "file:///C:/Windows/notepad.exe",
+            "javascript:alert(1)",
+            "data:image/png;base64,AAAA",
+            "about:blank#fragment",
+        ] {
+            assert!(
+                !is_inline_document(external),
+                "navigation to {external} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn class_and_title_are_a_stable_contract_with_the_ui_script() {
+        assert_eq!(SETTINGS_CLASS, "AskBridgeSettingsWindow");
+        assert_eq!(WINDOW_TITLE, "AskBridge 设置");
     }
 }

@@ -175,19 +175,24 @@ pub(super) struct Runtime {
 
 impl Runtime {
     pub(super) fn apply_settings(&mut self) {
-        let candidate = match self.settings.read_config(&self.config) {
+        // The page posts a draft on every Apply. Without one there is nothing
+        // to persist, which also keeps a stray command from rewriting config.
+        let Some(draft) = self.settings.take_draft() else {
+            return;
+        };
+        let candidate = match draft.to_config(&self.config) {
             Ok(candidate) => candidate,
             Err(error) => {
-                self.settings
-                    .set_status(&format!("无法应用：{}", user_facing_error(&error)));
+                let message = format!("无法应用：{}", user_facing_error(&error));
+                self.settings.report_apply(Err(&message));
                 return;
             }
         };
         if let Some(path) = candidate.browser.chrome_path.as_deref()
             && let Err(error) = ChromeInstallation::discover(Some(path))
         {
-            self.settings
-                .set_status(&format!("无法应用：{}", user_facing_error(&error)));
+            let message = format!("无法应用：{}", user_facing_error(&error));
+            self.settings.report_apply(Err(&message));
             return;
         }
         self.persist_settings(candidate, "设置已保存并立即生效。");
@@ -207,14 +212,12 @@ impl Runtime {
         let startup_snapshot = match startup::snapshot() {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                self.settings
-                    .set_status(&format!("无法应用：{}", user_facing_error(&error)));
+                self.report_apply_failure(&user_facing_error(&error));
                 return;
             }
         };
         if let Err(error) = startup::apply(candidate.general.start_on_login) {
-            self.settings
-                .set_status(&format!("无法应用：{}", user_facing_error(&error)));
+            self.report_apply_failure(&user_facing_error(&error));
             return;
         }
         if candidate.general.start_on_login
@@ -228,8 +231,7 @@ impl Runtime {
                     "startup registration rollback failed"
                 );
             }
-            self.settings
-                .set_status("无法应用：开机启动项写入后未能通过校验。");
+            self.report_apply_failure("开机启动项写入后未能通过校验。");
             return;
         }
         let store = &self.store;
@@ -257,20 +259,19 @@ impl Runtime {
                     let _ = self.hotkeys.pause();
                 }
                 if let Err(error) = self.settings.refresh(&self.config) {
-                    self.settings.set_status(&format!(
-                        "已保存，但界面刷新失败：{}",
-                        user_facing_error(&error)
-                    ));
+                    let message = format!("已保存，但界面刷新失败：{}", user_facing_error(&error));
+                    self.settings.report_apply(Ok(&message));
                     return;
                 }
-                if runtime_warnings.is_empty() {
-                    self.settings.set_status(success_message);
+                let message = if runtime_warnings.is_empty() {
+                    success_message.to_owned()
                 } else {
-                    self.settings.set_status(&format!(
+                    format!(
                         "设置已保存；运行时刷新失败，下次启动会生效：{}",
                         runtime_warnings.join("；")
-                    ));
-                }
+                    )
+                };
+                self.settings.report_apply(Ok(&message));
                 info!(stage = "settings", completed = true, "settings updated");
             }
             Err(error) => {
@@ -287,10 +288,16 @@ impl Runtime {
                     completed = false,
                     "hotkey configuration update failed"
                 );
-                self.settings
-                    .set_status(&format!("无法应用：{}", user_facing_error(&error)));
+                self.report_apply_failure(&user_facing_error(&error));
             }
         }
+    }
+
+    /// Surfaces a rejected apply in both places the user can be looking: the
+    /// page's toast and the status line.
+    fn report_apply_failure(&mut self, reason: &str) {
+        let message = format!("无法应用：{reason}");
+        self.settings.report_apply(Err(&message));
     }
 
     pub(super) fn open_browser_tool(&mut self, open_login: bool) {

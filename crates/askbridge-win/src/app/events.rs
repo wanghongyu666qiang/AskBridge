@@ -7,9 +7,9 @@ use windows_sys::Win32::{
     Graphics::Gdi::CreateSolidBrush,
     UI::WindowsAndMessaging::{
         CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
-        DispatchMessageW, GetMessageW, IDC_ARROW, IsDialogMessageW, LoadCursorW, MSG, PostMessageW,
-        PostQuitMessage, RegisterClassW, TranslateMessage, WM_CLOSE, WM_COMMAND, WM_HOTKEY,
-        WNDCLASSW, WNDPROC, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+        DispatchMessageW, GetMessageW, IDC_ARROW, LoadCursorW, MSG, PostMessageW, PostQuitMessage,
+        RegisterClassW, TranslateMessage, WM_CLOSE, WM_COMMAND, WM_HOTKEY, WNDCLASSW, WNDPROC,
+        WS_EX_TOOLWINDOW, WS_OVERLAPPED,
     },
 };
 
@@ -43,12 +43,10 @@ impl Runtime {
             if self.handle_message(&message)? {
                 continue;
             }
-            if self.settings.is_visible() && self.settings.contains(message.hwnd) {
-                // SAFETY: The settings window is live and the message belongs to it or a child.
-                if unsafe { IsDialogMessageW(self.settings.hwnd(), &message) } != 0 {
-                    continue;
-                }
-            }
+            // The settings page is a WebView2 child that owns its own keyboard
+            // navigation, so its messages must reach it untranslated. Running
+            // them through IsDialogMessageW first would swallow Tab and the
+            // arrow keys the page needs.
             // SAFETY: message was populated successfully by GetMessageW.
             unsafe {
                 TranslateMessage(&message);
