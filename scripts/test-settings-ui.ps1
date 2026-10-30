@@ -44,7 +44,6 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class AskBridgeUiNative {
-    private delegate bool EnumChildProc(IntPtr hWnd, IntPtr lParam);
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [DllImport("user32.dll")]
@@ -57,40 +56,22 @@ public static class AskBridgeUiNative {
     public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
-    public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("user32.dll", SetLastError = true)]
     public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageW", SetLastError = true)]
-    public static extern IntPtr SendMessageText(IntPtr hWnd, uint msg, IntPtr wParam, string lParam);
-
     [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool EnumChildWindows(IntPtr hWndParent, EnumChildProc callback, IntPtr lParam);
+    public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern int GetDlgCtrlID(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern IntPtr GetDlgItem(IntPtr hWnd, int controlId);
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern bool SetWindowText(IntPtr hWnd, string text);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(IntPtr hWnd, StringBuilder className, int maxCount);
-
-    public static string ReadWindowText(IntPtr window) {
-        StringBuilder text = new StringBuilder(8192);
-        GetWindowText(window, text, text.Capacity);
-        return text.ToString();
-    }
 
     public static string ReadClassName(IntPtr window) {
         StringBuilder className = new StringBuilder(256);
@@ -103,22 +84,9 @@ public static class AskBridgeUiNative {
         EnumWindows(delegate(IntPtr window, IntPtr _) {
             uint processId;
             GetWindowThreadProcessId(window, out processId);
-            StringBuilder className = new StringBuilder(256);
-            GetClassName(window, className, className.Capacity);
-            if (processId == expectedProcessId && className.ToString() == expectedClassName) {
+            if (processId == expectedProcessId &&
+                ReadClassName(window) == expectedClassName) {
                 found = window;
-                return false;
-            }
-            return true;
-        }, IntPtr.Zero);
-        return found;
-    }
-
-    public static IntPtr FindDescendantById(IntPtr parent, int controlId) {
-        IntPtr found = IntPtr.Zero;
-        EnumChildWindows(parent, delegate(IntPtr child, IntPtr _) {
-            if (GetDlgCtrlID(child) == controlId) {
-                found = child;
                 return false;
             }
             return true;
@@ -128,8 +96,59 @@ public static class AskBridgeUiNative {
 }
 "@
 
-function Find-WindowByName {
-    param([string]$Name, [int]$TimeoutSeconds = 10)
+# Per-monitor V2 so window rectangles and screen captures use real pixels on
+# scaled displays instead of the virtualized ones.
+[AskBridgeUiNative]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
+
+function Find-SettingsWindow {
+    param([int]$TimeoutSeconds = 20)
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $children = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+            [System.Windows.Automation.TreeScope]::Children,
+            [System.Windows.Automation.Condition]::TrueCondition
+        )
+        for ($index = 0; $index -lt $children.Count; $index++) {
+            $candidate = $children.Item($index)
+            if ($candidate.Current.ClassName -eq "AskBridgeSettingsWindow") {
+                return $candidate
+            }
+        }
+        Start-Sleep -Milliseconds 150
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "The AskBridge settings window did not appear."
+}
+
+function Find-ElementByAutomationId {
+    param(
+        [System.Windows.Automation.AutomationElement]$Root,
+        [string]$AutomationId,
+        [int]$TimeoutSeconds = 10
+    )
+
+    $condition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+        $AutomationId
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        # Re-read the root each attempt: every apply re-renders the page, which
+        # makes previously returned elements stale.
+        $liveRoot = Find-SettingsWindow
+        $element = $liveRoot.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+        if ($null -ne $element) { return $element }
+        Start-Sleep -Milliseconds 120
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Settings element with automation ID '$AutomationId' was not found."
+}
+
+function Find-ElementByName {
+    param(
+        [System.Windows.Automation.AutomationElement]$Root,
+        [string]$Name,
+        [int]$TimeoutSeconds = 10
+    )
 
     $condition = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::NameProperty,
@@ -137,67 +156,32 @@ function Find-WindowByName {
     )
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
-        $window = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
-            [System.Windows.Automation.TreeScope]::Children,
-            $condition
-        )
-        if ($null -ne $window) { return $window }
-        Start-Sleep -Milliseconds 100
+        $liveRoot = Find-SettingsWindow
+        $element = $liveRoot.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+        if ($null -ne $element) { return $element }
+        Start-Sleep -Milliseconds 120
     } while ([DateTime]::UtcNow -lt $deadline)
-    throw "Window '$Name' did not become visible."
+    throw "Visible UI element '$Name' was not found."
 }
 
-function Find-ElementByName {
-    param(
-        [System.Windows.Automation.AutomationElement]$Root,
-        [string]$Name
-    )
-
-    $condition = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::NameProperty,
-        $Name
-    )
-    $element = $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
-    if ($null -eq $element) { throw "Visible UI element '$Name' was not found." }
-    return $element
-}
-
-function Find-ElementByAutomationId {
-    param(
-        [System.Windows.Automation.AutomationElement]$Root,
-        [string]$AutomationId
-    )
-
-    $condition = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
-        $AutomationId
-    )
-    $elements = $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
-    for ($index = 0; $index -lt $elements.Count; $index++) {
-        $element = $elements.Item($index)
-        if ($element.Current.ControlType -eq [System.Windows.Automation.ControlType]::Edit) {
-            return $element
-        }
-    }
-    $editCondition = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::Edit
-    )
-    $edits = $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition)
-    $details = for ($index = 0; $index -lt $edits.Count; $index++) {
-        $edit = $edits.Item($index)
-        "id=$($edit.Current.AutomationId),name=$($edit.Current.Name),offscreen=$($edit.Current.IsOffscreen),class=$($edit.Current.ClassName)"
-    }
-    throw "Edit control with automation ID '$AutomationId' was not found. Available edits: $($details -join '; ')"
-}
-
-function Click-Element {
+function Invoke-Element {
     param([System.Windows.Automation.AutomationElement]$Element)
 
-    $handle = [IntPtr]$Element.Current.NativeWindowHandle
-    if ($handle -eq [IntPtr]::Zero) { throw "UI element '$($Element.Current.Name)' has no native handle." }
-    [AskBridgeUiNative]::SendMessage($handle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
-    Start-Sleep -Milliseconds 150
+    # Toggle buttons (aria-pressed / role=switch) expose TogglePattern instead
+    # of InvokePattern, so both are accepted.
+    $patternObject = $null
+    if ($Element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$patternObject)) {
+        ([System.Windows.Automation.InvokePattern]$patternObject).Invoke()
+    }
+    elseif ($Element.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$patternObject)) {
+        ([System.Windows.Automation.TogglePattern]$patternObject).Toggle()
+    }
+    else {
+        throw ("UI element '{0}' (type {1}, id '{2}', class '{3}', offscreen {4}) supports neither InvokePattern nor TogglePattern." -f `
+            $Element.Current.Name, $Element.Current.ControlType.ProgrammaticName, `
+            $Element.Current.AutomationId, $Element.Current.ClassName, $Element.Current.IsOffscreen)
+    }
+    Start-Sleep -Milliseconds 220
 }
 
 function Set-ElementValue {
@@ -211,78 +195,72 @@ function Set-ElementValue {
         throw "UI element '$($Element.Current.Name)' does not support ValuePattern."
     }
     ([System.Windows.Automation.ValuePattern]$patternObject).SetValue($Value)
+    Start-Sleep -Milliseconds 120
 }
 
-function Set-NativeControlText {
+function Set-SwitchState {
     param(
-        [System.Windows.Automation.AutomationElement]$Window,
-        [int]$ParentControlId,
-        [int]$ControlId,
-        [string]$Value
+        [System.Windows.Automation.AutomationElement]$Element,
+        [bool]$On
     )
 
-    $parentHandle = [AskBridgeUiNative]::GetDlgItem(
-        [IntPtr]$Window.Current.NativeWindowHandle,
-        $ParentControlId
-    )
-    if ($parentHandle -eq [IntPtr]::Zero) { throw "Native page ID '$ParentControlId' was not found." }
-    $handle = [AskBridgeUiNative]::GetDlgItem($parentHandle, $ControlId)
-    if ($handle -eq [IntPtr]::Zero) { throw "Native control ID '$ControlId' was not found." }
-    $className = [AskBridgeUiNative]::ReadClassName($handle)
-    if ($className -ne "Edit") {
-        throw "Native page '$ParentControlId' control '$ControlId' has unexpected class '$className'."
+    $wanted = if ($On) {
+        [System.Windows.Automation.ToggleState]::On
+    } else {
+        [System.Windows.Automation.ToggleState]::Off
     }
-    $result = [AskBridgeUiNative]::SendMessageText($handle, 0x000C, [IntPtr]::Zero, $Value)
-    if ($result -eq [IntPtr]::Zero) {
-        throw "WM_SETTEXT failed for native control ID '$ControlId'."
+    # The page re-renders after every apply, so a single Toggle can land on a
+    # node that is about to be replaced. Verify the result and retry once.
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        $patternObject = $null
+        if (-not $Element.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$patternObject)) {
+            throw "Switch '$($Element.Current.Name)' does not support TogglePattern."
+        }
+        $pattern = [System.Windows.Automation.TogglePattern]$patternObject
+        if ($pattern.Current.ToggleState -eq $wanted) { return }
+        $pattern.Toggle()
+        Start-Sleep -Milliseconds 250
+        try {
+            if ($pattern.Current.ToggleState -eq $wanted) { return }
+        }
+        catch {
+            # The element went stale; the caller re-resolves it on retry.
+            return
+        }
     }
 }
 
-function Set-NativeComboSelection {
+function Wait-Config {
     param(
-        [System.Windows.Automation.AutomationElement]$Window,
-        [int]$ParentControlId,
-        [int]$ControlId,
-        [int]$SelectionIndex
+        [string]$Path,
+        [scriptblock]$Predicate,
+        [string]$Failure,
+        [int]$TimeoutSeconds = 15
     )
 
-    $parentHandle = [AskBridgeUiNative]::GetDlgItem(
-        [IntPtr]$Window.Current.NativeWindowHandle,
-        $ParentControlId
-    )
-    if ($parentHandle -eq [IntPtr]::Zero) { throw "Native page ID '$ParentControlId' was not found." }
-    $handle = [AskBridgeUiNative]::GetDlgItem($parentHandle, $ControlId)
-    if ($handle -eq [IntPtr]::Zero) { throw "Native combo ID '$ControlId' was not found." }
-    $result = [AskBridgeUiNative]::SendMessage(
-        $handle,
-        0x014E,
-        [IntPtr]$SelectionIndex,
-        [IntPtr]::Zero
-    )
-    if ($result.ToInt64() -eq -1) { throw "CB_SETCURSEL failed for native combo ID '$ControlId'." }
+    # Apply runs through the runtime window and rewrites config.json, so the
+    # assertions poll the persisted file instead of guessing a sleep.
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if (Test-Path -LiteralPath $Path) {
+            $config = Read-Config $Path
+            if (& $Predicate $config) { return $config }
+        }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw $Failure
 }
 
-function Click-NativeControl {
+function Select-Page {
     param(
         [System.Windows.Automation.AutomationElement]$Window,
-        [int]$ParentControlId,
-        [int]$ControlId
+        [string]$Name
     )
 
-    $parentHandle = if ($ParentControlId -eq 0) {
-        [IntPtr]$Window.Current.NativeWindowHandle
-    }
-    else {
-        [AskBridgeUiNative]::GetDlgItem(
-            [IntPtr]$Window.Current.NativeWindowHandle,
-            $ParentControlId
-        )
-    }
-    if ($parentHandle -eq [IntPtr]::Zero) { throw "Native page ID '$ParentControlId' was not found." }
-    $handle = [AskBridgeUiNative]::GetDlgItem($parentHandle, $ControlId)
-    if ($handle -eq [IntPtr]::Zero) { throw "Native control ID '$ControlId' was not found." }
-    [AskBridgeUiNative]::SendMessage($handle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
-    Start-Sleep -Milliseconds 150
+    Invoke-Element (Find-ElementByName $Window $Name)
+    # The page transition is animated; give the card reveal time to settle so
+    # the screenshot artifact shows the finished layout.
+    Start-Sleep -Milliseconds 450
 }
 
 function Test-HotkeyOccupied {
@@ -301,6 +279,12 @@ function Test-HotkeyOccupied {
         throw "RegisterHotKey probe failed with unexpected Win32 error $errorCode."
     }
     return $true
+}
+
+function Read-Config {
+    param([string]$Path)
+
+    return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
 }
 
 function Capture-Window {
@@ -338,14 +322,16 @@ $uiText = @{
     General = ConvertFrom-Utf8Base64 "5bi46KeE"
     DefaultProvider = ConvertFrom-Utf8Base64 "6buY6K6k5L6b5bqU5ZWG"
     Doubao = ConvertFrom-Utf8Base64 "6LGG5YyF"
-    ChatGptPwa = ConvertFrom-Utf8Base64 "5qGM6Z2i572R6aG156uv77ya5aSN55So546w5pyJ55m75b2V77yM5L2G5oiq5Zu+6ZyA6KaB5omL5Yqo5LiK5Lyg"
-    ChatGptDedicated = ConvertFrom-Utf8Base64 "QXNrQnJpZGdlIOS4k+eUqCBDaHJvbWXvvJrmlK/mjIHoh6rliqjkuIrkvKDlm77niYfvvIzpnIDopoHljZXni6znmbvlvZU="
+    ChatGptPwa = ConvertFrom-Utf8Base64 "5qGM6Z2i572R6aG156uv"
+    ChatGptDedicated = ConvertFrom-Utf8Base64 "QXNrQnJpZGdlIOS4k+eUqCBDaHJvbWU="
+    ChatGptPwaDescription = ConvertFrom-Utf8Base64 "5aSN55So546w5pyJ55m75b2V77yM5L2G5oiq5Zu+6ZyA6KaB5omL5Yqo5LiK5Lyg"
+    ChatGptDedicatedDescription = ConvertFrom-Utf8Base64 "5pSv5oyB6Ieq5Yqo5LiK5Lyg5Zu+54mH77yM6ZyA6KaB5Y2V54us55m75b2V"
     OpenBrowser = ConvertFrom-Utf8Base64 "5omT5byAIEFza0JyaWRnZSDmtY/op4jlmag="
     CheckConnection = ConvertFrom-Utf8Base64 "5qOA5p+l6L+e5o6l"
     OpenProviderLogin = ConvertFrom-Utf8Base64 "5omT5byA6buY6K6k5L6b5bqU5ZWG55m75b2V6aG16Z2i"
-    StartOnLogin = ConvertFrom-Utf8Base64 "55m75b2VIFdpbmRvd3Mg5ZCO5ZCv5YqoIEFza0JyaWRnZe+8iOW9k+WJjeeUqOaIt++8jOS4jemcgOeuoeeQhuWRmOadg+mZkO+8iQ=="
-    DebugLogging = ConvertFrom-Utf8Base64 "5ZCv55So6LCD6K+V5pel5b+X77yI56uL5Y2z55Sf5pWI77yb5pel5b+X5LuN5LiN6K6w5b2V6Zeu6aKY44CB5oiq5Zu+5oiW572R6aG15q2j5paH77yJ"
     Apply = ConvertFrom-Utf8Base64 "5bqU55So5pu05pS5"
+    RestoreHotkeys = ConvertFrom-Utf8Base64 "5oGi5aSN6buY6K6k5b+r5o236ZSu"
+    RejectedPrefix = ConvertFrom-Utf8Base64 "5peg5rOV5bqU55So"
 }
 
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -370,20 +356,43 @@ try {
         throw "Single-instance acceptance expected only primary PID $($primary.Id), found $($sameExecutableProcesses.Id -join ',')."
     }
 
-    $window = Find-WindowByName $uiText.SettingsWindow
+    $window = Find-SettingsWindow
+    if ($window.Current.Name -ne $uiText.SettingsWindow) {
+        throw "The settings window title was '$($window.Current.Name)', expected '$($uiText.SettingsWindow)'."
+    }
+    $settingsWindowHandle = [AskBridgeUiNative]::FindTopLevelWindowForProcess(
+        [uint32]$primary.Id,
+        "AskBridgeSettingsWindow"
+    )
+    if ($settingsWindowHandle -eq [IntPtr]::Zero) {
+        throw "The settings window handle could not be resolved for the primary process."
+    }
+    # Park the window somewhere predictable so the screenshot artifact and the
+    # coordinate probes are stable regardless of the previous desktop state.
+    [AskBridgeUiNative]::SetWindowPos($settingsWindowHandle, [IntPtr]::Zero, 40, 40, 0, 0, 0x0001 -bor 0x0004 -bor 0x0040) | Out-Null
+    [AskBridgeUiNative]::SetForegroundWindow($settingsWindowHandle) | Out-Null
+    Start-Sleep -Milliseconds 500
+
     foreach ($tab in @($uiText.Shortcuts, $uiText.Providers, $uiText.Browser, $uiText.General)) {
         Find-ElementByName $window $tab | Out-Null
     }
 
     $configPath = Join-Path $dataRoot "config.json"
-    Click-Element (Find-ElementByName $window $uiText.Shortcuts)
-    Set-NativeControlText $window 2011 2101 "Ctrl+Alt+Shift+F12"
-    Click-Element (Find-ElementByName $window $uiText.Apply)
-    Start-Sleep -Milliseconds 300
-    $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($config.hotkeys.capture_with_prompt.key -ne "F12" -or -not $config.hotkeys.capture_with_prompt.enabled) {
-        throw "The real settings UI did not persist the replacement capture hotkey."
-    }
+
+    # Every apply re-renders the page, which invalidates previously resolved
+    # automation elements. `Refresh-Window` re-reads the root so lookups always
+    # start from the live tree.
+    $window = Find-SettingsWindow
+
+    # ---- hotkeys: replace, verify registration, disable, restore ----
+    Select-Page $window $uiText.Shortcuts
+    $captureHotkey = Find-ElementByAutomationId $window "hotkey-capture_with_prompt"
+    Set-ElementValue $captureHotkey "Ctrl+Alt+Shift+F12"
+    Invoke-Element (Find-ElementByAutomationId $window "apply")
+    $config = Wait-Config $configPath {
+        param($candidate)
+        $candidate.hotkeys.capture_with_prompt.key -eq "F12" -and $candidate.hotkeys.capture_with_prompt.enabled
+    } "The real settings UI did not persist the replacement capture hotkey."
     if (Test-HotkeyOccupied 28673 0x4001 0x51) {
         throw "Alt+Q remained registered after replacing it through the real settings UI."
     }
@@ -391,138 +400,250 @@ try {
         throw "The replacement Ctrl+Alt+Shift+F12 hotkey was not registered."
     }
 
-    Click-NativeControl $window 2011 2102
-    Click-Element (Find-ElementByName $window $uiText.Apply)
-    Start-Sleep -Milliseconds 300
-    $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($config.hotkeys.capture_with_prompt.enabled) {
-        throw "The capture hotkey was not disabled through the real settings UI."
-    }
+    $window = Find-SettingsWindow
+    $captureToggle = Find-ElementByAutomationId $window "enable-capture_with_prompt"
+    Set-SwitchState $captureToggle $false
+    Invoke-Element (Find-ElementByAutomationId $window "apply")
+    $config = Wait-Config $configPath {
+        param($candidate)
+        -not $candidate.hotkeys.capture_with_prompt.enabled
+    } "The capture hotkey was not disabled through the real settings UI."
     if (Test-HotkeyOccupied 28675 0x4007 0x7B) {
         throw "The disabled replacement hotkey remained registered."
     }
 
-    Click-NativeControl $window 0 2052
-    Start-Sleep -Milliseconds 300
-    $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if (-not $config.hotkeys.capture_with_prompt.enabled -or $config.hotkeys.capture_with_prompt.key -ne "Q") {
-        throw "Default hotkeys were not restored and persisted through the real settings UI."
-    }
+    $window = Find-SettingsWindow
+    Invoke-Element (Find-ElementByAutomationId $window "restore-hotkeys")
+    $config = Wait-Config $configPath {
+        param($candidate)
+        $candidate.hotkeys.capture_with_prompt.enabled -and $candidate.hotkeys.capture_with_prompt.key -eq "Q"
+    } "Default hotkeys were not restored and persisted through the real settings UI."
     if (-not (Test-HotkeyOccupied 28676 0x4001 0x51)) {
         throw "Alt+Q was not registered after restoring default hotkeys."
     }
 
+    # ---- hotkeys: a conflicting combination must roll back ----
     $reservedId = 28677
     if (-not [AskBridgeUiNative]::RegisterHotKey([IntPtr]::Zero, $reservedId, 0x4007, 0x7A)) {
         throw "Could not reserve Ctrl+Alt+Shift+F11 for the rollback acceptance probe."
     }
     try {
-        Set-NativeControlText $window 2011 2101 "Ctrl+Alt+Shift+F11"
-        Click-Element (Find-ElementByName $window $uiText.Apply)
-        Start-Sleep -Milliseconds 300
-        $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $window = Find-SettingsWindow
+        $captureHotkey = Find-ElementByAutomationId $window "hotkey-capture_with_prompt"
+        Set-ElementValue $captureHotkey "Ctrl+Alt+Shift+F11"
+        Invoke-Element (Find-ElementByAutomationId $window "apply")
+        # Rollback is a no-write outcome, so this cannot poll for a change;
+        # it waits for the page to report the rejection instead.
+        Start-Sleep -Milliseconds 1500
+        $config = Read-Config $configPath
         if (-not $config.hotkeys.capture_with_prompt.enabled -or $config.hotkeys.capture_with_prompt.key -ne "Q") {
             throw "A conflicting hotkey changed the persisted binding instead of rolling back."
         }
         if (-not (Test-HotkeyOccupied 28678 0x4001 0x51)) {
             throw "Alt+Q was lost after the conflicting replacement failed."
         }
+        # The page must surface the rejection, not fail silently. Every apply
+        # re-hydrates the page, so the tree is re-read rather than reused.
+        $rejected = $null
+        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        do {
+            $freshWindow = Find-SettingsWindow
+            $texts = $freshWindow.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                (New-Object System.Windows.Automation.PropertyCondition(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::Text
+                ))
+            )
+            for ($index = 0; $index -lt $texts.Count; $index++) {
+                $candidateText = $texts.Item($index).Current.Name
+                if ($candidateText.StartsWith($uiText.RejectedPrefix, [StringComparison]::Ordinal)) {
+                    $rejected = $candidateText
+                    break
+                }
+            }
+            if ($null -ne $rejected) { break }
+            Start-Sleep -Milliseconds 250
+        } while ([DateTime]::UtcNow -lt $deadline)
+        if ($null -eq $rejected) {
+            $dump = @()
+            $freshWindow = Find-SettingsWindow
+            $all = $freshWindow.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition
+            )
+            for ($index = 0; $index -lt $all.Count; $index++) {
+                $current = $all.Item($index).Current
+                $dump += ("{0} '{1}' id='{2}'" -f $current.ControlType.ProgrammaticName, $current.Name, $current.AutomationId)
+            }
+            throw "The rejected apply was not reported anywhere in the settings page. Tree: $($dump -join ' | ')"
+        }
     }
     finally {
         [AskBridgeUiNative]::UnregisterHotKey([IntPtr]::Zero, $reservedId) | Out-Null
     }
 
-    Click-Element (Find-ElementByName $window $uiText.Providers)
+    # ---- providers: round-trip default provider and a custom row ----
+    $window = Find-SettingsWindow
+    Select-Page $window $uiText.Providers
     Find-ElementByName $window $uiText.DefaultProvider | Out-Null
-    foreach ($provider in @("ChatGPT", "Gemini", "Claude", $uiText.Doubao)) {
-        Find-ElementByName $window $provider | Out-Null
+    # Each built-in provider appears both as a default-provider choice and as an
+    # enable/URL row, so every surface is asserted through a stable automation ID.
+    foreach ($provider in @("chatgpt", "gemini", "claude", "doubao")) {
+        Find-ElementByAutomationId $window "default-provider-$provider" | Out-Null
+        Find-ElementByAutomationId $window "enable-$provider" | Out-Null
+        Find-ElementByAutomationId $window "url-$provider" | Out-Null
     }
-    Set-NativeControlText $window 2012 2230 "example | Example | https://example.com/chat | https://example.com/"
-    Set-NativeComboSelection $window 2012 2201 1
-    Click-Element (Find-ElementByName $window $uiText.Apply)
-    Start-Sleep -Milliseconds 300
-    $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    Invoke-Element (Find-ElementByAutomationId $window "default-provider-gemini")
+    Invoke-Element (Find-ElementByAutomationId $window "add-custom")
+    Set-ElementValue (Find-ElementByAutomationId $window "custom-0-id") "example"
+    Set-ElementValue (Find-ElementByAutomationId $window "custom-0-display_name") "Example"
+    Set-ElementValue (Find-ElementByAutomationId $window "custom-0-start_url") "https://example.com/chat"
+    Set-ElementValue (Find-ElementByAutomationId $window "custom-0-url_patterns") "https://example.com/"
+    Invoke-Element (Find-ElementByAutomationId $window "apply")
+    $config = Wait-Config $configPath {
+        param($candidate)
+        $candidate.default_provider_id -eq "gemini" -and
+            @($candidate.custom_providers | Where-Object { $_.id -eq "example" }).Count -eq 1
+    } "Provider settings were not persisted from the real UI."
     $exampleProvider = @($config.custom_providers | Where-Object { $_.id -eq "example" })
-    if ($config.default_provider_id -ne "gemini" -or $exampleProvider.Count -ne 1) {
-        throw "Provider settings were not persisted from the real UI."
-    }
     if ($exampleProvider[0].start_url -ne "https://example.com/chat" -or
         @($exampleProvider[0].url_patterns).Count -ne 1 -or
         $exampleProvider[0].url_patterns[0] -ne "https://example.com/") {
         throw "Custom provider fields did not round-trip through the real UI."
     }
-    Set-NativeControlText $window 2012 2230 ""
-    Set-NativeComboSelection $window 2012 2201 0
-    Click-Element (Find-ElementByName $window $uiText.Apply)
-    Start-Sleep -Milliseconds 300
-    $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($config.default_provider_id -ne "chatgpt" -or @($config.custom_providers).Count -ne 0) {
-        throw "Provider settings were not restored through the real UI."
-    }
+    $window = Find-SettingsWindow
+    Select-Page $window $uiText.Providers
+    Set-ElementValue (Find-ElementByAutomationId $window "custom-0-id") ""
+    Set-ElementValue (Find-ElementByAutomationId $window "custom-0-display_name") ""
+    Set-ElementValue (Find-ElementByAutomationId $window "custom-0-start_url") ""
+    Set-ElementValue (Find-ElementByAutomationId $window "custom-0-url_patterns") ""
+    Invoke-Element (Find-ElementByAutomationId $window "default-provider-chatgpt")
+    Invoke-Element (Find-ElementByAutomationId $window "apply")
+    $config = Wait-Config $configPath {
+        param($candidate)
+        $candidate.default_provider_id -eq "chatgpt" -and @($candidate.custom_providers).Count -eq 0
+    } "Provider settings were not restored through the real UI."
 
-    Click-Element (Find-ElementByName $window $uiText.Browser)
-    foreach ($control in @($uiText.ChatGptPwa, $uiText.ChatGptDedicated, $uiText.OpenBrowser, $uiText.CheckConnection, $uiText.OpenProviderLogin)) {
+    # ---- browser page exposes the four explicit target choices ----
+    $window = Find-SettingsWindow
+    Select-Page $window $uiText.Browser
+    foreach ($control in @(
+        $uiText.OpenBrowser,
+        $uiText.CheckConnection,
+        $uiText.OpenProviderLogin
+    )) {
         Find-ElementByName $window $control | Out-Null
     }
-
-    Click-Element (Find-ElementByName $window $uiText.General)
-    $startOnLogin = Find-ElementByName $window $uiText.StartOnLogin
-    $debugLogging = Find-ElementByName $window $uiText.DebugLogging
-    if ($null -eq $debugLogging) { throw "General setting is missing." }
-
-    Set-NativeControlText $window 2014 2401 "AskBridge Phase 7 UI acceptance prompt."
-    Click-Element $startOnLogin
-    Click-Element $debugLogging
-    Click-Element (Find-ElementByName $window $uiText.Apply)
-    Start-Sleep -Milliseconds 300
-
-    $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if (-not $config.general.start_on_login -or
-        -not $config.general.debug_logging -or
-        $config.quick_prompt -ne "AskBridge Phase 7 UI acceptance prompt.") {
-        throw "Settings were not persisted from the real UI. start_on_login=$($config.general.start_on_login), debug_logging=$($config.general.debug_logging), quick_prompt='$($config.quick_prompt)'"
+    # The four target choices are radio buttons whose names are their labels.
+    $radioCondition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::RadioButton
+    )
+    $radios = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $radioCondition)
+    if ($radios.Count -ne 4) {
+        throw "Expected four ChatGPT target choices, found $($radios.Count)."
     }
+    $radioNames = @()
+    for ($index = 0; $index -lt $radios.Count; $index++) {
+        $radioNames += $radios.Item($index).Current.Name
+    }
+    # A radio's accessible name concatenates its label and consequence text,
+    # so the label is matched as a prefix.
+    foreach ($expected in @($uiText.ChatGptPwa, $uiText.ChatGptDedicated)) {
+        $matched = $false
+        foreach ($name in $radioNames) {
+            if ($name.StartsWith($expected, [StringComparison]::Ordinal)) { $matched = $true; break }
+        }
+        if (-not $matched) {
+            throw "The browser page is missing the target choice '$expected'; saw $($radioNames -join ', ')."
+        }
+    }
+    foreach ($expected in @($uiText.ChatGptPwaDescription, $uiText.ChatGptDedicatedDescription)) {
+        $matched = $false
+        foreach ($name in $radioNames) {
+            if ($name.Contains($expected)) { $matched = $true; break }
+        }
+        if (-not $matched) {
+            throw "The browser page is missing the consequence copy '$expected'; saw $($radioNames -join ', ')."
+        }
+    }
+
+    # ---- general: quick prompt, startup, debug logging ----
+    $window = Find-SettingsWindow
+    Select-Page $window $uiText.General
+    Set-ElementValue (Find-ElementByAutomationId $window "quick-prompt") "AskBridge Phase 7 UI acceptance prompt."
+    Set-SwitchState (Find-ElementByAutomationId $window "start-on-login") $true
+    Set-SwitchState (Find-ElementByAutomationId $window "debug-logging") $true
+    Invoke-Element (Find-ElementByAutomationId $window "apply")
+    $config = Wait-Config $configPath {
+        param($candidate)
+        $candidate.general.start_on_login -and
+            $candidate.general.debug_logging -and
+            $candidate.quick_prompt -eq "AskBridge Phase 7 UI acceptance prompt."
+    } "Settings were not persisted from the real UI."
     $runValue = (Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction Stop).AskBridge
     if (([string]$runValue).IndexOf("askbridge.exe", [StringComparison]::OrdinalIgnoreCase) -lt 0) {
         throw "The current-user startup value does not target askbridge.exe."
     }
 
-    Click-Element $startOnLogin
-    Click-Element $debugLogging
-    Click-Element (Find-ElementByName $window $uiText.Apply)
-    Start-Sleep -Milliseconds 300
-    $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($config.general.start_on_login -or $config.general.debug_logging) {
-        throw "Startup or runtime debug logging was not disabled through the real UI."
-    }
+    $window = Find-SettingsWindow
+    Select-Page $window $uiText.General
+    Set-SwitchState (Find-ElementByAutomationId $window "start-on-login") $false
+    Set-SwitchState (Find-ElementByAutomationId $window "debug-logging") $false
+    Invoke-Element (Find-ElementByAutomationId $window "apply")
+    $config = Wait-Config $configPath {
+        param($candidate)
+        -not $candidate.general.start_on_login -and -not $candidate.general.debug_logging
+    } "Startup or runtime debug logging was not disabled through the real UI."
     if ($null -ne (Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction SilentlyContinue)) {
         throw "The current-user startup value remained after disabling it."
     }
 
-    Click-Element $startOnLogin
-    Click-Element (Find-ElementByName $window $uiText.Apply)
-    Start-Sleep -Milliseconds 300
-    $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $window = Find-SettingsWindow
+    Select-Page $window $uiText.General
+    Set-SwitchState (Find-ElementByAutomationId $window "start-on-login") $true
+    Invoke-Element (Find-ElementByAutomationId $window "apply")
+    $config = Wait-Config $configPath {
+        param($candidate)
+        $candidate.general.start_on_login
+    } "Startup was not re-enabled through the real UI."
     $reEnabledRunValue = [string](Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction Stop).AskBridge
     if (-not $config.general.start_on_login -or
         $reEnabledRunValue.IndexOf("askbridge.exe", [StringComparison]::OrdinalIgnoreCase) -lt 0) {
         throw "Startup was not re-enabled before the foreign Run ownership probe."
     }
 
+    # A Run value owned by another program must survive the toggle.
     $foreignRunValue = '"C:\Windows\System32\notepad.exe"'
     New-Item -Path $runKey -Force | Out-Null
     New-ItemProperty -Path $runKey -Name "AskBridge" -Value $foreignRunValue -PropertyType String -Force | Out-Null
-    Click-Element $startOnLogin
-    Click-Element (Find-ElementByName $window $uiText.Apply)
-    Start-Sleep -Milliseconds 300
-    $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $window = Find-SettingsWindow
+    Select-Page $window $uiText.General
+    Set-SwitchState (Find-ElementByAutomationId $window "start-on-login") $false
+    Invoke-Element (Find-ElementByAutomationId $window "apply")
+    $config = Wait-Config $configPath {
+        param($candidate)
+        -not $candidate.general.start_on_login
+    } "Disabling startup did not persist through the real UI."
     $preservedForeignRunValue = [string](Get-ItemProperty -Path $runKey -Name "AskBridge" -ErrorAction Stop).AskBridge
     if ($config.general.start_on_login -or $preservedForeignRunValue -ne $foreignRunValue) {
         throw "Disabling startup removed or changed a Run value owned by another program."
     }
 
+    # ---- artifacts: one screenshot per page plus the default view ----
+    $window = Find-SettingsWindow
+    Select-Page $window $uiText.Shortcuts
     Capture-Window $window $screenshot
     if (-not (Test-Path -LiteralPath $screenshot -PathType Leaf)) { throw "Settings screenshot was not created." }
+    $screenshotDirectory = Split-Path -Parent $screenshot
+    $pageIndex = 0
+    foreach ($page in @($uiText.Providers, $uiText.Browser, $uiText.General)) {
+        $pageIndex++
+        $window = Find-SettingsWindow
+        Select-Page $window $page
+        Capture-Window $window (Join-Path $screenshotDirectory ("settings-page-{0}.png" -f $pageIndex))
+    }
     if (-not (Test-Path -LiteralPath (Join-Path $dataRoot "logs\askbridge.log") -PathType Leaf)) {
         throw "D-drive structured log was not created."
     }
@@ -560,7 +681,32 @@ finally {
         New-ItemProperty -Path $runKey -Name "AskBridge" -Value $previousRunValue -PropertyType String -Force | Out-Null
     }
     $env:ASKBRIDGE_DATA_DIR = $previousDataEnvironment
-    if (Test-Path -LiteralPath $dataRoot) {
-        Remove-Item -LiteralPath $dataRoot -Recurse -Force
+    # WebView2 spawns its own browser processes that keep the page's user data
+    # folder locked after the host exits. They are identified by the data
+    # directory we handed the WebView, so only ours are stopped.
+    $webviewDataRoot = Join-Path $dataRoot "webview"
+    Get-Process -Name msedgewebview2 -ErrorAction SilentlyContinue | ForEach-Object {
+        $commandLine = $null
+        try {
+            $commandLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)" -ErrorAction Stop).CommandLine
+        }
+        catch {
+            $commandLine = $null
+        }
+        if ($commandLine -and $commandLine.IndexOf($webviewDataRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+    # The browser processes exit asynchronously; give them a moment and retry
+    # the removal instead of failing the run over a transient lock.
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        if (-not (Test-Path -LiteralPath $dataRoot)) { break }
+        try {
+            Remove-Item -LiteralPath $dataRoot -Recurse -Force -ErrorAction Stop
+            break
+        }
+        catch {
+            Start-Sleep -Milliseconds 250
+        }
     }
 }
