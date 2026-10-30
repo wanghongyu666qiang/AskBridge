@@ -37,9 +37,16 @@ fn has_new_paste_attachment(
     baseline: PasteAttachmentReceipt,
     current: PasteAttachmentReceipt,
 ) -> bool {
+    // The receipt is anchored to the composer band, so any extra image or
+    // group inside that band is new attachment structure. Requiring both
+    // counts to grow at once rejected real pastes: current provider pages wrap
+    // each thumbnail in its own element and no longer add a container group,
+    // which left the image count rising alone while the paste had in fact
+    // landed. Growth in either kind is enough; the scope anchor keeps
+    // unrelated page rendering out.
     current.scope == baseline.scope
-        && current.image_count > baseline.image_count
-        && current.group_count > baseline.group_count
+        && (current.image_count > baseline.image_count
+            || current.group_count > baseline.group_count)
 }
 
 pub(crate) fn paste_attachment_baseline(window: HWND) -> Result<PasteAttachmentReceipt> {
@@ -224,7 +231,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn paste_receipt_requires_an_image_and_group_in_the_same_scope() {
+    fn paste_receipt_accepts_growth_in_either_kind_within_the_same_scope() {
         let scope = PasteReceiptScope {
             left: 10,
             top: 20,
@@ -237,14 +244,17 @@ mod tests {
             scope,
         };
         assert!(!has_new_paste_attachment(baseline, baseline));
-        assert!(!has_new_paste_attachment(
+        // Current provider pages add a thumbnail without a container group, so
+        // image-only growth must count as a delivered paste.
+        assert!(has_new_paste_attachment(
             baseline,
             PasteAttachmentReceipt {
                 image_count: 3,
                 ..baseline
             }
         ));
-        assert!(!has_new_paste_attachment(
+        // A new group alone is also new attachment structure.
+        assert!(has_new_paste_attachment(
             baseline,
             PasteAttachmentReceipt {
                 group_count: 4,
@@ -259,6 +269,16 @@ mod tests {
                 ..baseline
             }
         ));
+        // No growth in either kind means no new attachment structure.
+        assert!(!has_new_paste_attachment(
+            baseline,
+            PasteAttachmentReceipt {
+                image_count: 1,
+                group_count: 2,
+                ..baseline
+            }
+        ));
+        // A receipt taken against a different anchor cannot prove anything.
         assert!(!has_new_paste_attachment(
             baseline,
             PasteAttachmentReceipt {

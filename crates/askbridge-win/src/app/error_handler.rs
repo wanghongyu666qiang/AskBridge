@@ -177,6 +177,7 @@ impl Runtime {
             provider_id = %provider_id,
             stage = "workflow",
             completed = false,
+            error_kind = error.kind(),
             "workflow failed"
         );
         self.pending_dispatch = None;

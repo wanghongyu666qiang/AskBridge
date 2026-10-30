@@ -4,8 +4,7 @@
 use std::path::Path;
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, HANDLE, HWND, LPARAM},
-    Storage::Packaging::Appx::GetPackageFamilyName,
+    Foundation::{CloseHandle, HWND, LPARAM},
     System::Threading::{
         OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
     },
@@ -109,17 +108,21 @@ const BROWSER_PROCESSES: [&str; 6] = [
 ];
 const AI_DESKTOP_PROCESSES: [&str; 3] = ["chatgpt.exe", "claude.exe", "doubao.exe"];
 
-fn is_allowed_paste_process(process: &str, package_family: Option<&str>) -> bool {
-    if BROWSER_PROCESSES.contains(&process) {
-        return true;
-    }
-    AI_DESKTOP_PROCESSES.contains(&process)
-        && !package_family.is_some_and(|family| family.contains("codex"))
+/// The executable name is the whole check.
+///
+/// This used to also reject `chatgpt.exe` when its package family contained
+/// "codex", to avoid treating the Codex client as ChatGPT. That heuristic has
+/// since inverted: OpenAI ships the ChatGPT desktop app itself inside the
+/// `OpenAI.Codex` package (app/ChatGPT.exe, display name ChatGPT), so the
+/// exclusion silently blocked every desktop-client paste. The Codex CLI is
+/// `codex.exe` and never matches this list, so dropping the package test does
+/// not widen the allowlist.
+fn is_allowed_paste_process(process: &str) -> bool {
+    BROWSER_PROCESSES.contains(&process) || AI_DESKTOP_PROCESSES.contains(&process)
 }
 
 struct ProcessIdentity {
     executable_name: String,
-    package_family: Option<String>,
 }
 
 fn window_process_identity(window: HWND) -> Option<ProcessIdentity> {
@@ -142,7 +145,6 @@ fn window_process_identity(window: HWND) -> Option<ProcessIdentity> {
     // SAFETY: process is live and name_buffer/length describe writable space.
     let written =
         unsafe { QueryFullProcessImageNameW(process, 0, name_buffer.as_mut_ptr(), &mut length) };
-    let package_family = package_family_name(process);
     // SAFETY: The handle was opened by this function and is no longer needed.
     unsafe {
         CloseHandle(process);
@@ -154,30 +156,7 @@ fn window_process_identity(window: HWND) -> Option<ProcessIdentity> {
     let executable_name = Path::new(&full_path)
         .file_name()
         .map(|name| name.to_string_lossy().to_lowercase())?;
-    Some(ProcessIdentity {
-        executable_name,
-        package_family,
-    })
-}
-
-fn package_family_name(process: HANDLE) -> Option<String> {
-    let mut length = 0u32;
-    // SAFETY: The first call intentionally supplies no buffer so Windows
-    // reports the required package-family length for packaged processes.
-    let status = unsafe { GetPackageFamilyName(process, &mut length, std::ptr::null_mut()) };
-    if status != ERROR_INSUFFICIENT_BUFFER || length == 0 {
-        return None;
-    }
-    let mut buffer = vec![0u16; length as usize];
-    // SAFETY: buffer has exactly the size requested by the first call.
-    let status = unsafe { GetPackageFamilyName(process, &mut length, buffer.as_mut_ptr()) };
-    if status != ERROR_SUCCESS {
-        return None;
-    }
-    if buffer.last() == Some(&0) {
-        buffer.pop();
-    }
-    Some(String::from_utf16_lossy(&buffer).to_lowercase())
+    Some(ProcessIdentity { executable_name })
 }
 
 unsafe extern "system" fn enum_windows_callback(window: HWND, lparam: LPARAM) -> i32 {
@@ -212,10 +191,7 @@ unsafe extern "system" fn enum_windows_callback(window: HWND, lparam: LPARAM) ->
         );
         return 1;
     };
-    if !is_allowed_paste_process(
-        &identity.executable_name,
-        identity.package_family.as_deref(),
-    ) {
+    if !is_allowed_paste_process(&identity.executable_name) {
         tracing::info!(
             stage = "paste_window_skipped",
             completed = false,
@@ -305,19 +281,17 @@ mod tests {
 
     #[test]
     fn paste_process_allowlist_accepts_browsers_and_ai_desktop_clients() {
-        assert!(is_allowed_paste_process("chrome.exe", None));
-        assert!(is_allowed_paste_process("firefox.exe", None));
-        assert!(is_allowed_paste_process(
-            "chatgpt.exe",
-            Some("openai.chatgpt_123")
-        ));
-        assert!(is_allowed_paste_process("claude.exe", None));
-        assert!(is_allowed_paste_process("doubao.exe", None));
-        assert!(!is_allowed_paste_process(
-            "chatgpt.exe",
-            Some("openai.codex_2p2nqsd0c76g0")
-        ));
-        assert!(!is_allowed_paste_process("discord.exe", None));
-        assert!(!is_allowed_paste_process("unknown.exe", None));
+        assert!(is_allowed_paste_process("chrome.exe"));
+        assert!(is_allowed_paste_process("firefox.exe"));
+        assert!(is_allowed_paste_process("chatgpt.exe"));
+        assert!(is_allowed_paste_process("claude.exe"));
+        assert!(is_allowed_paste_process("doubao.exe"));
+        // The ChatGPT desktop app ships inside the OpenAI.Codex package as
+        // chatgpt.exe; only the executable name may decide.
+        assert!(is_allowed_paste_process("chatgpt.exe"));
+        // The Codex CLI is a different executable and stays excluded.
+        assert!(!is_allowed_paste_process("codex.exe"));
+        assert!(!is_allowed_paste_process("discord.exe"));
+        assert!(!is_allowed_paste_process("unknown.exe"));
     }
 }
