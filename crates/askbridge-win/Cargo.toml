@@ -46,6 +46,8 @@ windows-sys = { workspace = true, features = [
     "Win32_Graphics_Gdi",
     "Win32_Networking_WinHttp",
     "Win32_Security",
+    # Used by data_dir.rs to locate LocalState under the Store build.
+    "Win32_Storage_Packaging_Appx",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
     "Win32_System_DataExchange",
