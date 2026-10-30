@@ -7,6 +7,7 @@ PackageName: AskBridge
 PackageUrl: https://github.com/wanghongyu666qiang/AskBridge
 License: Apache-2.0
 LicenseUrl: https://github.com/wanghongyu666qiang/AskBridge/blob/main/LICENSE
+PrivacyUrl: https://github.com/wanghongyu666qiang/AskBridge/blob/main/docs/PRIVACY.md
 ShortDescription: Windows screenshot-to-AI bridge that stages a screen capture plus preset text into AI web chat boxes.
 Description: |-
   AskBridge is a Windows screenshot-to-AI tool. After selecting a screen region, you can copy the capture, switch AI models, or stage the screenshot together with preset text into the input box of ChatGPT, Gemini, Claude, Doubao, DeepSeek, Zhipu Qingyan (GLM), Kimi, and other AI websites.
