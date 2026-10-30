@@ -2,7 +2,7 @@
 
 本文件记录面向用户的重要变化，格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循语义化版本。每个版本的完整发布说明同时见 [GitHub Releases](https://github.com/wanghongyu666qiang/AskBridge/releases)。
 
-## [未发布]
+## [2.0.6] - 2026-10-30
 
 ### 修复
 
@@ -114,7 +114,8 @@
 
 - 首个公开版本：框选截图与工具条、把截图和预设文字准备到 AI 网页输入区、专用 Chrome 与 CDP 对接、发布打包与安装路径防护。
 
-[未发布]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.5...HEAD
+[未发布]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.6...HEAD
+[2.0.6]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.5...v2.0.6
 [2.0.5]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.4...v2.0.5
 [2.0.4]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.3...v2.0.4
 [2.0.3]: https://github.com/wanghongyu666qiang/AskBridge/compare/v2.0.2...v2.0.3
