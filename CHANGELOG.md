@@ -4,9 +4,17 @@
 
 ## [未发布]
 
+### 修复
+
+- 截图粘贴到 ChatGPT 网页后不再被误判为失败：现代供应商页面粘贴缩略图时只新增图片节点、不新增容器分组，而回执要求两者同时增长，导致每次实际成功的粘贴都被报成“无法确认附件状态”。现在图片或分组任一数量增长即视为已写入附件，仍保留按输入框锚定的作用域判断。
+- ChatGPT 桌面客户端恢复可用：OpenAI 已将 ChatGPT 桌面应用放进 `OpenAI.Codex` 包（`app/ChatGPT.exe`，显示名 ChatGPT），原先“包族名含 codex 即忽略”的规则把桌面客户端本身一并屏蔽。现在只按可执行文件名判定，Codex CLI 的 `codex.exe` 仍不在名单内。
+- 配置保存改用 `ReplaceFileW` 失败时回退到 `MoveFileExW` 原子替换：Microsoft Store 版把数据放在 `LocalState`，当用户将应用数据重定向到其他磁盘时该目录带 EFS 加密属性，`ReplaceFileW` 会返回 `ERROR_INVALID_PARAMETER`，使换模型、保存设置等操作全部失败并中断流程。失败时同时清理残留的 `.tmp` 文件并记录两种策略各自的原因。
+- 流程失败日志补充 `error_kind`，此前 `workflow failed` 事件不带任何原因，用户与维护者都无法定位失败环节。
+
 ### 文档
 
 - 中英文 README 新增「演示」一节：内嵌 16 秒 GIF 预览（`assets/demo/askbridge-demo-preview.gif`），并链接挂在 v2.0.5 Release 上的 77 秒完整演示片 `AskBridge-Demo-77s.mp4`。演示片画面里的网页与日志均为虚构数据，域名使用保留的 `.invalid`。
+- `docs/ARCHITECTURE.md` 同步粘贴目标判定与附件回执的当前规则。
 
 ## [2.0.5] - 2026-09-19
 

@@ -156,7 +156,10 @@ impl ConfigStore {
 fn replace_file(temporary_path: &Path, destination: &Path) -> Result<()> {
     use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
 
-    use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_WRITE_THROUGH, ReplaceFileW};
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, REPLACEFILE_WRITE_THROUGH,
+        ReplaceFileW,
+    };
 
     if !destination.exists() {
         return fs::rename(temporary_path, destination)
@@ -181,11 +184,36 @@ fn replace_file(temporary_path: &Path, destination: &Path) -> Result<()> {
             ptr::null(),
         )
     };
-    if replaced == 0 {
+    if replaced != 0 {
+        return Ok(());
+    }
+
+    // ReplaceFileW rejects some destination volumes and attributes with
+    // ERROR_INVALID_PARAMETER — notably the EFS-encrypted LocalState folder a
+    // Microsoft Store package receives when the user's app data is relocated to
+    // another drive. Falling back to a replace-on-move keeps saving working
+    // there; the rename is still atomic for the reader.
+    let replace_error = std::io::Error::last_os_error();
+    // SAFETY: Both path buffers are valid NUL-terminated UTF-16 strings for the
+    // duration of the call.
+    let moved = unsafe {
+        MoveFileExW(
+            temporary_wide.as_ptr(),
+            destination_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        let move_error = std::io::Error::last_os_error();
+        // Leave no stale temporary file behind for the next startup to trip on.
+        let _ = fs::remove_file(temporary_path);
         return Err(AppError::io(
             "atomically replacing configuration",
             destination,
-            std::io::Error::last_os_error(),
+            std::io::Error::new(
+                move_error.kind(),
+                format!("ReplaceFileW failed ({replace_error}); MoveFileExW failed ({move_error})"),
+            ),
         ));
     }
     Ok(())
@@ -210,6 +238,52 @@ mod tests {
         store.save(&expected).expect("save config");
         assert_eq!(store.load().expect("load config"), expected);
         assert!(!directory.path().join("config.json.previous").exists());
+    }
+
+    #[test]
+    fn replacing_an_existing_file_keeps_only_the_new_contents() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let destination = directory.path().join("config.json");
+        let temporary = directory.path().join("config.json.tmp");
+        fs::write(&destination, b"old").expect("seed destination");
+        fs::write(&temporary, b"new").expect("seed temporary");
+
+        replace_file(&temporary, &destination).expect("replace existing file");
+
+        assert_eq!(fs::read(&destination).expect("read destination"), b"new");
+        assert!(
+            !temporary.exists(),
+            "a successful replace must not leave the temporary file behind"
+        );
+    }
+
+    #[test]
+    fn replacing_a_missing_destination_installs_the_temporary_file() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let destination = directory.path().join("config.json");
+        let temporary = directory.path().join("config.json.tmp");
+        fs::write(&temporary, b"new").expect("seed temporary");
+
+        replace_file(&temporary, &destination).expect("install missing destination");
+
+        assert_eq!(fs::read(&destination).expect("read destination"), b"new");
+        assert!(!temporary.exists());
+    }
+
+    #[test]
+    fn a_failed_replace_does_not_leave_a_temporary_file() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        // A directory in the destination slot makes every replace strategy fail.
+        let destination = directory.path().join("config.json");
+        let temporary = directory.path().join("config.json.tmp");
+        fs::create_dir(&destination).expect("seed destination directory");
+        fs::write(&temporary, b"new").expect("seed temporary");
+
+        assert!(replace_file(&temporary, &destination).is_err());
+        assert!(
+            !temporary.exists(),
+            "a failed replace must clean up the temporary file"
+        );
     }
 
     #[test]
