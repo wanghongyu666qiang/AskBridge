@@ -144,13 +144,19 @@ impl Runtime {
                     received,
                     total,
                 } => {
-                    let percent = received
-                        .min(total)
-                        .checked_mul(100)
-                        .and_then(|scaled| scaled.checked_div(total))
-                        .unwrap_or(100);
+                    let progress = if total == 0 {
+                        // Release-page fallback cannot know the total size.
+                        format!("已接收 {} MB", received / (1024 * 1024))
+                    } else {
+                        let percent = received
+                            .min(total)
+                            .checked_mul(100)
+                            .and_then(|scaled| scaled.checked_div(total))
+                            .unwrap_or(100);
+                        format!("{percent}%")
+                    };
                     self.settings
-                        .set_status(&format!("正在下载并校验 AskBridge {version}… {percent}%"));
+                        .set_status(&format!("正在下载并校验 AskBridge {version}… {progress}"));
                 }
                 UpdateEvent::Downloaded {
                     release,
@@ -172,11 +178,17 @@ impl Runtime {
                             "AskBridge 更新失败",
                             "无法完成更新；当前版本未被修改，请稍后重试。",
                         );
+                    } else if action == UpdateAction::Check {
+                        // A silent background failure should still leave a
+                        // trace the user can find when opening the settings.
+                        self.settings
+                            .set_status(&format!("上次自动更新检查失败：{message}"));
                     }
                     warn!(
                         stage = "application_update",
                         completed = false,
                         action = ?action,
+                        message = %message,
                         "application update operation failed"
                     );
                 }
