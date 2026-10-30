@@ -18,8 +18,14 @@
 ## 截图工具条没有出现
 
 1. 确认系统安装了 Microsoft Edge WebView2 Runtime。
-2. WebView2 初始化失败时程序会显示功能较简化的原生工具条，仍可复制、取消、切换模型和继续。
+2. WebView2 初始化失败时，截图工具条会回退为功能较简化的原生绘制版本，仍可复制、取消、切换模型和继续。
 3. `Esc` 取消截图，`Enter` 使用当前模型继续；右键也会取消。
+
+## 设置窗口打不开
+
+1. 设置页面同样依赖 Microsoft Edge WebView2 Runtime。缺失时会弹窗说明原因，并给出配置文件路径。
+2. 临时应急：可直接编辑该目录下的 `config.json`，AskBridge 启动时读取。
+3. 安装 WebView2 Runtime 后重新打开设置即可，不需要重启 AskBridge。
 
 ## 图片没有上传
 
