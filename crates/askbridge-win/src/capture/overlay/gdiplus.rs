@@ -85,22 +85,6 @@ unsafe extern "system" {
         x2: f32,
         y2: f32,
     ) -> GpStatus;
-    fn GdipDrawEllipse(
-        graphics: *mut core::ffi::c_void,
-        pen: *mut core::ffi::c_void,
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-    ) -> GpStatus;
-    fn GdipFillEllipse(
-        graphics: *mut core::ffi::c_void,
-        brush: *mut core::ffi::c_void,
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-    ) -> GpStatus;
 }
 
 /// Owns the process-wide GDI+ startup token. `GdiplusStartup`/`GdiplusShutdown`
@@ -257,34 +241,6 @@ impl<'runtime> GdiPlusSession<'runtime> {
         unsafe {
             if let Some(pen) = self.pen(color, width) {
                 GdipDrawLine(self.graphics, pen, x1, y1, x2, y2);
-                GdipDeletePen(pen);
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn ellipse(
-        &self,
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-        fill: u32,
-        stroke: u32,
-        sw: f32,
-    ) {
-        unsafe {
-            if fill != 0
-                && let Some(brush) = self.solid_brush(fill)
-            {
-                GdipFillEllipse(self.graphics, brush, x, y, width, height);
-                GdipDeleteBrush(brush);
-            }
-            if stroke != 0
-                && sw > 0.0
-                && let Some(pen) = self.pen(stroke, sw)
-            {
-                GdipDrawEllipse(self.graphics, pen, x, y, width, height);
                 GdipDeletePen(pen);
             }
         }

@@ -149,21 +149,6 @@ pub(super) fn fallback_toolbar_size() -> (i32, i32) {
     toolbar_webview::preferred_size()
 }
 
-pub(super) fn selection_handle_points(rect: &RECT) -> [(i32, i32); 8] {
-    let mid_x = rect.left + (rect.right - rect.left) / 2;
-    let mid_y = rect.top + (rect.bottom - rect.top) / 2;
-    [
-        (rect.left, rect.top),
-        (mid_x, rect.top),
-        (rect.right, rect.top),
-        (rect.right, mid_y),
-        (rect.right, rect.bottom),
-        (mid_x, rect.bottom),
-        (rect.left, rect.bottom),
-        (rect.left, mid_y),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

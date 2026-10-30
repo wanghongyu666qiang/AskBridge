@@ -22,6 +22,10 @@ pub(super) struct FrameInputs<'a> {
     pub selection: Option<ScreenRect>,
     pub locked: bool,
     pub fallback_toolbar: Option<&'a super::super::session::ToolbarState>,
+    /// Fade fraction in `0.0..=1.0` applied to the dim backdrop.
+    pub fade: f32,
+    /// Breathing factor for the selection glow, around `1.0`.
+    pub pulse: f32,
 }
 
 /// GDI resources reused across paints for one overlay window.

@@ -4,6 +4,7 @@
 use std::{
     mem::{replace, take, zeroed},
     ptr,
+    time::Instant,
 };
 
 use askbridge_core::{AppError, Result, ScreenRect};
@@ -18,12 +19,13 @@ use windows_sys::Win32::{
         Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, SetFocus, VK_ESCAPE, VK_RETURN},
         WindowsAndMessaging::{
             CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DispatchMessageW, GWLP_USERDATA,
-            GetClientRect, GetMessageW, GetWindowLongPtrW, HWND_TOPMOST, LWA_ALPHA, LWA_COLORKEY,
-            MSG, PostMessageW, PostQuitMessage, SW_HIDE, SWP_SHOWWINDOW, SetForegroundWindow,
-            SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-            TranslateMessage, WM_CANCELMODE, WM_CLOSE, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN,
-            WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY,
-            WM_PAINT, WM_RBUTTONDOWN, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+            GetClientRect, GetMessageW, GetWindowLongPtrW, HWND_TOPMOST, KillTimer, LWA_ALPHA,
+            LWA_COLORKEY, MSG, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, SW_HIDE,
+            SWP_SHOWWINDOW, SetForegroundWindow, SetLayeredWindowAttributes, SetTimer,
+            SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, WM_CANCELMODE, WM_CLOSE,
+            WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+            WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_TIMER,
+            WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
         },
     },
 };
@@ -36,10 +38,20 @@ use crate::{
 use super::{
     OVERLAY_CLASS, OverlayProviderChoice, SelectedRegion, SelectionAction, SelectionResult,
     draw::{COLOR_KEY, OVERLAY_ALPHA, PaintCache, paint_overlay},
+    fade::{Fade, glow_pulse, scaled_alpha},
     gdiplus::GdiPlusRuntime,
     guards::{DesktopSnapshot, OverlayWindow},
     layout::{fallback_toolbar_size, hit_dropdown, point_in_rect, toolbar_layout},
 };
+
+/// The overlay's fade timer. `WM_TIMER` granularity is ~15 ms, which is fine
+/// for a 110–140 ms fade and avoids a hand-rolled `PeekMessage` frame loop.
+const FADE_TIMER_ID: usize = 1;
+/// Drives the selection glow while a selection is locked. Kept separate from
+/// the fade timer because it runs for as long as the overlay is open, and at a
+/// slower cadence: the glow is a slow breath, not a frame animation.
+const PULSE_TIMER_ID: usize = 2;
+const PULSE_INTERVAL_MS: u32 = 40;
 
 pub(super) fn select_region_internal(
     instance: HINSTANCE,
@@ -129,6 +141,7 @@ pub(super) fn select_region_internal(
         SetFocus(window.0);
         UpdateWindow(window.0);
     }
+    start_fade(window.0, state.as_mut());
 
     let mut quit_code = None;
     let mut ignored_hotkey = false;
@@ -158,6 +171,11 @@ pub(super) fn select_region_internal(
             DispatchMessageW(&message);
         }
     }
+
+    // A fade-out still has to finish before the window goes away, otherwise
+    // the overlay would vanish in one frame instead of dissolving.
+    stop_pulse_timer(window.0, state.as_mut());
+    finish_fade_out(window.0, state.as_mut());
 
     // SAFETY: Hiding before DwmFlush ensures the overlay is not captured.
     unsafe {
@@ -284,6 +302,13 @@ pub(super) struct OverlayState {
     pub(super) web_toolbar: Option<toolbar_webview::ToolbarWebView>,
     pub(super) web_toolbar_failed: bool,
     outcome: OverlayOutcome,
+    /// Entrance and cancellation fade. Advanced by `WM_TIMER`.
+    pub(super) fade: Fade,
+    /// When the overlay appeared, so the selection glow can breathe.
+    /// `None` until the window is shown, which keeps `Default` derivable.
+    pub(super) opened_at: Option<Instant>,
+    /// Whether the glow timer is currently armed.
+    pub(super) pulse_running: bool,
     /// Declared last on purpose: the GDI+ shutdown must run after every other
     /// field has released anything that could still touch GDI+.
     pub(super) gdi_runtime: Option<GdiPlusRuntime>,
@@ -351,6 +376,7 @@ impl OverlayState {
                 InvalidateRect(window, ptr::null(), 0);
                 UpdateWindow(window);
             }
+            start_pulse_timer(window, self);
         } else {
             self.outcome = OverlayOutcome::Selected(selection);
             unsafe {
@@ -437,6 +463,124 @@ enum RepaintRequest {
     Deferred,
 }
 
+/// Starts the entrance fade and the timer that drives it.
+fn start_fade(window: HWND, state: &mut OverlayState) {
+    let now = Instant::now();
+    state.fade.begin(now);
+    state.opened_at = Some(now);
+    // SAFETY: window is the live overlay and the timer is killed on completion.
+    unsafe {
+        SetTimer(window, FADE_TIMER_ID, 15, None);
+    }
+    repaint(window);
+}
+
+fn start_pulse_timer(window: HWND, state: &mut OverlayState) {
+    if state.pulse_running {
+        return;
+    }
+    state.pulse_running = true;
+    // SAFETY: window is the live overlay; the timer is released on completion.
+    unsafe {
+        SetTimer(window, PULSE_TIMER_ID, PULSE_INTERVAL_MS, None);
+    }
+}
+
+fn stop_pulse_timer(window: HWND, state: &mut OverlayState) {
+    if !state.pulse_running {
+        return;
+    }
+    state.pulse_running = false;
+    // SAFETY: window is live; killing an unarmed timer is harmless.
+    unsafe {
+        KillTimer(window, PULSE_TIMER_ID);
+    }
+}
+
+/// Advances the fade one tick. Returns `true` while more frames are needed.
+fn tick_fade(window: HWND, state: &mut OverlayState) -> bool {
+    let now = Instant::now();
+    let animating = state.fade.tick(now);
+    if state.desktop_snapshot.is_none() {
+        // The layered (no-snapshot) window applies the fade to the whole
+        // window instead of the painted rectangles.
+        apply_layered_alpha(window, scaled_alpha(OVERLAY_ALPHA, state.fade.alpha(now)));
+    }
+    repaint(window);
+    if !animating {
+        // SAFETY: window is live; stopping an already-stopped timer is harmless.
+        unsafe {
+            KillTimer(window, FADE_TIMER_ID);
+        }
+    }
+    animating
+}
+
+/// Runs the exit fade to completion. Called after the message loop ends so a
+/// cancel dissolves instead of blinking out.
+fn finish_fade_out(window: HWND, state: &mut OverlayState) {
+    if !state.fade.is_fading_out() {
+        return;
+    }
+    // SAFETY: window is live; the loop below only paints and pumps.
+    unsafe {
+        SetTimer(window, FADE_TIMER_ID, 15, None);
+    }
+    // The loop must also drain messages: `WM_PAINT` is what makes the fade
+    // visible, and the timer posts `WM_TIMER` into this same queue.
+    let mut guard = 0;
+    while !state.fade.is_hidden() {
+        guard += 1;
+        if guard > 240 {
+            // ~4 s at 60 Hz: a stuck fade must never trap the user in the
+            // overlay, so give up and hide immediately.
+            warn!("capture overlay fade-out did not settle; hiding immediately");
+            break;
+        }
+        let mut message: MSG = unsafe { zeroed() };
+        // SAFETY: message is writable and the overlay window is live.
+        let pending = unsafe { PeekMessageW(&mut message, window, 0, 0, PM_REMOVE) };
+        if pending == 0 {
+            // No message yet: advance one frame so the fade still progresses.
+            if !tick_fade(window, state) {
+                break;
+            }
+            // SAFETY: DwmFlush paces the loop to the compositor.
+            unsafe {
+                DwmFlush();
+            }
+            continue;
+        }
+        if message.message == WM_TIMER && message.wParam == FADE_TIMER_ID {
+            tick_fade(window, state);
+            continue;
+        }
+        // SAFETY: message was populated by PeekMessageW.
+        unsafe {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    // SAFETY: window is live; stopping an already-stopped timer is harmless.
+    unsafe {
+        KillTimer(window, FADE_TIMER_ID);
+    }
+}
+
+fn apply_layered_alpha(window: HWND, alpha: u8) {
+    // SAFETY: window is the live layered overlay.
+    unsafe {
+        SetLayeredWindowAttributes(window, COLOR_KEY, alpha, LWA_ALPHA | LWA_COLORKEY);
+    }
+}
+
+fn repaint(window: HWND) {
+    // SAFETY: window is live; consecutive invalidations may be coalesced.
+    unsafe {
+        InvalidateRect(window, ptr::null(), 0);
+    }
+}
+
 const fn overlay_ex_style(use_snapshot_backdrop: bool) -> u32 {
     if use_snapshot_backdrop {
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW
@@ -492,6 +636,20 @@ pub(super) unsafe extern "system" fn overlay_window_proc(
             handle_web_toolbar_action(window, state, wparam, lparam);
             0
         }
+        WM_TIMER if wparam == FADE_TIMER_ID => {
+            tick_fade(window, state);
+            0
+        }
+        WM_TIMER if wparam == PULSE_TIMER_ID => {
+            // Only the locked selection breathes; anything else means the
+            // selection ended, so the timer is released.
+            if state.locked_selection.is_some() {
+                repaint(window);
+            } else {
+                stop_pulse_timer(window, state);
+            }
+            0
+        }
         WM_LBUTTONDOWN => {
             let point = mouse_point(lparam);
             if handle_toolbar_click(window, state, point) {
@@ -501,19 +659,14 @@ pub(super) unsafe extern "system" fn overlay_window_proc(
             // SAFETY: window is live and will release capture when selection ends.
             unsafe {
                 SetCapture(window);
-                InvalidateRect(window, ptr::null(), 0);
             }
+            repaint(window);
             0
         }
         WM_MOUSEMOVE => {
-            match state.update_drag(mouse_point(lparam)) {
-                RepaintRequest::None => {}
-                RepaintRequest::Deferred => {
-                    // SAFETY: window is live; consecutive invalidations may be coalesced.
-                    unsafe {
-                        InvalidateRect(window, ptr::null(), 0);
-                    }
-                }
+            let point = mouse_point(lparam);
+            if state.update_drag(point) == RepaintRequest::Deferred {
+                repaint(window);
             }
             0
         }
@@ -524,7 +677,15 @@ pub(super) unsafe extern "system" fn overlay_window_proc(
             0
         }
         WM_PAINT => {
-            paint_overlay(window, state);
+            let now = Instant::now();
+            paint_overlay(
+                window,
+                state,
+                state.fade.alpha(now),
+                state.opened_at.map_or(1.0, |opened| {
+                    glow_pulse(now.saturating_duration_since(opened))
+                }),
+            );
             0
         }
         WM_ERASEBKGND => 1,
@@ -587,11 +748,14 @@ fn closes_open_provider_menu(
 fn cancel_selection(window: HWND, state: &mut OverlayState, reason: CancelReason) {
     state.outcome = OverlayOutcome::Cancelled(reason);
     state.web_toolbar = None;
+    stop_pulse_timer(window, state);
     // SAFETY: Releasing without capture is harmless; window is live.
     unsafe {
         ReleaseCapture();
-        ShowWindow(window, SW_HIDE);
     }
+    // Cancelling is a dismissal, not a result: let it dissolve. The message
+    // loop keeps running until the fade settles, then hides the window.
+    state.fade.cancel(Instant::now());
 }
 
 fn handle_web_toolbar_action(

@@ -3,6 +3,7 @@
 // handles), layout (pure math), draw (painting), gdiplus (FFI).
 
 mod draw;
+mod fade;
 mod gdiplus;
 mod guards;
 mod layout;

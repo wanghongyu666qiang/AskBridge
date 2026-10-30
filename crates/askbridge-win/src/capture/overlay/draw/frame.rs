@@ -12,19 +12,19 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::GetClientRect,
 };
 
+use super::super::fade::scaled_alpha;
 use super::super::gdiplus::GdiPlusSession;
 use super::super::guards::DesktopSnapshot;
 use super::cache::{FrameInputs, PaintCache};
-use super::primitives::{
-    draw_instructions, draw_selection_frame_antialiased, draw_selection_handles, draw_size_label,
-    fill, frame,
-};
+use super::primitives::{draw_instructions, draw_selection_brackets, draw_size_label, fill, frame};
 use super::toolbar::draw_toolbar;
 use super::{COLOR_ACCENT_BRIGHT, COLOR_KEY, COLOR_OVERLAY, OVERLAY_ALPHA};
 
 pub(in crate::capture::overlay) fn paint_overlay(
     window: HWND,
     state: &mut super::super::session::OverlayState,
+    fade: f32,
+    pulse: f32,
 ) {
     // SAFETY: window is handling WM_PAINT and paint remains valid through EndPaint.
     unsafe {
@@ -50,6 +50,8 @@ pub(in crate::capture::overlay) fn paint_overlay(
             } else {
                 None
             },
+            fade,
+            pulse,
         };
 
         let buffer_dc = state
@@ -104,8 +106,9 @@ unsafe fn draw_overlay_frame(
     // SAFETY: device_context is a live paint or compatible memory DC.
     unsafe {
         let has_snapshot = draw_desktop_snapshot(device_context, inputs.snapshot, cache);
+        let dim_alpha = scaled_alpha(OVERLAY_ALPHA, inputs.fade);
         if has_snapshot {
-            dim_selection_backdrop(device_context, client, inputs.selection, cache);
+            dim_selection_backdrop(device_context, client, inputs.selection, dim_alpha, cache);
         } else {
             fill(device_context, client, COLOR_OVERLAY, cache);
         }
@@ -120,17 +123,17 @@ unsafe fn draw_overlay_frame(
             if !has_snapshot {
                 fill(device_context, &selection_rect, COLOR_KEY, cache);
             }
-            if has_snapshot {
+            // The antialiased path draws the brand brackets, shadow and glow.
+            // The plain-GDI fallback keeps a simple frame so it stays cheap,
+            // and neither path draws the old resize dots: the brackets already
+            // mark the corners, and eight white circles read as a 2010-era
+            // screenshot tool.
+            if has_snapshot && gdi.is_some() {
                 if let Some(gdi) = gdi {
-                    draw_selection_frame_antialiased(gdi, &selection_rect);
-                    super::primitives::draw_selection_handles_antialiased(gdi, &selection_rect);
-                } else {
-                    frame(device_context, &selection_rect, COLOR_ACCENT_BRIGHT, cache);
-                    draw_selection_handles(device_context, &selection_rect, gdi, cache);
+                    draw_selection_brackets(gdi, &selection_rect, inputs.pulse);
                 }
             } else {
                 frame(device_context, &selection_rect, COLOR_ACCENT_BRIGHT, cache);
-                draw_selection_handles(device_context, &selection_rect, gdi, cache);
             }
             draw_size_label(
                 device_context,
@@ -187,11 +190,17 @@ unsafe fn dim_selection_backdrop(
     device_context: *mut core::ffi::c_void,
     client: &RECT,
     selection: Option<ScreenRect>,
+    dim_alpha: u8,
     cache: &mut PaintCache,
 ) {
+    // A zero alpha means the entrance fade has not started yet; painting
+    // nothing keeps the desktop fully visible for that instant.
+    if dim_alpha == 0 {
+        return;
+    }
     let Some(selection) = selection else {
         unsafe {
-            alpha_fill(device_context, client, COLOR_OVERLAY, OVERLAY_ALPHA, cache);
+            alpha_fill(device_context, client, COLOR_OVERLAY, dim_alpha, cache);
         }
         return;
     };
@@ -228,7 +237,7 @@ unsafe fn dim_selection_backdrop(
         },
     ] {
         unsafe {
-            alpha_fill(device_context, &rect, COLOR_OVERLAY, OVERLAY_ALPHA, cache);
+            alpha_fill(device_context, &rect, COLOR_OVERLAY, dim_alpha, cache);
         }
     }
 }
